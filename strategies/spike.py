@@ -1,15 +1,21 @@
 from statistics import median
 
-from config import Settings
 from candle import SymbolState
+from config import Settings
 from models import Bar, Signal
+from strategies.base import Strategy
 
 
-class SpikeStrategy:
+class SpikeStrategy(Strategy):
+    name = "spike"
+
     def __init__(self, settings: Settings):
         self.settings = settings
 
     def evaluate(self, state: SymbolState) -> Signal | None:
+        if state.last_event_kind != "bar":
+            return None
+
         lookback = self.settings.spike_lookback_seconds
         if len(state.bars) <= lookback:
             return None
@@ -30,6 +36,7 @@ class SpikeStrategy:
 
         side = "BUY" if change_pct > 0 else "SELL"
         return Signal(
+            strategy=self.name,
             symbol=state.symbol,
             side=side,
             price=last.close,
@@ -37,10 +44,7 @@ class SpikeStrategy:
             change_pct=change_pct,
             volume_ratio=volume_ratio,
             spread_bps=spread_bps,
-            reason=(
-                f"{lookback}s move {change_pct:.3%}, "
-                f"volume {volume_ratio:.1f}x baseline"
-            ),
+            reason=f"{lookback}s move {change_pct:.3%}, volume {volume_ratio:.1f}x baseline",
         )
 
     @staticmethod

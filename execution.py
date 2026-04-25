@@ -15,6 +15,7 @@ LOG = logging.getLogger(__name__)
 @dataclass
 class Position:
     symbol: str
+    strategy: str
     shares: int
     entry_price: float
     entry_ms: int
@@ -55,6 +56,7 @@ class PositionTracker:
         self.cash -= shares * fill_price
         self.positions[signal.symbol] = Position(
             symbol=signal.symbol,
+            strategy=signal.strategy,
             shares=shares,
             entry_price=fill_price,
             entry_ms=signal.timestamp_ms,
@@ -105,28 +107,39 @@ class LocalPaperExecutor:
         LOG.info("LOCAL PAPER BUY %s %s @ %.2f | %s", shares, signal.symbol, signal.price, signal.reason)
         return fill
 
-    def manage_exit(self, bar: Bar) -> Fill | None:
-        position = self.tracker.positions.get(bar.symbol)
+    def manage_exit(self, state, strategies_by_name) -> Fill | None:
+        position = self.tracker.positions.get(state.symbol)
         if not position:
             return None
 
-        age_seconds = (bar.end_ms - position.entry_ms) / 1000
-        reason = ""
-        exit_price = bar.close
+        current_price = state.last_price
+        if current_price is None or state.last_event_ms is None:
+            return None
 
-        if bar.high >= position.target_price:
+        age_seconds = (state.last_event_ms - position.entry_ms) / 1000
+        reason = ""
+        exit_price = current_price
+
+        if current_price >= position.target_price:
             reason = "target profit"
             exit_price = position.target_price
-        elif bar.low <= position.stop_price:
+        elif current_price <= position.stop_price:
             reason = "stop loss"
             exit_price = position.stop_price
         elif age_seconds >= self.tracker.settings.max_hold_seconds:
             reason = "max hold"
 
         if not reason:
+            strategy = strategies_by_name.get(position.strategy)
+            if strategy:
+                decision = strategy.should_exit(state, position)
+                if decision:
+                    reason = decision.reason
+
+        if not reason:
             return None
 
-        fill = self.tracker.record_exit(bar.symbol, position.shares, exit_price, bar.end_ms, reason)
+        fill = self.tracker.record_exit(state.symbol, position.shares, exit_price, state.last_event_ms, reason)
         if fill:
             LOG.info("LOCAL PAPER SELL %s %s @ %.2f | pnl %.2f | %s", fill.shares, fill.symbol, fill.price, fill.pnl, fill.reason)
         return fill
@@ -170,38 +183,49 @@ class AlpacaPaperExecutor:
         LOG.info("ALPACA PAPER BUY %s %s @ %.2f | order=%s", shares, signal.symbol, fill_price, order.id)
         return fill
 
-    def manage_exit(self, bar: Bar) -> Fill | None:
-        position = self.tracker.positions.get(bar.symbol)
+    def manage_exit(self, state, strategies_by_name) -> Fill | None:
+        position = self.tracker.positions.get(state.symbol)
         if not position:
             return None
 
-        age_seconds = (bar.end_ms - position.entry_ms) / 1000
+        current_price = state.last_price
+        if current_price is None or state.last_event_ms is None:
+            return None
+
+        age_seconds = (state.last_event_ms - position.entry_ms) / 1000
         reason = ""
 
-        if bar.high >= position.target_price:
+        if current_price >= position.target_price:
             reason = "target profit"
-        elif bar.low <= position.stop_price:
+        elif current_price <= position.stop_price:
             reason = "stop loss"
         elif age_seconds >= self.settings.max_hold_seconds:
             reason = "max hold"
 
         if not reason:
+            strategy = strategies_by_name.get(position.strategy)
+            if strategy:
+                decision = strategy.should_exit(state, position)
+                if decision:
+                    reason = decision.reason
+
+        if not reason:
             return None
 
         request = MarketOrderRequest(
-            symbol=bar.symbol,
+            symbol=state.symbol,
             qty=position.shares,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
-            client_order_id=f"codex-{bar.symbol.lower()}-{bar.end_ms}-sell",
+            client_order_id=f"codex-{state.symbol.lower()}-{state.last_event_ms}-sell",
         )
         order = self.clients.trading.submit_order(order_data=request)
-        fill_price = float(order.filled_avg_price or bar.close)
+        fill_price = float(order.filled_avg_price or current_price)
         fill = self.tracker.record_exit(
-            bar.symbol,
+            state.symbol,
             position.shares,
             fill_price,
-            bar.end_ms,
+            state.last_event_ms,
             f"{reason} | alpaca_order_id={order.id}",
         )
         if fill:

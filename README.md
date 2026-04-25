@@ -23,6 +23,7 @@ export ALPACA_SECRET_KEY=...
 export ALPACA_PAPER=true
 export ALPACA_DATA_FEED=iex
 export EXECUTION_MODE=local
+export STRATEGIES=spike,opening_impulse
 ```
 
 ## Alpaca Smoke Test
@@ -42,13 +43,23 @@ venv/bin/python scripts/smoke_alpaca.py stream --symbols AAPL,MSFT --seconds 15 
 Submit one tiny paper order and cancel it right away if you are outside market hours:
 
 ```bash
+export EXECUTION_MODE=alpaca_paper
 venv/bin/python scripts/smoke_alpaca_order.py --symbol AAPL --qty 1 --cancel-after-submit
 ```
+
+If you intentionally want to bypass the execution-mode guard for a one-off test, add `--force-submit`.
 
 Execution modes:
 
 - `EXECUTION_MODE=local`: simulate fills only inside the app
 - `EXECUTION_MODE=alpaca_paper`: submit market orders to Alpaca paper trading
+
+Strategies:
+
+- `spike`: short-window price/volume spike detection
+- `opening_impulse`: market-open, quote-velocity, spread, and volume-spike based opening impulse capture
+
+Choose one or many with `STRATEGIES=spike,opening_impulse`.
 
 ## Run
 

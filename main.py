@@ -8,7 +8,7 @@ from config import load_settings
 from execution import build_executor
 from models import Bar, Quote
 from risk import RiskManager
-from strategy import SpikeStrategy
+from strategies import build_strategies
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
@@ -20,12 +20,18 @@ async def main() -> None:
     settings = load_settings()
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
     stream = AlpacaStockStream(settings)
-    strategy = SpikeStrategy(settings)
+    strategies = build_strategies(settings)
+    strategies_by_name = {strategy.name: strategy for strategy in strategies}
     executor = build_executor(settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
 
-    logging.info("Monitoring %s with execution mode %s", ", ".join(settings.symbols), settings.execution_mode)
+    logging.info(
+        "Monitoring %s with execution mode %s and strategies %s",
+        ", ".join(settings.symbols),
+        settings.execution_mode,
+        ", ".join(settings.strategy_names),
+    )
 
     async for event in stream.events():
         state = states.get(event.symbol)
@@ -34,28 +40,37 @@ async def main() -> None:
 
         if isinstance(event, Quote):
             state.update_quote(event)
+        elif isinstance(event, Bar):
+            state.add_bar(event)
+        else:
             continue
 
-        if isinstance(event, Bar):
-            state.add_bar(event)
-            executor.manage_exit(event)
+        executor.manage_exit(state, strategies_by_name)
 
+        for strategy in strategies:
             signal = strategy.evaluate(state)
             if not signal:
                 continue
 
             decision = risk.check_entry(signal, executor.open_symbols(), executor.realized_pnl)
             if not decision.allowed:
-                logging.info("Signal rejected %s %s: %s", signal.symbol, signal.side, decision.reason)
+                logging.info(
+                    "Signal rejected %s %s from %s: %s",
+                    signal.symbol,
+                    signal.side,
+                    signal.strategy,
+                    decision.reason,
+                )
                 continue
 
             note = await asyncio.to_thread(reviewer.review, signal)
             if note:
-                logging.info("AI review %s: %s", signal.symbol, note)
+                logging.info("AI review %s %s: %s", signal.strategy, signal.symbol, note)
 
             fill = executor.buy(signal)
             if fill:
                 risk.record_trade(signal.symbol, signal.timestamp_ms)
+                break
 
 
 if __name__ == "__main__":

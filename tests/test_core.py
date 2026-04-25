@@ -1,11 +1,14 @@
 import unittest
+from collections import deque
 
 from candle import SymbolState
 from config import Settings
-from execution import LocalPaperExecutor, PositionTracker
+from execution import LocalPaperExecutor, Position, PositionTracker
 from models import Bar, Quote
 from risk import RiskManager
-from strategy import SpikeStrategy
+from strategies import build_strategies
+from strategies.opening_impulse import OpeningImpulseStrategy
+from strategies.spike import SpikeStrategy
 
 
 def bar(symbol: str, close: float, volume: float, end_ms: int) -> Bar:
@@ -60,12 +63,86 @@ class CoreTradingTests(unittest.TestCase):
         signal = SpikeStrategy(settings).evaluate(state)
 
         broker.buy(signal)
-        exit_bar = Bar("AAPL", open=100.50, high=101.50, low=100.20, close=101.20, volume=200, vwap=101.0, start_ms=8000, end_ms=9000)
-        fill = broker.manage_exit(exit_bar)
+        state.add_bar(Bar("AAPL", open=100.50, high=101.60, low=100.20, close=101.50, volume=200, vwap=101.2, start_ms=8000, end_ms=9000))
+        fill = broker.manage_exit(state, {"spike": SpikeStrategy(settings)})
 
         self.assertIsNotNone(fill)
         self.assertEqual(fill.side, "SELL")
         self.assertGreater(fill.pnl, 0)
+
+    def test_opening_impulse_emits_buy_after_fast_rise(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_window_seconds=45,
+            opening_impulse_min_quotes=8,
+            opening_impulse_change_pct=0.01,
+            opening_impulse_volume_ratio=1.5,
+        )
+        state = SymbolState("AAPL")
+        base_ms = 1777037400000  # 2026-04-24 13:30:00 UTC
+        for index in range(4):
+            state.add_bar(bar("AAPL", close=100.0 + (index * 0.1), volume=100, end_ms=base_ms + ((index + 1) * 60_000)))
+        state.add_bar(bar("AAPL", close=100.4, volume=250, end_ms=base_ms + (5 * 60_000)))
+
+        for index in range(8):
+            bid = 100.00 + (index * 0.15)
+            ask = bid + 0.02
+            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=20, ask_size=20, timestamp_ms=base_ms + (index * 5_000)))
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "opening_impulse")
+        self.assertEqual(signal.side, "BUY")
+
+    def test_opening_impulse_exit_on_momentum_fade(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.quotes = deque(
+            [
+                Quote("AAPL", bid=101.05, ask=101.07, bid_size=20, ask_size=20, timestamp_ms=10_000),
+                Quote("AAPL", bid=101.00, ask=101.02, bid_size=20, ask_size=20, timestamp_ms=12_000),
+                Quote("AAPL", bid=100.97, ask=100.99, bid_size=20, ask_size=20, timestamp_ms=14_000),
+                Quote("AAPL", bid=100.96, ask=100.98, bid_size=20, ask_size=20, timestamp_ms=16_000),
+            ],
+            maxlen=2400,
+        )
+        state.quote = state.quotes[-1]
+        state.last_event_kind = "quote"
+        state.last_event_ms = state.quote.timestamp_ms
+
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=101.0,
+            entry_ms=5_000,
+            target_price=103.02,
+            stop_price=100.4,
+        )
+
+        decision = strategy.should_exit(state, broker.tracker.positions["AAPL"])
+
+        self.assertIsNotNone(decision)
+        self.assertIn("momentum", decision.reason)
+
+    def test_build_strategies_returns_enabled_strategies(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            strategy_names=["spike", "opening_impulse"],
+        )
+
+        strategies = build_strategies(settings)
+
+        self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse"])
 
 
 if __name__ == "__main__":

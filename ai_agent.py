@@ -20,6 +20,7 @@ class SignalReviewer:
             return None
 
         payload = {
+            "strategy": signal.strategy,
             "symbol": signal.symbol,
             "side": signal.side,
             "price": signal.price,

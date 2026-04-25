@@ -31,19 +31,26 @@ def compact_order(order) -> dict:
     }
 
 
-def run(symbol: str, qty: int, cancel_after_submit: bool, wait_seconds: float) -> None:
+def run(symbol: str, qty: int, cancel_after_submit: bool, wait_seconds: float, force_submit: bool) -> None:
     settings = load_settings()
+    if settings.execution_mode != "alpaca_paper" and not force_submit:
+        raise SystemExit(
+            "Refusing to submit an Alpaca paper order while EXECUTION_MODE is not 'alpaca_paper'. "
+            "Set EXECUTION_MODE=alpaca_paper or pass --force-submit."
+        )
+
     clients = make_clients(settings)
     clock = clients.trading.get_clock()
-
     print(
         json.dumps(
             {
                 "paper": settings.alpaca_paper,
+                "execution_mode": settings.execution_mode,
                 "clock_is_open": clock.is_open,
                 "symbol": symbol,
                 "qty": qty,
                 "cancel_after_submit": cancel_after_submit,
+                "force_submit": force_submit,
             },
             indent=2,
             sort_keys=True,
@@ -80,6 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol", default="AAPL")
     parser.add_argument("--qty", type=int, default=1)
     parser.add_argument("--cancel-after-submit", action="store_true")
+    parser.add_argument("--force-submit", action="store_true", help="Override EXECUTION_MODE safety check.")
     parser.add_argument("--wait-seconds", type=float, default=2.0)
     return parser.parse_args()
 
@@ -91,6 +99,7 @@ def main() -> None:
         qty=args.qty,
         cancel_after_submit=args.cancel_after_submit,
         wait_seconds=args.wait_seconds,
+        force_submit=args.force_submit,
     )
 
 

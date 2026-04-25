@@ -33,7 +33,13 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class ExitDecision:
+    reason: str
+
+
+@dataclass(frozen=True)
 class Signal:
+    strategy: str
     symbol: str
     side: str
     price: float
