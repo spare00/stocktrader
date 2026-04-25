@@ -24,7 +24,7 @@ def bar(symbol: str, close: float, volume: float, end_ms: int) -> Bar:
 
 class CoreTradingTests(unittest.TestCase):
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
-        settings = Settings(massive_api_key="test", symbols=["AAPL"])
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         state = SymbolState("AAPL")
         state.update_quote(Quote("AAPL", bid=100.00, ask=100.05, bid_size=10, ask_size=10, timestamp_ms=1))
 
@@ -38,7 +38,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.side, "BUY")
 
     def test_risk_rejects_short_entries(self):
-        settings = Settings(massive_api_key="test", symbols=["AAPL"])
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         state = SymbolState("AAPL")
         for index in range(6):
             state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=index * 1000))
@@ -51,7 +51,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("short", decision.reason)
 
     def test_paper_broker_exits_at_target(self):
-        settings = Settings(massive_api_key="test", symbols=["AAPL"], target_profit_pct=0.01)
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], target_profit_pct=0.01)
         broker = PaperBroker(settings)
         state = SymbolState("AAPL")
         for index in range(6):

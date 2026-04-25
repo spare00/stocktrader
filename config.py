@@ -19,12 +19,16 @@ def _int_env(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    massive_api_key: str | None = os.getenv("MASSIVE_API_KEY")
+    alpaca_api_key: str | None = os.getenv("ALPACA_API_KEY")
+    alpaca_secret_key: str | None = os.getenv("ALPACA_SECRET_KEY")
+    alpaca_paper: bool = os.getenv("ALPACA_PAPER", "true").lower() in {"1", "true", "yes", "on"}
+    alpaca_data_feed: str = os.getenv("ALPACA_DATA_FEED", "iex").lower()
+    alpaca_stream_url: str | None = os.getenv("ALPACA_STREAM_URL")
+
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
     symbols: list[str] = field(default_factory=lambda: _csv_env("SYMBOLS", "AAPL,MSFT,NVDA,TSLA,META"))
-    websocket_url: str = os.getenv("MASSIVE_WS_URL", "wss://socket.massive.com/stocks")
 
     spike_lookback_seconds: int = _int_env("SPIKE_LOOKBACK_SECONDS", 5)
     spike_change_pct: float = _float_env("SPIKE_CHANGE_PCT", 0.0025)
@@ -46,8 +50,9 @@ class Settings:
 
 def load_settings() -> Settings:
     settings = Settings()
-    if not settings.massive_api_key:
-        raise ValueError("MASSIVE_API_KEY is required for live market data.")
     if not settings.symbols:
         raise ValueError("SYMBOLS must include at least one ticker.")
+    if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+        raise ValueError("ALPACA_API_KEY and ALPACA_SECRET_KEY are required.")
+
     return settings

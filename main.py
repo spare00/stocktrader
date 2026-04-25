@@ -2,9 +2,9 @@ import asyncio
 import logging
 
 from ai_agent import SignalReviewer
+from alpaca_stream import AlpacaStockStream, AlpacaStreamAuthError
 from candle import SymbolState
 from config import load_settings
-from data_stream import MassiveStockStream, MassiveStreamAuthError
 from execution import PaperBroker
 from models import Bar, Quote
 from risk import RiskManager
@@ -19,13 +19,13 @@ async def main() -> None:
 
     settings = load_settings()
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
-    stream = MassiveStockStream(settings)
+    stream = AlpacaStockStream(settings)
     strategy = SpikeStrategy(settings)
     broker = PaperBroker(settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
 
-    logging.info("Monitoring %s in paper mode", ", ".join(settings.symbols))
+    logging.info("Monitoring %s in Alpaca paper mode", ", ".join(settings.symbols))
 
     async for event in stream.events():
         state = states.get(event.symbol)
@@ -61,7 +61,7 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except MassiveStreamAuthError as exc:
-        logging.error("Massive WebSocket authentication failed: %s", exc)
+    except AlpacaStreamAuthError as exc:
+        logging.error("Alpaca stream authentication failed: %s", exc)
     except KeyboardInterrupt:
         logging.info("Stopped")
