@@ -10,6 +10,7 @@ from config import Settings
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 from models import Bar, Quote
 from risk import RiskManager
+from runtime_safety import flatten_on_shutdown
 from strategies import build_strategies
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
@@ -292,6 +293,17 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(executor.tracker.positions["AAPL"].shares, 7)
         self.assertEqual(executor.tracker.positions["AAPL"].entry_price, 101.25)
 
+    def test_alpaca_syncs_account_cash_for_sizing(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], starting_cash=25_000.0)
+        executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+        executor.settings = settings
+        executor.tracker = PositionTracker(settings)
+        executor.clients = FakeClients([], cash="4321.50")
+
+        executor._sync_account_cash()
+
+        self.assertEqual(executor.tracker.cash, 4321.50)
+
     def test_alpaca_startup_cancels_target_open_orders(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
@@ -345,6 +357,16 @@ class CoreTradingTests(unittest.TestCase):
             self.assertEqual(executor.clients.trading.submitted_orders[0].symbol, "AAPL")
         finally:
             remove_fake_alpaca_modules()
+
+    def test_shutdown_flatten_only_runs_inside_close_window(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], flatten_before_close_minutes=5)
+        executor = FakeExecutor()
+        states = {"AAPL": SymbolState("AAPL")}
+
+        flatten_on_shutdown(settings, executor, states, {}, now_ms=market_ms(2026, 4, 24, 15, 54))
+        flatten_on_shutdown(settings, executor, states, {}, now_ms=market_ms(2026, 4, 24, 15, 55))
+
+        self.assertEqual(executor.exit_calls, [("AAPL", market_ms(2026, 4, 24, 15, 55))])
 
     def test_opening_impulse_emits_buy_after_fast_rise(self):
         settings = Settings(
@@ -487,16 +509,21 @@ class FakeTrading:
         orders: list[FakeOrder],
         positions: list[FakePosition] | None = None,
         open_orders: list[FakeOrder] | None = None,
+        cash: str = "10000.00",
     ):
         self.orders = orders
         self.positions = positions or []
         self.open_orders = open_orders or []
+        self.cash = cash
         self.cancel_called = False
         self.canceled_order_ids = []
         self.submitted_orders = []
 
     def get_clock(self):
         return types.SimpleNamespace(is_open=True)
+
+    def get_account(self):
+        return types.SimpleNamespace(cash=self.cash)
 
     def get_all_positions(self) -> list[FakePosition]:
         return self.positions
@@ -522,8 +549,17 @@ class FakeClients:
         orders: list[FakeOrder],
         positions: list[FakePosition] | None = None,
         open_orders: list[FakeOrder] | None = None,
+        cash: str = "10000.00",
     ):
-        self.trading = FakeTrading(orders, positions=positions, open_orders=open_orders)
+        self.trading = FakeTrading(orders, positions=positions, open_orders=open_orders, cash=cash)
+
+
+class FakeExecutor:
+    def __init__(self):
+        self.exit_calls = []
+
+    def manage_exit(self, state, strategies_by_name, now_ms=None):
+        self.exit_calls.append((state.symbol, now_ms))
 
 
 def install_fake_alpaca_modules() -> None:

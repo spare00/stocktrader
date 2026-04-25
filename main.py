@@ -8,6 +8,7 @@ from config import load_settings
 from execution import build_executor
 from models import Bar, Heartbeat, Quote
 from risk import RiskManager
+from runtime_safety import flatten_on_shutdown, manage_all_exits
 from strategies import build_strategies
 
 
@@ -37,51 +38,52 @@ async def main() -> None:
         ", ".join(settings.strategy_names),
     )
 
-    async for event in stream.events():
-        if isinstance(event, Heartbeat):
-            for exit_state in states.values():
-                executor.manage_exit(exit_state, strategies_by_name, event.timestamp_ms)
-            continue
-
-        state = states.get(event.symbol)
-        if state is None:
-            continue
-
-        if isinstance(event, Quote):
-            state.update_quote(event)
-        elif isinstance(event, Bar):
-            state.add_bar(event)
-        else:
-            continue
-
-        event_ms = state.last_event_ms
-        for exit_state in states.values():
-            executor.manage_exit(exit_state, strategies_by_name, event_ms)
-
-        for strategy in strategies:
-            signal = strategy.evaluate(state)
-            if not signal:
+    try:
+        async for event in stream.events():
+            if isinstance(event, Heartbeat):
+                manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms)
                 continue
 
-            decision = risk.check_entry(signal, executor.open_symbols(), executor.total_pnl(mark_prices(states)))
-            if not decision.allowed:
-                logging.info(
-                    "Signal rejected %s %s from %s: %s",
-                    signal.symbol,
-                    signal.side,
-                    signal.strategy,
-                    decision.reason,
-                )
+            state = states.get(event.symbol)
+            if state is None:
                 continue
 
-            note = await asyncio.to_thread(reviewer.review, signal)
-            if note:
-                logging.info("AI review %s %s: %s", signal.strategy, signal.symbol, note)
+            if isinstance(event, Quote):
+                state.update_quote(event)
+            elif isinstance(event, Bar):
+                state.add_bar(event)
+            else:
+                continue
 
-            fill = executor.buy(signal)
-            if fill:
-                risk.record_trade(signal.symbol, signal.timestamp_ms)
-                break
+            event_ms = state.last_event_ms
+            manage_all_exits(executor, states, strategies_by_name, event_ms)
+
+            for strategy in strategies:
+                signal = strategy.evaluate(state)
+                if not signal:
+                    continue
+
+                decision = risk.check_entry(signal, executor.open_symbols(), executor.total_pnl(mark_prices(states)))
+                if not decision.allowed:
+                    logging.info(
+                        "Signal rejected %s %s from %s: %s",
+                        signal.symbol,
+                        signal.side,
+                        signal.strategy,
+                        decision.reason,
+                    )
+                    continue
+
+                note = await asyncio.to_thread(reviewer.review, signal)
+                if note:
+                    logging.info("AI review %s %s: %s", signal.strategy, signal.symbol, note)
+
+                fill = executor.buy(signal)
+                if fill:
+                    risk.record_trade(signal.symbol, signal.timestamp_ms)
+                    break
+    finally:
+        flatten_on_shutdown(settings, executor, states, strategies_by_name)
 
 
 if __name__ == "__main__":

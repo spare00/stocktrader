@@ -190,6 +190,7 @@ class AlpacaPaperExecutor:
         from alpaca_client import make_clients
 
         self.clients = make_clients(self.settings)
+        self._sync_account_cash()
         self._reconcile_target_positions()
         self._cancel_target_open_orders()
 
@@ -310,6 +311,18 @@ class AlpacaPaperExecutor:
 
     def _market_is_open(self) -> bool:
         return bool(self.clients.trading.get_clock().is_open)
+
+    def _sync_account_cash(self) -> None:
+        try:
+            account = self.clients.trading.get_account()
+        except Exception:
+            LOG.exception("Failed to sync Alpaca account cash on startup")
+            return
+
+        try:
+            self.tracker.cash = float(account.cash)
+        except (TypeError, ValueError):
+            LOG.warning("Ignoring Alpaca account cash value: %s", getattr(account, "cash", None))
 
     def _reconcile_target_positions(self) -> None:
         target_symbols = set(self.settings.symbols)
