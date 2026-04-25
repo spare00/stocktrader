@@ -2,16 +2,14 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-
-from alpaca_client import make_clients
+from alpaca_client import get_recent_bars, make_clients
 from config import load_settings
 
 
@@ -53,14 +51,14 @@ def rest_check(symbols: list[str]) -> None:
         )
     )
 
-    request = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame.Minute, limit=5, feed=clients.feed)
-    bars = clients.historical.get_stock_bars(request)
     print("Recent bars")
-    for symbol, items in bars.data.items():
+    recent_bars = get_recent_bars(settings, symbols, limit=5)
+    for symbol in symbols:
+        items = recent_bars.get(symbol, [])
         compact = [
             {
                 "symbol": item.symbol,
-                "time": item.timestamp.isoformat(),
+                "time": datetime.fromtimestamp(item.start_ms / 1000, tz=timezone.utc).isoformat(),
                 "open": item.open,
                 "high": item.high,
                 "low": item.low,

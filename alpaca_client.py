@@ -97,16 +97,17 @@ def get_latest_quotes(settings: Settings, symbols: Iterable[str]) -> dict[str, Q
     return {symbol: to_quote(quote) for symbol, quote in response.items()}
 
 
-def get_recent_bars(settings: Settings, symbols: Iterable[str], minutes: int = 60) -> dict[str, list[Bar]]:
+def get_recent_bars(settings: Settings, symbols: Iterable[str], limit: int = 5) -> dict[str, list[Bar]]:
     clients = make_clients(settings)
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(minutes=minutes)
-    request = StockBarsRequest(
-        symbol_or_symbols=list(symbols),
-        timeframe=TimeFrame.Minute,
-        start=start,
-        end=end,
-        feed=clients.feed,
-    )
-    bars = clients.historical.get_stock_bars(request)
-    return {symbol: [to_bar(item) for item in items] for symbol, items in bars.data.items()}
+    results: dict[str, list[Bar]] = {}
+    for symbol in symbols:
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute,
+            limit=limit,
+            feed=clients.feed,
+        )
+        bars = clients.historical.get_stock_bars(request)
+        items = bars.data.get(symbol, [])
+        results[symbol] = [to_bar(item) for item in items]
+    return results
