@@ -1,5 +1,7 @@
 import unittest
 from collections import deque
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from candle import SymbolState
 from config import Settings
@@ -9,6 +11,13 @@ from risk import RiskManager
 from strategies import build_strategies
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
+
+
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def market_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=MARKET_TZ).timestamp() * 1000)
 
 
 def bar(symbol: str, close: float, volume: float, end_ms: int) -> Bar:
@@ -27,7 +36,7 @@ def bar(symbol: str, close: float, volume: float, end_ms: int) -> Bar:
 
 class CoreTradingTests(unittest.TestCase):
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
         state = SymbolState("AAPL")
         state.update_quote(Quote("AAPL", bid=100.00, ask=100.05, bid_size=10, ask_size=10, timestamp_ms=1))
 
@@ -41,7 +50,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.side, "BUY")
 
     def test_risk_rejects_short_entries(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
         state = SymbolState("AAPL")
         for index in range(6):
             state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=index * 1000))
@@ -54,7 +63,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("short", decision.reason)
 
     def test_paper_broker_exits_at_target(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], target_profit_pct=0.01)
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            target_profit_pct=0.01,
+            regular_market_only=False,
+        )
         broker = LocalPaperExecutor(PositionTracker(settings))
         state = SymbolState("AAPL")
         for index in range(6):
@@ -102,7 +117,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.side, "BUY")
 
     def test_opening_impulse_exit_on_momentum_fade(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
         strategy = OpeningImpulseStrategy(settings)
         state = SymbolState("AAPL")
         state.quotes = deque(
@@ -145,6 +160,32 @@ class CoreTradingTests(unittest.TestCase):
         strategies = build_strategies(settings)
 
         self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse"])
+
+    def test_risk_rejects_entries_outside_regular_market_hours(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 16, 1)))
+
+        decision = RiskManager(settings).check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("regular market", decision.reason)
+
+    def test_risk_allows_entries_during_regular_market_hours(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 10, 0)))
+
+        decision = RiskManager(settings).check_entry(signal, set(), 0)
+
+        self.assertTrue(decision.allowed)
+
+    @staticmethod
+    def _spike_state(base_ms: int) -> SymbolState:
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=100.00, ask=100.05, bid_size=10, ask_size=10, timestamp_ms=base_ms))
+        for index in range(6):
+            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=base_ms + (index * 1000)))
+        state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=base_ms + 7000))
+        return state
 
 
 if __name__ == "__main__":

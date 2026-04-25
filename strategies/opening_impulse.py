@@ -1,10 +1,9 @@
 from collections import deque
-from datetime import datetime
 from statistics import median
-from zoneinfo import ZoneInfo
 
 from candle import SymbolState
 from config import Settings
+from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategies.base import Strategy
 
@@ -14,7 +13,7 @@ class OpeningImpulseStrategy(Strategy):
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.market_tz = ZoneInfo("America/New_York")
+        self.market_tz = MARKET_TZ
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "quote":

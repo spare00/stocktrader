@@ -6,6 +6,7 @@ from alpaca.trading.requests import MarketOrderRequest
 
 from alpaca_client import make_clients
 from config import Settings
+from market_hours import is_regular_market_time
 from models import Bar, Signal
 
 
@@ -95,6 +96,10 @@ class LocalPaperExecutor:
         return self.tracker.open_symbols()
 
     def buy(self, signal: Signal) -> Fill | None:
+        if self.tracker.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
+            LOG.info("Skipping %s: outside regular market hours", signal.symbol)
+            return None
+
         if signal.symbol in self.tracker.positions:
             return None
 
@@ -114,6 +119,8 @@ class LocalPaperExecutor:
 
         current_price = state.last_price
         if current_price is None or state.last_event_ms is None:
+            return None
+        if self.tracker.settings.regular_market_only and not is_regular_market_time(state.last_event_ms):
             return None
 
         age_seconds = (state.last_event_ms - position.entry_ms) / 1000
@@ -162,6 +169,10 @@ class AlpacaPaperExecutor:
         return self.tracker.open_symbols()
 
     def buy(self, signal: Signal) -> Fill | None:
+        if self.settings.regular_market_only and not self._market_is_open():
+            LOG.info("Skipping %s: Alpaca market clock is closed", signal.symbol)
+            return None
+
         if signal.symbol in self.tracker.positions:
             return None
 
@@ -190,6 +201,8 @@ class AlpacaPaperExecutor:
 
         current_price = state.last_price
         if current_price is None or state.last_event_ms is None:
+            return None
+        if self.settings.regular_market_only and not self._market_is_open():
             return None
 
         age_seconds = (state.last_event_ms - position.entry_ms) / 1000
@@ -231,6 +244,9 @@ class AlpacaPaperExecutor:
         if fill:
             LOG.info("ALPACA PAPER SELL %s %s @ %.2f | order=%s | %s", fill.shares, fill.symbol, fill.price, order.id, reason)
         return fill
+
+    def _market_is_open(self) -> bool:
+        return bool(self.clients.trading.get_clock().is_open)
 
 
 def build_executor(settings: Settings):

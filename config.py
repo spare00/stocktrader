@@ -51,6 +51,7 @@ class Settings:
     max_open_positions: int = _int_env("MAX_OPEN_POSITIONS", 2)
     trade_cooldown_seconds: int = _int_env("TRADE_COOLDOWN_SECONDS", 60)
     daily_max_loss: float = _float_env("DAILY_MAX_LOSS", 250.0)
+    regular_market_only: bool = os.getenv("REGULAR_MARKET_ONLY", "true").lower() in {"1", "true", "yes", "on"}
 
     opening_impulse_start_minute: int = _int_env("OPENING_IMPULSE_START_MINUTE", 0)
     opening_impulse_end_minute: int = _int_env("OPENING_IMPULSE_END_MINUTE", 30)

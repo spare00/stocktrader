@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from config import Settings
+from market_hours import is_regular_market_time
 from models import Signal
 
 
@@ -16,6 +17,9 @@ class RiskManager:
     last_trade_ms: dict[str, int] = field(default_factory=dict)
 
     def check_entry(self, signal: Signal, open_symbols: set[str], realized_pnl: float) -> RiskDecision:
+        if self.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
+            return RiskDecision(False, "outside regular market hours")
+
         if realized_pnl <= -self.settings.daily_max_loss:
             return RiskDecision(False, "daily loss limit reached")
 

@@ -76,6 +76,7 @@ Recommended baseline for a “reliable first 1%” style:
 - `STOP_LOSS_PCT=0.005`
 - `MAX_OPEN_POSITIONS=2`
 - `TRADE_COOLDOWN_SECONDS=60`
+- `REGULAR_MARKET_ONLY=true`
 
 The default opening-impulse tuning is intentionally stricter than before: shorter trading window, tighter spreads, stronger volume requirement, and faster momentum-fade exits.
 
@@ -106,3 +107,4 @@ Accepted paper entries use:
 - stop loss via `STOP_LOSS_PCT`
 - time exit via `MAX_HOLD_SECONDS`
 - max position count, cash sizing, symbol cooldown, and daily loss limit
+- regular-session gating via `REGULAR_MARKET_ONLY=true`
