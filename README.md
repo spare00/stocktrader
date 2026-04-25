@@ -39,6 +39,12 @@ Check the Alpaca live stream:
 venv/bin/python scripts/smoke_alpaca.py stream --symbols AAPL,MSFT --seconds 15 --max-messages 10
 ```
 
+Submit one tiny paper order and cancel it right away if you are outside market hours:
+
+```bash
+venv/bin/python scripts/smoke_alpaca_order.py --symbol AAPL --qty 1 --cancel-after-submit
+```
+
 Execution modes:
 
 - `EXECUTION_MODE=local`: simulate fills only inside the app
