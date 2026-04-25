@@ -77,6 +77,7 @@ Recommended baseline for a “reliable first 1%” style:
 - `MAX_OPEN_POSITIONS=2`
 - `TRADE_COOLDOWN_SECONDS=60`
 - `REGULAR_MARKET_ONLY=true`
+- `FLATTEN_BEFORE_CLOSE_MINUTES=5`
 
 The default opening-impulse tuning is intentionally stricter than before: shorter trading window, tighter spreads, stronger volume requirement, and faster momentum-fade exits.
 
@@ -93,6 +94,16 @@ venv/bin/python main.py
 venv/bin/python -m unittest discover -s tests -v
 ```
 
+## Replay
+
+Replay saved bar and quote events through the local paper engine:
+
+```bash
+venv/bin/python scripts/replay_csv.py events.csv --symbols AAPL,MSFT
+```
+
+The CSV needs `type`, `symbol`, and `timestamp_ms`. Quote rows use `bid`, `ask`, `bid_size`, and `ask_size`. Bar rows use `open`, `high`, `low`, `close`, `volume`, and optional `vwap`, `start_ms`, `end_ms`.
+
 ## Signal Logic
 
 The first strategy watches each symbol for:
@@ -108,3 +119,4 @@ Accepted paper entries use:
 - time exit via `MAX_HOLD_SECONDS`
 - max position count, cash sizing, symbol cooldown, and daily loss limit
 - regular-session gating via `REGULAR_MARKET_ONLY=true`
+- end-of-day flattening via `FLATTEN_BEFORE_CLOSE_MINUTES`

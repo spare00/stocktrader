@@ -85,6 +85,94 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.side, "SELL")
         self.assertGreater(fill.pnl, 0)
 
+    def test_paper_broker_flattens_before_close(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            flatten_before_close_minutes=5,
+            max_hold_seconds=3600,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="spike",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 15, 30),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=100.19,
+                ask=100.21,
+                bid_size=20,
+                ask_size=20,
+                timestamp_ms=market_ms(2026, 4, 24, 15, 55),
+            )
+        )
+
+        fill = broker.manage_exit(state, {"spike": SpikeStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "end-of-day flatten")
+
+    def test_paper_broker_does_not_flatten_too_early(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            flatten_before_close_minutes=5,
+            max_hold_seconds=3600,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="spike",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 15, 30),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=100.19,
+                ask=100.21,
+                bid_size=20,
+                ask_size=20,
+                timestamp_ms=market_ms(2026, 4, 24, 15, 54),
+            )
+        )
+
+        fill = broker.manage_exit(state, {"spike": SpikeStrategy(settings)})
+
+        self.assertIsNone(fill)
+
+    def test_position_tracker_keeps_remaining_shares_after_partial_exit(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        tracker = PositionTracker(settings)
+        tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="spike",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+
+        fill = tracker.record_exit("AAPL", shares=4, price=100.5, timestamp_ms=market_ms(2026, 4, 24, 10, 1), reason="partial")
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.shares, 4)
+        self.assertEqual(tracker.positions["AAPL"].shares, 6)
+
     def test_opening_impulse_emits_buy_after_fast_rise(self):
         settings = Settings(
             alpaca_api_key="test",

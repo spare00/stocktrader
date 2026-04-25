@@ -52,6 +52,9 @@ class Settings:
     trade_cooldown_seconds: int = _int_env("TRADE_COOLDOWN_SECONDS", 60)
     daily_max_loss: float = _float_env("DAILY_MAX_LOSS", 250.0)
     regular_market_only: bool = os.getenv("REGULAR_MARKET_ONLY", "true").lower() in {"1", "true", "yes", "on"}
+    flatten_before_close_minutes: int = _int_env("FLATTEN_BEFORE_CLOSE_MINUTES", 5)
+    alpaca_fill_timeout_seconds: float = _float_env("ALPACA_FILL_TIMEOUT_SECONDS", 3.0)
+    alpaca_fill_poll_seconds: float = _float_env("ALPACA_FILL_POLL_SECONDS", 0.25)
 
     opening_impulse_start_minute: int = _int_env("OPENING_IMPULSE_START_MINUTE", 0)
     opening_impulse_end_minute: int = _int_env("OPENING_IMPULSE_END_MINUTE", 30)
