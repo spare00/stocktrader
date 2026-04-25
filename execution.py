@@ -75,6 +75,17 @@ class PositionTracker:
         self.fills.append(fill)
         return fill
 
+    def record_reconciled_position(self, symbol: str, shares: int, entry_price: float, timestamp_ms: int) -> None:
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            strategy="reconciled",
+            shares=shares,
+            entry_price=entry_price,
+            entry_ms=timestamp_ms,
+            target_price=entry_price * (1 + self.settings.target_profit_pct),
+            stop_price=entry_price * (1 - self.settings.stop_loss_pct),
+        )
+
     def record_exit(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str) -> Fill | None:
         position = self.positions.get(symbol)
         if not position:
@@ -179,6 +190,8 @@ class AlpacaPaperExecutor:
         from alpaca_client import make_clients
 
         self.clients = make_clients(self.settings)
+        self._reconcile_target_positions()
+        self._cancel_target_open_orders()
 
     @property
     def realized_pnl(self) -> float:
@@ -237,17 +250,21 @@ class AlpacaPaperExecutor:
         if not position:
             return None
 
-        current_price = state.last_price
-        if current_price is None or state.last_event_ms is None:
-            return None
         event_ms = now_ms or state.last_event_ms
+        if event_ms is None:
+            return None
         if self.settings.regular_market_only and not self._market_is_open():
+            return None
+
+        current_price = state.last_price
+        flatten = should_flatten_before_close(event_ms, self.settings.flatten_before_close_minutes)
+        if current_price is None and not flatten:
             return None
 
         age_seconds = (event_ms - position.entry_ms) / 1000
         reason = ""
 
-        if should_flatten_before_close(event_ms, self.settings.flatten_before_close_minutes):
+        if flatten:
             reason = "end-of-day flatten"
         elif current_price >= position.target_price:
             reason = "target profit"
@@ -293,6 +310,51 @@ class AlpacaPaperExecutor:
 
     def _market_is_open(self) -> bool:
         return bool(self.clients.trading.get_clock().is_open)
+
+    def _reconcile_target_positions(self) -> None:
+        target_symbols = set(self.settings.symbols)
+        now_ms = int(time.time() * 1000)
+        try:
+            positions = self.clients.trading.get_all_positions()
+        except Exception:
+            LOG.exception("Failed to reconcile Alpaca positions on startup")
+            return
+
+        for position in positions:
+            symbol = str(getattr(position, "symbol", "")).upper()
+            if symbol not in target_symbols:
+                continue
+
+            shares = self._position_shares(position)
+            if shares <= 0:
+                LOG.warning("Ignoring non-long reconciled Alpaca position %s qty=%s", symbol, getattr(position, "qty", None))
+                continue
+
+            entry_price = self._position_entry_price(position)
+            if entry_price is None:
+                LOG.warning("Ignoring reconciled Alpaca position %s without entry price", symbol)
+                continue
+
+            self.tracker.record_reconciled_position(symbol, shares, entry_price, now_ms)
+            LOG.info("Reconciled Alpaca position %s %s @ %.2f", shares, symbol, entry_price)
+
+    def _cancel_target_open_orders(self) -> None:
+        target_symbols = set(self.settings.symbols)
+        try:
+            orders = self.clients.trading.get_orders()
+        except Exception:
+            LOG.exception("Failed to inspect Alpaca open orders on startup")
+            return
+
+        for order in orders:
+            symbol = str(getattr(order, "symbol", "")).upper()
+            if symbol not in target_symbols:
+                continue
+            status = self._order_status(order)
+            if status in FILLED_ORDER_STATUSES or status in FINAL_ORDER_STATUSES:
+                continue
+            self._cancel_unfilled_order(order)
+            LOG.info("Canceled startup Alpaca open order for %s | order=%s", symbol, getattr(order, "id", "unknown"))
 
     def _settled_fill(self, order) -> tuple[int, float, object] | None:
         deadline = time.monotonic() + self.settings.alpaca_fill_timeout_seconds
@@ -343,6 +405,15 @@ class AlpacaPaperExecutor:
     @staticmethod
     def _order_status(order) -> str:
         return str(getattr(order, "status", "")).lower().split(".")[-1]
+
+    @staticmethod
+    def _position_shares(position) -> int:
+        return int(float(getattr(position, "qty", 0) or 0))
+
+    @staticmethod
+    def _position_entry_price(position) -> float | None:
+        value = getattr(position, "avg_entry_price", None)
+        return None if value is None else float(value)
 
 
 def build_executor(settings: Settings):
