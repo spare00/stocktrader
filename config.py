@@ -24,6 +24,7 @@ class Settings:
     alpaca_paper: bool = os.getenv("ALPACA_PAPER", "true").lower() in {"1", "true", "yes", "on"}
     alpaca_data_feed: str = os.getenv("ALPACA_DATA_FEED", "iex").lower()
     alpaca_stream_url: str | None = os.getenv("ALPACA_STREAM_URL")
+    execution_mode: str = os.getenv("EXECUTION_MODE", "local").lower()
 
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
@@ -54,5 +55,9 @@ def load_settings() -> Settings:
         raise ValueError("SYMBOLS must include at least one ticker.")
     if not settings.alpaca_api_key or not settings.alpaca_secret_key:
         raise ValueError("ALPACA_API_KEY and ALPACA_SECRET_KEY are required.")
+    if settings.execution_mode not in {"local", "alpaca_paper"}:
+        raise ValueError("EXECUTION_MODE must be 'local' or 'alpaca_paper'.")
+    if settings.execution_mode == "alpaca_paper" and not settings.alpaca_paper:
+        raise ValueError("EXECUTION_MODE=alpaca_paper requires ALPACA_PAPER=true.")
 
     return settings

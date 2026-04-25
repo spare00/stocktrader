@@ -5,7 +5,7 @@ from ai_agent import SignalReviewer
 from alpaca_stream import AlpacaStockStream, AlpacaStreamAuthError
 from candle import SymbolState
 from config import load_settings
-from execution import PaperBroker
+from execution import build_executor
 from models import Bar, Quote
 from risk import RiskManager
 from strategy import SpikeStrategy
@@ -21,11 +21,11 @@ async def main() -> None:
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
     stream = AlpacaStockStream(settings)
     strategy = SpikeStrategy(settings)
-    broker = PaperBroker(settings)
+    executor = build_executor(settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
 
-    logging.info("Monitoring %s in Alpaca paper mode", ", ".join(settings.symbols))
+    logging.info("Monitoring %s with execution mode %s", ", ".join(settings.symbols), settings.execution_mode)
 
     async for event in stream.events():
         state = states.get(event.symbol)
@@ -38,13 +38,13 @@ async def main() -> None:
 
         if isinstance(event, Bar):
             state.add_bar(event)
-            broker.manage_exit(event)
+            executor.manage_exit(event)
 
             signal = strategy.evaluate(state)
             if not signal:
                 continue
 
-            decision = risk.check_entry(signal, broker.open_symbols(), broker.realized_pnl)
+            decision = risk.check_entry(signal, executor.open_symbols(), executor.realized_pnl)
             if not decision.allowed:
                 logging.info("Signal rejected %s %s: %s", signal.symbol, signal.side, decision.reason)
                 continue
@@ -53,7 +53,7 @@ async def main() -> None:
             if note:
                 logging.info("AI review %s: %s", signal.symbol, note)
 
-            fill = broker.buy(signal)
+            fill = executor.buy(signal)
             if fill:
                 risk.record_trade(signal.symbol, signal.timestamp_ms)
 

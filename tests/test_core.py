@@ -2,7 +2,7 @@ import unittest
 
 from candle import SymbolState
 from config import Settings
-from execution import PaperBroker
+from execution import LocalPaperExecutor, PositionTracker
 from models import Bar, Quote
 from risk import RiskManager
 from strategy import SpikeStrategy
@@ -52,7 +52,7 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_paper_broker_exits_at_target(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], target_profit_pct=0.01)
-        broker = PaperBroker(settings)
+        broker = LocalPaperExecutor(PositionTracker(settings))
         state = SymbolState("AAPL")
         for index in range(6):
             state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=index * 1000))

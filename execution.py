@@ -1,6 +1,10 @@
 import logging
 from dataclasses import dataclass, field
 
+from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest
+
+from alpaca_client import make_clients
 from config import Settings
 from models import Bar, Signal
 
@@ -30,7 +34,7 @@ class Fill:
 
 
 @dataclass
-class PaperBroker:
+class PositionTracker:
     settings: Settings
     cash: float = field(init=False)
     positions: dict[str, Position] = field(default_factory=dict)
@@ -43,33 +47,66 @@ class PaperBroker:
     def open_symbols(self) -> set[str]:
         return set(self.positions)
 
-    def buy(self, signal: Signal) -> Fill | None:
-        if signal.symbol in self.positions:
+    def planned_shares(self, price: float) -> int:
+        budget = min(self.settings.max_position_value, self.cash)
+        return int(budget // price)
+
+    def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str) -> Fill:
+        self.cash -= shares * fill_price
+        self.positions[signal.symbol] = Position(
+            symbol=signal.symbol,
+            shares=shares,
+            entry_price=fill_price,
+            entry_ms=signal.timestamp_ms,
+            target_price=fill_price * (1 + self.settings.target_profit_pct),
+            stop_price=fill_price * (1 - self.settings.stop_loss_pct),
+        )
+        fill = Fill(signal.symbol, "BUY", shares, fill_price, signal.timestamp_ms, reason=reason)
+        self.fills.append(fill)
+        return fill
+
+    def record_exit(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str) -> Fill | None:
+        position = self.positions.pop(symbol, None)
+        if not position:
             return None
 
-        budget = min(self.settings.max_position_value, self.cash)
-        shares = int(budget // signal.price)
+        shares = min(shares, position.shares)
+        proceeds = shares * price
+        pnl = (price - position.entry_price) * shares
+        self.cash += proceeds
+        self.realized_pnl += pnl
+
+        fill = Fill(symbol, "SELL", shares, price, timestamp_ms, pnl=pnl, reason=reason)
+        self.fills.append(fill)
+        return fill
+
+
+@dataclass
+class LocalPaperExecutor:
+    tracker: PositionTracker
+
+    @property
+    def realized_pnl(self) -> float:
+        return self.tracker.realized_pnl
+
+    def open_symbols(self) -> set[str]:
+        return self.tracker.open_symbols()
+
+    def buy(self, signal: Signal) -> Fill | None:
+        if signal.symbol in self.tracker.positions:
+            return None
+
+        shares = self.tracker.planned_shares(signal.price)
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
 
-        cost = shares * signal.price
-        self.cash -= cost
-        self.positions[signal.symbol] = Position(
-            symbol=signal.symbol,
-            shares=shares,
-            entry_price=signal.price,
-            entry_ms=signal.timestamp_ms,
-            target_price=signal.price * (1 + self.settings.target_profit_pct),
-            stop_price=signal.price * (1 - self.settings.stop_loss_pct),
-        )
-        fill = Fill(signal.symbol, "BUY", shares, signal.price, signal.timestamp_ms, reason=signal.reason)
-        self.fills.append(fill)
-        LOG.info("PAPER BUY %s %s @ %.2f | %s", shares, signal.symbol, signal.price, signal.reason)
+        fill = self.tracker.record_entry(signal, shares, signal.price, signal.reason)
+        LOG.info("LOCAL PAPER BUY %s %s @ %.2f | %s", shares, signal.symbol, signal.price, signal.reason)
         return fill
 
     def manage_exit(self, bar: Bar) -> Fill | None:
-        position = self.positions.get(bar.symbol)
+        position = self.tracker.positions.get(bar.symbol)
         if not position:
             return None
 
@@ -83,26 +120,97 @@ class PaperBroker:
         elif bar.low <= position.stop_price:
             reason = "stop loss"
             exit_price = position.stop_price
+        elif age_seconds >= self.tracker.settings.max_hold_seconds:
+            reason = "max hold"
+
+        if not reason:
+            return None
+
+        fill = self.tracker.record_exit(bar.symbol, position.shares, exit_price, bar.end_ms, reason)
+        if fill:
+            LOG.info("LOCAL PAPER SELL %s %s @ %.2f | pnl %.2f | %s", fill.shares, fill.symbol, fill.price, fill.pnl, fill.reason)
+        return fill
+
+
+@dataclass
+class AlpacaPaperExecutor:
+    settings: Settings
+    tracker: PositionTracker
+    clients: object = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.clients = make_clients(self.settings)
+
+    @property
+    def realized_pnl(self) -> float:
+        return self.tracker.realized_pnl
+
+    def open_symbols(self) -> set[str]:
+        return self.tracker.open_symbols()
+
+    def buy(self, signal: Signal) -> Fill | None:
+        if signal.symbol in self.tracker.positions:
+            return None
+
+        shares = self.tracker.planned_shares(signal.price)
+        if shares <= 0:
+            LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
+            return None
+
+        request = MarketOrderRequest(
+            symbol=signal.symbol,
+            qty=shares,
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=f"codex-{signal.symbol.lower()}-{signal.timestamp_ms}-buy",
+        )
+        order = self.clients.trading.submit_order(order_data=request)
+        fill_price = float(order.filled_avg_price or signal.price)
+        fill = self.tracker.record_entry(signal, shares, fill_price, f"{signal.reason} | alpaca_order_id={order.id}")
+        LOG.info("ALPACA PAPER BUY %s %s @ %.2f | order=%s", shares, signal.symbol, fill_price, order.id)
+        return fill
+
+    def manage_exit(self, bar: Bar) -> Fill | None:
+        position = self.tracker.positions.get(bar.symbol)
+        if not position:
+            return None
+
+        age_seconds = (bar.end_ms - position.entry_ms) / 1000
+        reason = ""
+
+        if bar.high >= position.target_price:
+            reason = "target profit"
+        elif bar.low <= position.stop_price:
+            reason = "stop loss"
         elif age_seconds >= self.settings.max_hold_seconds:
             reason = "max hold"
 
         if not reason:
             return None
 
-        return self.sell(bar.symbol, position.shares, exit_price, bar.end_ms, reason)
-
-    def sell(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str) -> Fill | None:
-        position = self.positions.pop(symbol, None)
-        if not position:
-            return None
-
-        shares = min(shares, position.shares)
-        proceeds = shares * price
-        pnl = (price - position.entry_price) * shares
-        self.cash += proceeds
-        self.realized_pnl += pnl
-
-        fill = Fill(symbol, "SELL", shares, price, timestamp_ms, pnl=pnl, reason=reason)
-        self.fills.append(fill)
-        LOG.info("PAPER SELL %s %s @ %.2f | pnl %.2f | %s", shares, symbol, price, pnl, reason)
+        request = MarketOrderRequest(
+            symbol=bar.symbol,
+            qty=position.shares,
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=f"codex-{bar.symbol.lower()}-{bar.end_ms}-sell",
+        )
+        order = self.clients.trading.submit_order(order_data=request)
+        fill_price = float(order.filled_avg_price or bar.close)
+        fill = self.tracker.record_exit(
+            bar.symbol,
+            position.shares,
+            fill_price,
+            bar.end_ms,
+            f"{reason} | alpaca_order_id={order.id}",
+        )
+        if fill:
+            LOG.info("ALPACA PAPER SELL %s %s @ %.2f | order=%s | %s", fill.shares, fill.symbol, fill.price, order.id, reason)
         return fill
+
+
+def build_executor(settings: Settings):
+    tracker = PositionTracker(settings)
+    if settings.execution_mode == "alpaca_paper":
+        return AlpacaPaperExecutor(settings, tracker)
+    return LocalPaperExecutor(tracker)

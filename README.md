@@ -2,7 +2,7 @@
 
 This project is a paper-trading stock monitor built around Alpaca. It uses Alpaca market data for bars and quotes, keeps strategy and risk logic local, and stays in paper mode while the system is being validated.
 
-It does not send live broker orders yet. That is intentional: seconds-to-minutes trading needs paper validation, latency checks, slippage assumptions, and broker-specific order handling before real money is connected.
+It does not send live broker orders. Paper-order submission can be enabled explicitly with `EXECUTION_MODE=alpaca_paper`; otherwise it simulates fills locally.
 
 ## Setup
 
@@ -22,6 +22,7 @@ export ALPACA_API_KEY=...
 export ALPACA_SECRET_KEY=...
 export ALPACA_PAPER=true
 export ALPACA_DATA_FEED=iex
+export EXECUTION_MODE=local
 ```
 
 ## Alpaca Smoke Test
@@ -37,6 +38,11 @@ Check the Alpaca live stream:
 ```bash
 venv/bin/python scripts/smoke_alpaca.py stream --symbols AAPL,MSFT --seconds 15 --max-messages 10
 ```
+
+Execution modes:
+
+- `EXECUTION_MODE=local`: simulate fills only inside the app
+- `EXECUTION_MODE=alpaca_paper`: submit market orders to Alpaca paper trading
 
 ## Run
 
