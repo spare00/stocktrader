@@ -46,6 +46,10 @@ class OpeningImpulseStrategy(Strategy):
         if not self._velocity_positive(quotes):
             return None
 
+        recent_high = max(quote.mid for quote in quotes)
+        if last.mid < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
+            return None
+
         volume_ratio = self._volume_ratio(state)
         if volume_ratio < self.settings.opening_impulse_volume_ratio:
             return None
@@ -77,6 +81,10 @@ class OpeningImpulseStrategy(Strategy):
         latest = quotes[-1]
         if latest.mid <= position.entry_price * (1 + self.settings.opening_impulse_stall_buffer_pct):
             return ExitDecision("momentum stall")
+
+        recent_high = max(quote.mid for quote in quotes)
+        if latest.mid < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
+            return ExitDecision("retrace from local high")
 
         recent_changes = [quotes[index].mid - quotes[index - 1].mid for index in range(1, len(quotes))]
         negative_steps = sum(1 for change in recent_changes if change < 0)

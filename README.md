@@ -23,7 +23,7 @@ export ALPACA_SECRET_KEY=...
 export ALPACA_PAPER=true
 export ALPACA_DATA_FEED=iex
 export EXECUTION_MODE=local
-export STRATEGIES=spike,opening_impulse
+export STRATEGIES=opening_impulse
 ```
 
 ## Alpaca Smoke Test
@@ -38,6 +38,14 @@ Check the Alpaca live stream:
 
 ```bash
 venv/bin/python scripts/smoke_alpaca.py stream --symbols AAPL,MSFT --seconds 15 --max-messages 10
+```
+
+Check the OpenAI review path directly:
+
+```bash
+export AI_REVIEW=true
+export OPENAI_API_KEY=...
+venv/bin/python scripts/smoke_openai.py
 ```
 
 Submit one tiny paper order and cancel it right away if you are outside market hours:
@@ -60,6 +68,16 @@ Strategies:
 - `opening_impulse`: market-open, quote-velocity, spread, and volume-spike based opening impulse capture
 
 Choose one or many with `STRATEGIES=spike,opening_impulse`.
+
+Recommended baseline for a “reliable first 1%” style:
+
+- `STRATEGIES=opening_impulse`
+- `TARGET_PROFIT_PCT=0.01`
+- `STOP_LOSS_PCT=0.005`
+- `MAX_OPEN_POSITIONS=2`
+- `TRADE_COOLDOWN_SECONDS=60`
+
+The default opening-impulse tuning is intentionally stricter than before: shorter trading window, tighter spreads, stronger volume requirement, and faster momentum-fade exits.
 
 ## Run
 
@@ -84,7 +102,7 @@ The first strategy watches each symbol for:
 
 Accepted paper entries use:
 
-- target profit capped at 2% by `TARGET_PROFIT_PCT`
+- target profit typically set to 1% by `TARGET_PROFIT_PCT`
 - stop loss via `STOP_LOSS_PCT`
 - time exit via `MAX_HOLD_SECONDS`
 - max position count, cash sizing, symbol cooldown, and daily loss limit

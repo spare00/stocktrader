@@ -77,21 +77,23 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             opening_impulse_start_minute=0,
             opening_impulse_end_minute=90,
-            opening_impulse_window_seconds=45,
-            opening_impulse_min_quotes=8,
-            opening_impulse_change_pct=0.01,
-            opening_impulse_volume_ratio=1.5,
+            opening_impulse_window_seconds=30,
+            opening_impulse_min_quotes=10,
+            opening_impulse_change_pct=0.009,
+            opening_impulse_volume_ratio=2.5,
+            opening_impulse_max_spread_bps=8.0,
+            opening_impulse_min_quote_size=25,
         )
         state = SymbolState("AAPL")
         base_ms = 1777037400000  # 2026-04-24 13:30:00 UTC
         for index in range(4):
             state.add_bar(bar("AAPL", close=100.0 + (index * 0.1), volume=100, end_ms=base_ms + ((index + 1) * 60_000)))
-        state.add_bar(bar("AAPL", close=100.4, volume=250, end_ms=base_ms + (5 * 60_000)))
+        state.add_bar(bar("AAPL", close=100.4, volume=320, end_ms=base_ms + (5 * 60_000)))
 
-        for index in range(8):
-            bid = 100.00 + (index * 0.15)
-            ask = bid + 0.02
-            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=20, ask_size=20, timestamp_ms=base_ms + (index * 5_000)))
+        for index in range(10):
+            bid = 100.00 + (index * 0.11)
+            ask = bid + 0.015
+            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=30, ask_size=30, timestamp_ms=base_ms + (index * 3_000)))
 
         signal = OpeningImpulseStrategy(settings).evaluate(state)
 
