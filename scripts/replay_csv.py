@@ -34,6 +34,11 @@ def parse_int(row: dict, name: str, default: int | None = None) -> int:
     return int(float(value))
 
 
+def optional_int(row: dict, name: str) -> int | None:
+    value = row.get(name)
+    return None if value in {None, ""} else int(float(value))
+
+
 def parse_event(row: dict) -> Bar | Quote:
     kind = (row.get("type") or row.get("kind") or "").strip().lower()
     symbol = (row.get("symbol") or "").strip().upper()
@@ -52,7 +57,9 @@ def parse_event(row: dict) -> Bar | Quote:
         )
 
     if kind == "bar":
-        end_ms = parse_int(row, "end_ms", parse_int(row, "timestamp_ms"))
+        end_ms = optional_int(row, "end_ms")
+        if end_ms is None:
+            end_ms = parse_int(row, "timestamp_ms")
         close = parse_float(row, "close")
         return Bar(
             symbol=symbol,
@@ -97,7 +104,9 @@ def replay(events: list[Bar | Quote], settings: Settings) -> dict:
         else:
             state.add_bar(event)
 
-        executor.manage_exit(state, strategies_by_name)
+        event_ms = state.last_event_ms
+        for exit_state in states.values():
+            executor.manage_exit(exit_state, strategies_by_name, event_ms)
 
         for strategy in strategies:
             signal = strategy.evaluate(state)
@@ -105,7 +114,7 @@ def replay(events: list[Bar | Quote], settings: Settings) -> dict:
                 continue
 
             signals += 1
-            decision = risk.check_entry(signal, executor.open_symbols(), executor.realized_pnl)
+            decision = risk.check_entry(signal, executor.open_symbols(), mark_to_market_pnl(executor, states))
             if not decision.allowed:
                 rejections += 1
                 continue
@@ -123,6 +132,11 @@ def replay(events: list[Bar | Quote], settings: Settings) -> dict:
         "rejections": rejections,
         "signals": signals,
     }
+
+
+def mark_to_market_pnl(executor: LocalPaperExecutor, states: dict[str, SymbolState]) -> float:
+    mark_prices = {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
+    return executor.total_pnl(mark_prices)
 
 
 def parse_args() -> argparse.Namespace:

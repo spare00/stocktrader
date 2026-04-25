@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from candle import SymbolState
 from config import Settings
-from execution import LocalPaperExecutor, Position, PositionTracker
+from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 from models import Bar, Quote
 from risk import RiskManager
 from strategies import build_strategies
@@ -48,6 +48,20 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal.side, "BUY")
+
+    def test_spike_strategy_uses_timestamp_lookback_not_bar_count(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
+        state = SymbolState("AAPL")
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", bid=100.00, ask=100.05, bid_size=10, ask_size=10, timestamp_ms=base_ms))
+
+        for index in range(6):
+            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=base_ms + (index * 60_000)))
+        state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=base_ms + (6 * 60_000)))
+
+        signal = SpikeStrategy(settings).evaluate(state)
+
+        self.assertIsNone(signal)
 
     def test_risk_rejects_short_entries(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
@@ -120,6 +134,46 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "end-of-day flatten")
 
+    def test_paper_broker_flattens_stale_symbol_using_latest_event_time(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            flatten_before_close_minutes=5,
+            max_hold_seconds=3600,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="spike",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 15, 30),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=100.19,
+                ask=100.21,
+                bid_size=20,
+                ask_size=20,
+                timestamp_ms=market_ms(2026, 4, 24, 15, 40),
+            )
+        )
+
+        fill = broker.manage_exit(
+            state,
+            {"spike": SpikeStrategy(settings)},
+            now_ms=market_ms(2026, 4, 24, 15, 55),
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "end-of-day flatten")
+        self.assertEqual(fill.timestamp_ms, market_ms(2026, 4, 24, 15, 55))
+
     def test_paper_broker_does_not_flatten_too_early(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -172,6 +226,50 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.shares, 4)
         self.assertEqual(tracker.positions["AAPL"].shares, 6)
+
+    def test_position_tracker_total_pnl_includes_unrealized_loss(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], daily_max_loss=250.0)
+        tracker = PositionTracker(settings)
+        tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="spike",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 10, 1)))
+
+        total_pnl = tracker.total_pnl({"AAPL": 70.0})
+        decision = RiskManager(settings).check_entry(signal, set(), total_pnl)
+
+        self.assertEqual(total_pnl, -300.0)
+        self.assertFalse(decision.allowed)
+        self.assertIn("daily loss", decision.reason)
+
+    def test_alpaca_partial_fill_is_canceled_before_recording(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            alpaca_fill_timeout_seconds=0.0,
+        )
+        executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+        executor.settings = settings
+        executor.tracker = PositionTracker(settings)
+        executor.clients = FakeClients(
+            [
+                FakeOrder("order-1", status="canceled", filled_qty="3", filled_avg_price="100.25"),
+            ]
+        )
+        order = FakeOrder("order-1", status="partially_filled", filled_qty="3", filled_avg_price="100.25")
+
+        settled = executor._settled_fill(order)
+
+        self.assertIsNotNone(settled)
+        self.assertTrue(executor.clients.trading.cancel_called)
+        self.assertEqual(settled[0], 3)
 
     def test_opening_impulse_emits_buy_after_fast_rise(self):
         settings = Settings(
@@ -266,6 +364,15 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertTrue(decision.allowed)
 
+    def test_risk_rejects_entries_during_close_flatten_window(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], flatten_before_close_minutes=5)
+        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 15, 55)))
+
+        decision = RiskManager(settings).check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("flatten", decision.reason)
+
     @staticmethod
     def _spike_state(base_ms: int) -> SymbolState:
         state = SymbolState("AAPL")
@@ -274,6 +381,31 @@ class CoreTradingTests(unittest.TestCase):
             state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=base_ms + (index * 1000)))
         state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=base_ms + 7000))
         return state
+
+
+class FakeOrder:
+    def __init__(self, order_id: str, status: str, filled_qty: str = "0", filled_avg_price: str | None = None):
+        self.id = order_id
+        self.status = status
+        self.filled_qty = filled_qty
+        self.filled_avg_price = filled_avg_price
+
+
+class FakeTrading:
+    def __init__(self, orders: list[FakeOrder]):
+        self.orders = orders
+        self.cancel_called = False
+
+    def cancel_order_by_id(self, order_id: str) -> None:
+        self.cancel_called = True
+
+    def get_order_by_id(self, order_id: str) -> FakeOrder:
+        return self.orders.pop(0)
+
+
+class FakeClients:
+    def __init__(self, orders: list[FakeOrder]):
+        self.trading = FakeTrading(orders)
 
 
 if __name__ == "__main__":

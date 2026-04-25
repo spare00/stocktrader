@@ -33,6 +33,11 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class Heartbeat:
+    timestamp_ms: int
+
+
+@dataclass(frozen=True)
 class ExitDecision:
     reason: str
 

@@ -78,6 +78,7 @@ Recommended baseline for a “reliable first 1%” style:
 - `TRADE_COOLDOWN_SECONDS=60`
 - `REGULAR_MARKET_ONLY=true`
 - `FLATTEN_BEFORE_CLOSE_MINUTES=5`
+- `HEARTBEAT_SECONDS=5`
 
 The default opening-impulse tuning is intentionally stricter than before: shorter trading window, tighter spreads, stronger volume requirement, and faster momentum-fade exits.
 
@@ -120,3 +121,4 @@ Accepted paper entries use:
 - max position count, cash sizing, symbol cooldown, and daily loss limit
 - regular-session gating via `REGULAR_MARKET_ONLY=true`
 - end-of-day flattening via `FLATTEN_BEFORE_CLOSE_MINUTES`
+- stream heartbeat exits via `HEARTBEAT_SECONDS`

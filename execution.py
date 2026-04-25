@@ -8,7 +8,8 @@ from models import Bar, Signal
 
 
 LOG = logging.getLogger(__name__)
-FINAL_ORDER_STATUSES = {"canceled", "expired", "rejected", "suspended"}
+FILLED_ORDER_STATUSES = {"filled"}
+FINAL_ORDER_STATUSES = {"canceled", "done_for_day", "expired", "rejected", "suspended"}
 
 
 @dataclass
@@ -50,6 +51,14 @@ class PositionTracker:
     def planned_shares(self, price: float) -> int:
         budget = min(self.settings.max_position_value, self.cash)
         return int(budget // price)
+
+    def total_pnl(self, mark_prices: dict[str, float]) -> float:
+        unrealized = 0.0
+        for symbol, position in self.positions.items():
+            mark_price = mark_prices.get(symbol)
+            if mark_price is not None:
+                unrealized += (mark_price - position.entry_price) * position.shares
+        return self.realized_pnl + unrealized
 
     def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str) -> Fill:
         self.cash -= shares * fill_price
@@ -97,6 +106,9 @@ class LocalPaperExecutor:
     def open_symbols(self) -> set[str]:
         return self.tracker.open_symbols()
 
+    def total_pnl(self, mark_prices: dict[str, float]) -> float:
+        return self.tracker.total_pnl(mark_prices)
+
     def buy(self, signal: Signal) -> Fill | None:
         if self.tracker.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
             LOG.info("Skipping %s: outside regular market hours", signal.symbol)
@@ -114,7 +126,7 @@ class LocalPaperExecutor:
         LOG.info("LOCAL PAPER BUY %s %s @ %.2f | %s", shares, signal.symbol, signal.price, signal.reason)
         return fill
 
-    def manage_exit(self, state, strategies_by_name) -> Fill | None:
+    def manage_exit(self, state, strategies_by_name, now_ms: int | None = None) -> Fill | None:
         position = self.tracker.positions.get(state.symbol)
         if not position:
             return None
@@ -122,14 +134,15 @@ class LocalPaperExecutor:
         current_price = state.last_price
         if current_price is None or state.last_event_ms is None:
             return None
-        if self.tracker.settings.regular_market_only and not is_regular_market_time(state.last_event_ms):
+        event_ms = now_ms or state.last_event_ms
+        if self.tracker.settings.regular_market_only and not is_regular_market_time(event_ms):
             return None
 
-        age_seconds = (state.last_event_ms - position.entry_ms) / 1000
+        age_seconds = (event_ms - position.entry_ms) / 1000
         reason = ""
         exit_price = current_price
 
-        if should_flatten_before_close(state.last_event_ms, self.tracker.settings.flatten_before_close_minutes):
+        if should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
         elif current_price >= position.target_price:
             reason = "target profit"
@@ -150,7 +163,7 @@ class LocalPaperExecutor:
         if not reason:
             return None
 
-        fill = self.tracker.record_exit(state.symbol, position.shares, exit_price, state.last_event_ms, reason)
+        fill = self.tracker.record_exit(state.symbol, position.shares, exit_price, event_ms, reason)
         if fill:
             LOG.info("LOCAL PAPER SELL %s %s @ %.2f | pnl %.2f | %s", fill.shares, fill.symbol, fill.price, fill.pnl, fill.reason)
         return fill
@@ -173,6 +186,9 @@ class AlpacaPaperExecutor:
 
     def open_symbols(self) -> set[str]:
         return self.tracker.open_symbols()
+
+    def total_pnl(self, mark_prices: dict[str, float]) -> float:
+        return self.tracker.total_pnl(mark_prices)
 
     def buy(self, signal: Signal) -> Fill | None:
         from alpaca.trading.enums import OrderSide, TimeInForce
@@ -198,13 +214,12 @@ class AlpacaPaperExecutor:
             client_order_id=f"codex-{signal.symbol.lower()}-{signal.timestamp_ms}-buy",
         )
         order = self.clients.trading.submit_order(order_data=request)
-        confirmed = self._confirmed_fill(order)
-        if confirmed is None:
-            self._cancel_unfilled_order(order)
+        settled = self._settled_fill(order)
+        if settled is None:
             LOG.info("Skipping %s: Alpaca buy order was not confirmed filled | order=%s", signal.symbol, order.id)
             return None
 
-        filled_shares, fill_price, order = confirmed
+        filled_shares, fill_price, order = settled
         fill = self.tracker.record_entry(
             signal,
             filled_shares,
@@ -214,7 +229,7 @@ class AlpacaPaperExecutor:
         LOG.info("ALPACA PAPER BUY %s %s @ %.2f | order=%s", filled_shares, signal.symbol, fill_price, order.id)
         return fill
 
-    def manage_exit(self, state, strategies_by_name) -> Fill | None:
+    def manage_exit(self, state, strategies_by_name, now_ms: int | None = None) -> Fill | None:
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
@@ -225,13 +240,14 @@ class AlpacaPaperExecutor:
         current_price = state.last_price
         if current_price is None or state.last_event_ms is None:
             return None
+        event_ms = now_ms or state.last_event_ms
         if self.settings.regular_market_only and not self._market_is_open():
             return None
 
-        age_seconds = (state.last_event_ms - position.entry_ms) / 1000
+        age_seconds = (event_ms - position.entry_ms) / 1000
         reason = ""
 
-        if should_flatten_before_close(state.last_event_ms, self.settings.flatten_before_close_minutes):
+        if should_flatten_before_close(event_ms, self.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
         elif current_price >= position.target_price:
             reason = "target profit"
@@ -255,20 +271,20 @@ class AlpacaPaperExecutor:
             qty=position.shares,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
-            client_order_id=f"codex-{state.symbol.lower()}-{state.last_event_ms}-sell",
+            client_order_id=f"codex-{state.symbol.lower()}-{event_ms}-sell",
         )
         order = self.clients.trading.submit_order(order_data=request)
-        confirmed = self._confirmed_fill(order)
-        if confirmed is None:
+        settled = self._settled_fill(order)
+        if settled is None:
             LOG.info("Keeping %s open: Alpaca sell order was not confirmed filled | order=%s", state.symbol, order.id)
             return None
 
-        filled_shares, fill_price, order = confirmed
+        filled_shares, fill_price, order = settled
         fill = self.tracker.record_exit(
             state.symbol,
             filled_shares,
             fill_price,
-            state.last_event_ms,
+            event_ms,
             f"{reason} | alpaca_order_id={order.id}",
         )
         if fill:
@@ -278,21 +294,34 @@ class AlpacaPaperExecutor:
     def _market_is_open(self) -> bool:
         return bool(self.clients.trading.get_clock().is_open)
 
-    def _confirmed_fill(self, order) -> tuple[int, float, object] | None:
+    def _settled_fill(self, order) -> tuple[int, float, object] | None:
         deadline = time.monotonic() + self.settings.alpaca_fill_timeout_seconds
         current_order = order
 
         while True:
+            status = self._order_status(current_order)
             filled_shares = self._filled_shares(current_order)
             fill_price = self._fill_price(current_order)
-            if filled_shares > 0 and fill_price is not None:
+            if status in FILLED_ORDER_STATUSES and filled_shares > 0 and fill_price is not None:
                 return filled_shares, fill_price, current_order
 
-            if self._order_status(current_order) in FINAL_ORDER_STATUSES or time.monotonic() >= deadline:
-                return None
+            if status in FINAL_ORDER_STATUSES:
+                return self._existing_fill(current_order)
+
+            if time.monotonic() >= deadline:
+                self._cancel_unfilled_order(current_order)
+                current_order = self.clients.trading.get_order_by_id(current_order.id)
+                return self._existing_fill(current_order)
 
             time.sleep(self.settings.alpaca_fill_poll_seconds)
             current_order = self.clients.trading.get_order_by_id(current_order.id)
+
+    def _existing_fill(self, order) -> tuple[int, float, object] | None:
+        filled_shares = self._filled_shares(order)
+        fill_price = self._fill_price(order)
+        if filled_shares > 0 and fill_price is not None:
+            return filled_shares, fill_price, order
+        return None
 
     def _cancel_unfilled_order(self, order) -> None:
         if self._order_status(order) in FINAL_ORDER_STATUSES:
