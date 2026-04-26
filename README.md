@@ -97,7 +97,19 @@ Generate a fresh target list for `opening_impulse` before the session:
 venv/bin/python scripts/screen_opening_impulse.py --top 12
 ```
 
-The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, and quote size, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
+For a dynamic universe, refresh a broad liquid/moving symbol list weekly or periodically:
+
+```bash
+venv/bin/python scripts/build_opening_universe.py --limit 150 --output data/opening_universe.txt
+```
+
+Then run the daily opening-impulse screen against that universe before the market opens:
+
+```bash
+venv/bin/python scripts/screen_opening_impulse.py --universe-file data/opening_universe.txt --top 12
+```
+
+The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, quote size, daily trend/reversal context, and opening follow-through quality, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
 
 By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
 
@@ -110,6 +122,8 @@ The minimum expected opening fluctuation follows the configured profit target au
 ```bash
 venv/bin/python scripts/screen_opening_impulse.py --min-opening-range-pct 0.015
 ```
+
+By default candidates must also show either a short recent daily uptrend or a bottom-reversal pattern. Symbols that often spike early and fade back receive a lower score through `fade_bps` and `close_capture_ratio`.
 
 ## Test
 

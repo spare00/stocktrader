@@ -153,9 +153,65 @@ def opening_session_metrics(bars: list[Bar], opening_minutes: int) -> list[dict]
     return sorted(sessions, key=lambda item: item["date"])
 
 
+def daily_context_metrics(
+    bars: list[Bar],
+    last_price: float,
+    trend_lookback_days: int,
+    min_trend_bps: float,
+    min_reversal_bps: float,
+) -> dict:
+    ordered = sorted(bars, key=lambda item: item.start_ms)
+    recent = ordered[-trend_lookback_days:] if trend_lookback_days > 0 else ordered
+    if len(recent) < 2 or last_price <= 0:
+        return {
+            "daily_context": "unknown",
+            "daily_trend_bps": 0.0,
+            "rebound_from_low_bps": 0.0,
+            "distance_from_high_bps": 0.0,
+            "daily_context_score": 0.0,
+        }
+
+    first_close = recent[0].close
+    recent_low = min(bar.low for bar in recent)
+    recent_high = max(bar.high for bar in recent)
+    daily_trend_bps = ((last_price - first_close) / first_close) * 10_000 if first_close > 0 else 0.0
+    rebound_from_low_bps = ((last_price - recent_low) / recent_low) * 10_000 if recent_low > 0 else 0.0
+    distance_from_high_bps = ((recent_high - last_price) / recent_high) * 10_000 if recent_high > 0 else 0.0
+
+    is_uptrend = daily_trend_bps >= min_trend_bps
+    is_reversal = rebound_from_low_bps >= min_reversal_bps and daily_trend_bps > -min_trend_bps
+    if is_uptrend:
+        context = "uptrend"
+    elif is_reversal:
+        context = "bottom_reversal"
+    else:
+        context = "weak"
+
+    trend_score = max(0.0, min(daily_trend_bps / max(min_trend_bps, 1.0), 2.0))
+    reversal_score = max(0.0, min(rebound_from_low_bps / max(min_reversal_bps, 1.0), 2.0))
+    return {
+        "daily_context": context,
+        "daily_trend_bps": daily_trend_bps,
+        "rebound_from_low_bps": rebound_from_low_bps,
+        "distance_from_high_bps": distance_from_high_bps,
+        "daily_context_score": max(trend_score, reversal_score),
+    }
+
+
+def usable_quote(quote: Quote | None) -> Quote | None:
+    if quote is None:
+        return None
+    if quote.bid <= 0 or quote.ask <= 0 or quote.ask < quote.bid:
+        return None
+    if quote.bid_size <= 0 or quote.ask_size <= 0:
+        return None
+    return quote
+
+
 def score_candidate(
     symbol: str,
     bars: list[Bar],
+    daily_bars: list[Bar],
     quote: Quote | None,
     opening_minutes: int,
     min_price: float,
@@ -165,13 +221,28 @@ def score_candidate(
     min_impulse_bps: float,
     min_opening_range_bps: float,
     max_spread_bps: float,
+    trend_lookback_days: int,
+    min_trend_bps: float,
+    min_reversal_bps: float,
+    require_daily_context: bool,
 ) -> dict | None:
     sessions = opening_session_metrics(bars, opening_minutes)
     if len(sessions) < min_opening_days:
         return None
 
-    last_price = quote.mid if quote else bars[-1].close if bars else 0.0
+    valid_quote = usable_quote(quote)
+    last_price = valid_quote.mid if valid_quote else bars[-1].close if bars else 0.0
     if last_price < min_price or last_price > max_price:
+        return None
+
+    daily_context = daily_context_metrics(
+        daily_bars,
+        last_price,
+        trend_lookback_days=trend_lookback_days,
+        min_trend_bps=min_trend_bps,
+        min_reversal_bps=min_reversal_bps,
+    )
+    if require_daily_context and daily_context["daily_context"] not in {"uptrend", "bottom_reversal"}:
         return None
 
     dollar_volumes = [session["dollar_volume"] for session in sessions if session["dollar_volume"] > 0]
@@ -192,17 +263,22 @@ def score_candidate(
 
     impulse_day_ratio = sum(move >= min_impulse_bps for move in high_moves) / len(high_moves)
     range_day_ratio = sum(move >= min_opening_range_bps for move in opening_ranges) / len(opening_ranges)
+    positive_close_day_ratio = sum(move > 0 for move in close_moves) / len(close_moves)
+    close_capture_ratio = median_close_move_bps / median_high_move_bps if median_high_move_bps > 0 else 0.0
+    fade_bps = max(0.0, median_high_move_bps - median_close_move_bps)
 
-    spread_bps = quote.spread_bps if quote else max_spread_bps
+    spread_bps = valid_quote.spread_bps if valid_quote else max_spread_bps
     if spread_bps > max_spread_bps:
         return None
 
-    quote_size = min(quote.bid_size, quote.ask_size) if quote else 0
+    quote_size = min(valid_quote.bid_size, valid_quote.ask_size) if valid_quote else 0
 
     liquidity_score = min(math.log10(median_opening_dollar_volume / min_opening_dollar_volume + 1), 3.0)
     spread_score = max(0.0, 1.0 - (spread_bps / max_spread_bps))
     movement_score = min(max(median_high_move_bps, 0.0) / max(min_impulse_bps, 1.0), 3.0)
     range_score = min(median_opening_range_bps / max(min_opening_range_bps, 1.0), 2.0)
+    follow_through_score = max(-1.0, min(close_capture_ratio, 1.5))
+    fade_penalty = min(fade_bps / max(min_opening_range_bps, 1.0), 2.0)
     consistency_score = impulse_day_ratio * 2.0
     size_score = min(quote_size / 100.0, 1.0)
     score = (
@@ -210,8 +286,11 @@ def score_candidate(
         + (spread_score * 2.0)
         + (movement_score * 2.0)
         + (range_score * 2.0)
+        + (daily_context["daily_context_score"] * 1.5)
+        + (follow_through_score * 1.5)
         + consistency_score
         + size_score
+        - fade_penalty
     )
 
     return {
@@ -226,6 +305,13 @@ def score_candidate(
         "median_opening_range_bps": round(median_opening_range_bps, 2),
         "impulse_day_ratio": round(impulse_day_ratio, 3),
         "range_day_ratio": round(range_day_ratio, 3),
+        "positive_close_day_ratio": round(positive_close_day_ratio, 3),
+        "close_capture_ratio": round(close_capture_ratio, 3),
+        "fade_bps": round(fade_bps, 2),
+        "daily_context": daily_context["daily_context"],
+        "daily_trend_bps": round(daily_context["daily_trend_bps"], 2),
+        "rebound_from_low_bps": round(daily_context["rebound_from_low_bps"], 2),
+        "distance_from_high_bps": round(daily_context["distance_from_high_bps"], 2),
         "quote_size": quote_size,
     }
 
@@ -263,6 +349,36 @@ def get_opening_bars(
     return results
 
 
+def get_daily_bars(
+    settings: Settings,
+    symbols: list[str],
+    session_dates: list[date],
+    trend_lookback_days: int,
+) -> dict[str, list[Bar]]:
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from alpaca_client import make_clients, to_bar
+
+    clients = make_clients(settings)
+    start_date = session_dates[0] - timedelta(days=trend_lookback_days + 5)
+    end_date = session_dates[-1] + timedelta(days=1)
+    start = datetime.combine(start_date, time.min, tzinfo=MARKET_TZ).astimezone(timezone.utc)
+    end = datetime.combine(end_date, time.min, tzinfo=MARKET_TZ).astimezone(timezone.utc)
+    results: dict[str, list[Bar]] = {}
+
+    for symbol in symbols:
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+            feed=clients.feed,
+        )
+        response = clients.historical.get_stock_bars(request)
+        results[symbol] = [to_bar(item) for item in response.data.get(symbol, [])]
+    return results
+
+
 def screen(args: argparse.Namespace) -> dict:
     from alpaca_client import get_latest_quotes
 
@@ -272,6 +388,8 @@ def screen(args: argparse.Namespace) -> dict:
         raise ValueError("--opening-minutes must be at least 1.")
     if args.min_opening_days < 1:
         raise ValueError("--min-opening-days must be at least 1.")
+    if args.trend_lookback_days < 2:
+        raise ValueError("--trend-lookback-days must be at least 2.")
 
     settings_kwargs = {}
     if args.alpaca_api_key:
@@ -289,6 +407,7 @@ def screen(args: argparse.Namespace) -> dict:
     as_of = parse_as_of(args.as_of)
     session_dates = previous_session_dates(as_of, args.days)
     bars_by_symbol = get_opening_bars(settings, universe, session_dates, args.opening_minutes)
+    daily_bars_by_symbol = get_daily_bars(settings, universe, session_dates, args.trend_lookback_days)
     quotes = get_latest_quotes(settings, universe)
 
     candidates = []
@@ -296,6 +415,7 @@ def screen(args: argparse.Namespace) -> dict:
         result = score_candidate(
             symbol=symbol,
             bars=bars_by_symbol.get(symbol, []),
+            daily_bars=daily_bars_by_symbol.get(symbol, []),
             quote=quotes.get(symbol),
             opening_minutes=args.opening_minutes,
             min_price=args.min_price,
@@ -305,6 +425,10 @@ def screen(args: argparse.Namespace) -> dict:
             min_impulse_bps=args.min_impulse_bps,
             min_opening_range_bps=min_opening_range_bps,
             max_spread_bps=args.max_spread_bps,
+            trend_lookback_days=args.trend_lookback_days,
+            min_trend_bps=args.min_trend_bps,
+            min_reversal_bps=args.min_reversal_bps,
+            require_daily_context=not args.no_daily_context_filter,
         )
         if result:
             candidates.append(result)
@@ -320,6 +444,7 @@ def screen(args: argparse.Namespace) -> dict:
         "opening_window": f"09:30-{(datetime.combine(date.today(), OPEN_TIME) + timedelta(minutes=args.opening_minutes)).time().strftime('%H:%M')} America/New_York",
         "target_profit_pct": settings.target_profit_pct,
         "min_opening_range_pct": round(min_opening_range_bps / 10_000, 4),
+        "daily_context_filter": not args.no_daily_context_filter,
         "as_of": as_of.isoformat(),
     }
 
@@ -355,6 +480,14 @@ def parse_args() -> argparse.Namespace:
         help="Maximum extra opening range cushion when --min-opening-range-pct is not set.",
     )
     parser.add_argument("--max-spread-bps", type=float, default=8.0)
+    parser.add_argument("--trend-lookback-days", type=int, default=5)
+    parser.add_argument("--min-trend-bps", type=float, default=50.0)
+    parser.add_argument("--min-reversal-bps", type=float, default=100.0)
+    parser.add_argument(
+        "--no-daily-context-filter",
+        action="store_true",
+        help="Do not require a recent uptrend or bottom-reversal daily context.",
+    )
     parser.add_argument("--as-of", default=None, help="ISO datetime/date in New York time for reproducible screens.")
     parser.add_argument("--alpaca-api-key", default=None)
     parser.add_argument("--alpaca-secret-key", default=None)
