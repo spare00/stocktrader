@@ -91,25 +91,33 @@ venv/bin/python main.py
 
 ## Target Selection
 
-Generate a fresh target list for `opening_impulse` before the session:
+Refresh a broad liquid/moving universe weekly or periodically:
+
+```bash
+venv/bin/python scripts/build_opening_universe.py --limit 150
+```
+
+Before each market session, screen that universe for `opening_impulse` candidates:
 
 ```bash
 venv/bin/python scripts/screen_opening_impulse.py --top 12
 ```
 
-For a dynamic universe, refresh a broad liquid/moving symbol list weekly or periodically:
+Optionally turn that screen into a bounded AI pre-market plan:
 
 ```bash
-venv/bin/python scripts/build_opening_universe.py --limit 150 --output data/opening_universe.txt
+venv/bin/python scripts/ai_opening_plan.py
 ```
 
-Then run the daily opening-impulse screen against that universe before the market opens:
+Run the monitor with the plan when you want the AI-filtered symbols and conservative setting adjustments:
 
 ```bash
-venv/bin/python scripts/screen_opening_impulse.py --universe-file data/opening_universe.txt --top 12
+venv/bin/python main.py --use-opening-plan
 ```
 
 The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, quote size, daily trend/reversal context, and opening follow-through quality, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
+
+The `data/` files act like embedded memory for the workflow. The universe builder writes `data/opening_universe.txt` by default. When that file exists, the daily screener reads it by default; if it has not been generated yet, the screener falls back to its built-in starter universe. The daily screener writes `data/opening_screen.json` by default, and the AI plan step writes `data/opening_plan.json` by default.
 
 By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
 

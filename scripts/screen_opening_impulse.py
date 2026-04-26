@@ -18,6 +18,8 @@ from models import Bar, Quote
 
 MARKET_TZ = ZoneInfo("America/New_York")
 OPEN_TIME = time(9, 30)
+DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
+DEFAULT_SCREEN_FILE = Path("data/opening_screen.json")
 
 
 DEFAULT_UNIVERSE = [
@@ -77,7 +79,7 @@ def parse_symbols(raw: str) -> list[str]:
 def load_universe(path: Path | None, raw_symbols: str) -> list[str]:
     if raw_symbols:
         symbols = parse_symbols(raw_symbols)
-    elif path:
+    elif path and path.exists():
         symbols = parse_symbols(path.read_text())
     else:
         symbols = DEFAULT_UNIVERSE
@@ -458,7 +460,12 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--symbols", default="", help="Comma-separated universe override.")
-    parser.add_argument("--universe-file", type=Path, help="File with comma/newline separated symbols.")
+    parser.add_argument(
+        "--universe-file",
+        type=Path,
+        default=DEFAULT_UNIVERSE_FILE,
+        help="File with comma/newline separated symbols. Defaults to data/opening_universe.txt when present.",
+    )
     parser.add_argument("--top", type=int, default=12)
     parser.add_argument("--days", type=int, default=10, help="Prior weekday sessions to inspect.")
     parser.add_argument("--opening-minutes", type=int, default=30, help="Minutes after 09:30 ET to inspect.")
@@ -491,11 +498,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--as-of", default=None, help="ISO datetime/date in New York time for reproducible screens.")
     parser.add_argument("--alpaca-api-key", default=None)
     parser.add_argument("--alpaca-secret-key", default=None)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_SCREEN_FILE,
+        help="Write full screen JSON to this file.",
+    )
     return parser.parse_args()
 
 
+def write_screen_output(result: dict, path: Path | None) -> None:
+    if not path:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+
+
 def main() -> None:
-    result = screen(parse_args())
+    args = parse_args()
+    result = screen(args)
+    write_screen_output(result, args.output)
     print(json.dumps(result, indent=2, sort_keys=True))
     print(result["export"])
 

@@ -1,5 +1,7 @@
 import asyncio
+import argparse
 import logging
+from pathlib import Path
 
 from ai_agent import SignalReviewer
 from alpaca_stream import AlpacaStockStream, AlpacaStreamAuthError
@@ -7,6 +9,7 @@ from candle import SymbolState
 from config import load_settings
 from execution import build_executor
 from models import Bar, Heartbeat, Quote
+from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown, manage_all_exits
 from strategies import build_strategies
@@ -19,10 +22,23 @@ def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
 
 
-async def main() -> None:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the paper-trading monitor.")
+    parser.add_argument("--use-opening-plan", action="store_true", help="Use data/opening_plan.json for pre-market symbols/settings.")
+    parser.add_argument("--opening-plan", type=Path, default=None, help=argparse.SUPPRESS)
+    return parser.parse_args()
+
+
+async def main(args: argparse.Namespace | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
+    args = args or parse_args()
     settings = load_settings()
+    opening_plan_path = args.opening_plan or (DEFAULT_OPENING_PLAN_FILE if args.use_opening_plan else None)
+    if opening_plan_path:
+        settings = apply_opening_plan(settings, opening_plan_path)
+        logging.info("Loaded opening plan from %s", opening_plan_path)
+
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
     stream = AlpacaStockStream(settings)
     strategies = build_strategies(settings)

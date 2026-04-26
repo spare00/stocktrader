@@ -11,11 +11,14 @@ from candle import SymbolState
 from config import Settings
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 from models import Bar, Quote
+from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan, plan_overrides
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
 import scripts.build_opening_universe as build_opening_universe
+from scripts.ai_opening_plan import build_plan, extract_json_object, plan_from_screen
 from scripts.build_opening_universe import daily_metrics, score_symbol
-from scripts.screen_opening_impulse import opening_session_metrics, previous_session_dates, score_candidate, usable_quote
+import scripts.screen_opening_impulse as screen_opening_impulse
+from scripts.screen_opening_impulse import DEFAULT_UNIVERSE, load_universe, opening_session_metrics, previous_session_dates, score_candidate, usable_quote, write_screen_output
 from strategies import build_strategies
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
@@ -114,6 +117,117 @@ def uptrend_daily_context(symbol: str = "AAPL") -> list[Bar]:
 
 
 class CoreTradingTests(unittest.TestCase):
+    def test_opening_plan_applies_symbols_and_bounded_settings(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL", "MSFT"],
+            max_open_positions=2,
+            max_position_value=2_500.0,
+            stop_loss_pct=0.005,
+        )
+        plan = {
+            "symbols": ["intc", "PANW", "intc"],
+            "settings": {
+                "MAX_OPEN_POSITIONS": 5,
+                "MAX_POSITION_VALUE": 10_000.0,
+                "STOP_LOSS_PCT": 0.02,
+                "TARGET_PROFIT_PCT": 0.5,
+                "OPENING_IMPULSE_VOLUME_RATIO": 0.5,
+                "REGULAR_MARKET_ONLY": False,
+            },
+        }
+
+        overrides = plan_overrides(settings, plan)
+
+        self.assertEqual(overrides["symbols"], ["INTC", "PANW"])
+        self.assertEqual(overrides["max_open_positions"], 2)
+        self.assertEqual(overrides["max_position_value"], 2_500.0)
+        self.assertEqual(overrides["stop_loss_pct"], 0.005)
+        self.assertEqual(overrides["target_profit_pct"], 0.02)
+        self.assertEqual(overrides["opening_impulse_volume_ratio"], 1.5)
+        self.assertNotIn("regular_market_only", overrides)
+
+    def test_opening_plan_accepts_symbol_objects_from_ai(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        plan = {
+            "symbols": [
+                {"symbol": "intc", "reason": "best candidate"},
+                {"symbol": "HAL", "side": "long"},
+            ]
+        }
+
+        overrides = plan_overrides(settings, plan)
+
+        self.assertEqual(overrides["symbols"], ["INTC", "HAL"])
+
+    def test_opening_plan_file_updates_settings(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], max_open_positions=2)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "opening_plan.json"
+            path.write_text(
+                '{"symbols":["INTC"],"settings":{"MAX_OPEN_POSITIONS":1,"OPENING_IMPULSE_CHANGE_PCT":0.008}}'
+            )
+
+            updated = apply_opening_plan(settings, path)
+
+        self.assertEqual(updated.symbols, ["INTC"])
+        self.assertEqual(updated.max_open_positions, 1)
+        self.assertEqual(updated.opening_impulse_change_pct, 0.008)
+
+    def test_default_opening_plan_path_is_conventional(self):
+        self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_plan.json"))
+
+    def test_ai_opening_plan_extracts_json_before_export_line(self):
+        text = '{"symbols":["AAPL"],"settings":{"MAX_OPEN_POSITIONS":1}}\nexport SYMBOLS=AAPL\n'
+
+        result = extract_json_object(text)
+
+        self.assertEqual(result["symbols"], ["AAPL"])
+
+    def test_ai_opening_plan_fallback_filters_weak_candidates(self):
+        screen = {
+            "candidates": [
+                {"symbol": "KEEP", "close_capture_ratio": 0.25, "positive_close_day_ratio": 0.7, "fade_bps": 50},
+                {"symbol": "DROP", "close_capture_ratio": -0.1, "positive_close_day_ratio": 0.4, "fade_bps": 180},
+            ]
+        }
+
+        plan = plan_from_screen(screen, limit=12)
+
+        self.assertEqual(plan["symbols"], ["KEEP"])
+        self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
+        self.assertEqual(plan["rejected"][0]["symbol"], "DROP")
+
+    def test_ai_opening_plan_writes_default_shape_without_openai(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            screen_file = root / "opening_screen.json"
+            universe_file = root / "opening_universe.txt"
+            output = root / "opening_plan.json"
+            screen_file.write_text(
+                '{"candidates":[{"symbol":"AAPL","close_capture_ratio":0.2,"positive_close_day_ratio":0.6,"fade_bps":40}]}\n'
+            )
+            universe_file.write_text("AAPL,MSFT\n")
+
+            plan = build_plan(
+                types.SimpleNamespace(
+                    universe_file=universe_file,
+                    screen_file=screen_file,
+                    output=output,
+                    limit=12,
+                    openai_api_key="",
+                    alpaca_api_key="test",
+                    alpaca_secret_key="test",
+                )
+            )
+
+            saved = extract_json_object(output.read_text())
+
+        self.assertEqual(plan["symbols"], ["AAPL"])
+        self.assertEqual(saved["symbols"], ["AAPL"])
+        self.assertIn("settings", saved)
+
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
 
@@ -154,6 +268,27 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreaterEqual(result["median_opening_high_move_bps"], 100.0)
         self.assertGreaterEqual(result["median_opening_range_bps"], 100.0)
         self.assertEqual(result["daily_context"], "uptrend")
+
+    def test_opening_impulse_screener_uses_default_universe_file_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            universe_file = Path(tmpdir) / "opening_universe.txt"
+            universe_file.write_text("msft,aapl,msft\n")
+
+            self.assertEqual(load_universe(universe_file, ""), ["AAPL", "MSFT"])
+
+    def test_opening_impulse_screener_falls_back_when_default_universe_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = Path(tmpdir) / "missing.txt"
+
+            self.assertEqual(load_universe(missing, ""), DEFAULT_UNIVERSE)
+
+    def test_opening_impulse_screener_writes_output_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "opening_screen.json"
+
+            write_screen_output({"selected_symbols": ["AAPL"], "export": "export SYMBOLS=AAPL"}, output)
+
+            self.assertEqual(extract_json_object(output.read_text())["selected_symbols"], ["AAPL"])
 
     def test_opening_impulse_screener_ignores_invalid_quote_snapshot(self):
         self.assertIsNone(usable_quote(Quote("AAPL", bid=102.0, ask=0.0, bid_size=0, ask_size=0, timestamp_ms=0)))
