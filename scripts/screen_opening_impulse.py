@@ -1,0 +1,371 @@
+import argparse
+import json
+import math
+import sys
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
+from statistics import median
+from zoneinfo import ZoneInfo
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config import Settings
+from models import Bar, Quote
+
+
+MARKET_TZ = ZoneInfo("America/New_York")
+OPEN_TIME = time(9, 30)
+
+
+DEFAULT_UNIVERSE = [
+    "AAPL",
+    "ABNB",
+    "ADBE",
+    "AMD",
+    "AMGN",
+    "AMZN",
+    "AVGO",
+    "BA",
+    "BABA",
+    "BAC",
+    "COIN",
+    "COST",
+    "CRM",
+    "CRWD",
+    "CVX",
+    "DIS",
+    "F",
+    "GOOGL",
+    "HD",
+    "INTC",
+    "JPM",
+    "KO",
+    "LLY",
+    "MA",
+    "META",
+    "MRNA",
+    "MSFT",
+    "NFLX",
+    "NKE",
+    "NVDA",
+    "ORCL",
+    "PANW",
+    "PEP",
+    "PFE",
+    "PLTR",
+    "PYPL",
+    "QCOM",
+    "RIVN",
+    "SHOP",
+    "SNOW",
+    "TSLA",
+    "UBER",
+    "UNH",
+    "V",
+    "WMT",
+    "XOM",
+]
+
+
+def parse_symbols(raw: str) -> list[str]:
+    return [part.strip().upper() for part in raw.replace("\n", ",").split(",") if part.strip()]
+
+
+def load_universe(path: Path | None, raw_symbols: str) -> list[str]:
+    if raw_symbols:
+        symbols = parse_symbols(raw_symbols)
+    elif path:
+        symbols = parse_symbols(path.read_text())
+    else:
+        symbols = DEFAULT_UNIVERSE
+
+    return sorted(dict.fromkeys(symbols))
+
+
+def parse_as_of(raw: str | None) -> datetime:
+    if not raw:
+        return datetime.now(tz=MARKET_TZ)
+    value = datetime.fromisoformat(raw)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=MARKET_TZ)
+    return value.astimezone(MARKET_TZ)
+
+
+def previous_session_dates(as_of: datetime, count: int) -> list[date]:
+    sessions = []
+    current = as_of.astimezone(MARKET_TZ).date() - timedelta(days=1)
+    while len(sessions) < count:
+        if current.weekday() < 5:
+            sessions.append(current)
+        current -= timedelta(days=1)
+    return sorted(sessions)
+
+
+def opening_bounds(session_dates: list[date], opening_minutes: int) -> tuple[datetime, datetime]:
+    if not session_dates:
+        raise ValueError("At least one prior session is required.")
+    start = datetime.combine(session_dates[0], OPEN_TIME, tzinfo=MARKET_TZ)
+    end = datetime.combine(session_dates[-1], OPEN_TIME, tzinfo=MARKET_TZ) + timedelta(minutes=opening_minutes)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def bar_session_date(bar: Bar) -> date:
+    return datetime.fromtimestamp(bar.start_ms / 1000, tz=timezone.utc).astimezone(MARKET_TZ).date()
+
+
+def in_opening_window(bar: Bar, opening_minutes: int) -> bool:
+    timestamp = datetime.fromtimestamp(bar.start_ms / 1000, tz=timezone.utc).astimezone(MARKET_TZ)
+    open_at = datetime.combine(timestamp.date(), OPEN_TIME, tzinfo=MARKET_TZ)
+    return open_at <= timestamp < open_at + timedelta(minutes=opening_minutes)
+
+
+def opening_session_metrics(bars: list[Bar], opening_minutes: int) -> list[dict]:
+    grouped: dict[date, list[Bar]] = defaultdict(list)
+    for bar in bars:
+        if in_opening_window(bar, opening_minutes):
+            grouped[bar_session_date(bar)].append(bar)
+
+    sessions = []
+    for session_date, session_bars in grouped.items():
+        ordered = sorted(session_bars, key=lambda item: item.start_ms)
+        first = ordered[0]
+        if first.open <= 0:
+            continue
+        high = max(bar.high for bar in ordered)
+        low = min(bar.low for bar in ordered)
+        close = ordered[-1].close
+        dollar_volume = sum(bar.close * bar.volume for bar in ordered if bar.close > 0 and bar.volume > 0)
+        sessions.append(
+            {
+                "date": session_date.isoformat(),
+                "open": first.open,
+                "close": close,
+                "high_move_bps": ((high - first.open) / first.open) * 10_000,
+                "close_move_bps": ((close - first.open) / first.open) * 10_000,
+                "opening_range_bps": ((high - low) / first.open) * 10_000,
+                "dollar_volume": dollar_volume,
+                "bar_count": len(ordered),
+            }
+        )
+    return sorted(sessions, key=lambda item: item["date"])
+
+
+def score_candidate(
+    symbol: str,
+    bars: list[Bar],
+    quote: Quote | None,
+    opening_minutes: int,
+    min_price: float,
+    max_price: float,
+    min_opening_days: int,
+    min_opening_dollar_volume: float,
+    min_impulse_bps: float,
+    min_opening_range_bps: float,
+    max_spread_bps: float,
+) -> dict | None:
+    sessions = opening_session_metrics(bars, opening_minutes)
+    if len(sessions) < min_opening_days:
+        return None
+
+    last_price = quote.mid if quote else bars[-1].close if bars else 0.0
+    if last_price < min_price or last_price > max_price:
+        return None
+
+    dollar_volumes = [session["dollar_volume"] for session in sessions if session["dollar_volume"] > 0]
+    if not dollar_volumes:
+        return None
+    median_opening_dollar_volume = median(dollar_volumes)
+    if median_opening_dollar_volume < min_opening_dollar_volume:
+        return None
+
+    high_moves = [session["high_move_bps"] for session in sessions]
+    close_moves = [session["close_move_bps"] for session in sessions]
+    opening_ranges = [session["opening_range_bps"] for session in sessions]
+    median_high_move_bps = median(high_moves)
+    median_close_move_bps = median(close_moves)
+    median_opening_range_bps = median(opening_ranges)
+    if median_opening_range_bps < min_opening_range_bps:
+        return None
+
+    impulse_day_ratio = sum(move >= min_impulse_bps for move in high_moves) / len(high_moves)
+    range_day_ratio = sum(move >= min_opening_range_bps for move in opening_ranges) / len(opening_ranges)
+
+    spread_bps = quote.spread_bps if quote else max_spread_bps
+    if spread_bps > max_spread_bps:
+        return None
+
+    quote_size = min(quote.bid_size, quote.ask_size) if quote else 0
+
+    liquidity_score = min(math.log10(median_opening_dollar_volume / min_opening_dollar_volume + 1), 3.0)
+    spread_score = max(0.0, 1.0 - (spread_bps / max_spread_bps))
+    movement_score = min(max(median_high_move_bps, 0.0) / max(min_impulse_bps, 1.0), 3.0)
+    range_score = min(median_opening_range_bps / max(min_opening_range_bps, 1.0), 2.0)
+    consistency_score = impulse_day_ratio * 2.0
+    size_score = min(quote_size / 100.0, 1.0)
+    score = (
+        (liquidity_score * 3.0)
+        + (spread_score * 2.0)
+        + (movement_score * 2.0)
+        + (range_score * 2.0)
+        + consistency_score
+        + size_score
+    )
+
+    return {
+        "symbol": symbol,
+        "score": round(score, 3),
+        "price": round(last_price, 2),
+        "spread_bps": round(spread_bps, 2),
+        "opening_days": len(sessions),
+        "median_opening_dollar_volume": round(median_opening_dollar_volume, 2),
+        "median_opening_high_move_bps": round(median_high_move_bps, 2),
+        "median_opening_close_move_bps": round(median_close_move_bps, 2),
+        "median_opening_range_bps": round(median_opening_range_bps, 2),
+        "impulse_day_ratio": round(impulse_day_ratio, 3),
+        "range_day_ratio": round(range_day_ratio, 3),
+        "quote_size": quote_size,
+    }
+
+
+def get_opening_bars(
+    settings: Settings,
+    symbols: list[str],
+    session_dates: list[date],
+    opening_minutes: int,
+) -> dict[str, list[Bar]]:
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from alpaca_client import make_clients, to_bar
+
+    clients = make_clients(settings)
+    start, end = opening_bounds(session_dates, opening_minutes)
+    requested_dates = set(session_dates)
+    results: dict[str, list[Bar]] = {}
+
+    for symbol in symbols:
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute,
+            start=start,
+            end=end,
+            feed=clients.feed,
+        )
+        response = clients.historical.get_stock_bars(request)
+        bars = [to_bar(item) for item in response.data.get(symbol, [])]
+        results[symbol] = [
+            bar
+            for bar in bars
+            if bar_session_date(bar) in requested_dates and in_opening_window(bar, opening_minutes)
+        ]
+    return results
+
+
+def screen(args: argparse.Namespace) -> dict:
+    from alpaca_client import get_latest_quotes
+
+    if args.days < 1:
+        raise ValueError("--days must be at least 1.")
+    if args.opening_minutes < 1:
+        raise ValueError("--opening-minutes must be at least 1.")
+    if args.min_opening_days < 1:
+        raise ValueError("--min-opening-days must be at least 1.")
+
+    settings_kwargs = {}
+    if args.alpaca_api_key:
+        settings_kwargs["alpaca_api_key"] = args.alpaca_api_key
+    if args.alpaca_secret_key:
+        settings_kwargs["alpaca_secret_key"] = args.alpaca_secret_key
+
+    settings = Settings(**settings_kwargs)
+    min_opening_range_bps = (
+        args.min_opening_range_pct * 10_000
+        if args.min_opening_range_pct is not None
+        else (settings.target_profit_pct + min(settings.target_profit_pct, args.opening_range_buffer_pct)) * 10_000
+    )
+    universe = load_universe(args.universe_file, args.symbols)
+    as_of = parse_as_of(args.as_of)
+    session_dates = previous_session_dates(as_of, args.days)
+    bars_by_symbol = get_opening_bars(settings, universe, session_dates, args.opening_minutes)
+    quotes = get_latest_quotes(settings, universe)
+
+    candidates = []
+    for symbol in universe:
+        result = score_candidate(
+            symbol=symbol,
+            bars=bars_by_symbol.get(symbol, []),
+            quote=quotes.get(symbol),
+            opening_minutes=args.opening_minutes,
+            min_price=args.min_price,
+            max_price=args.max_price,
+            min_opening_days=args.min_opening_days,
+            min_opening_dollar_volume=args.min_opening_dollar_volume,
+            min_impulse_bps=args.min_impulse_bps,
+            min_opening_range_bps=min_opening_range_bps,
+            max_spread_bps=args.max_spread_bps,
+        )
+        if result:
+            candidates.append(result)
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    selected = candidates[: args.top]
+    return {
+        "selected_symbols": [item["symbol"] for item in selected],
+        "export": f"export SYMBOLS={','.join(item['symbol'] for item in selected)}",
+        "candidates": selected,
+        "screened": len(universe),
+        "session_dates": [value.isoformat() for value in session_dates],
+        "opening_window": f"09:30-{(datetime.combine(date.today(), OPEN_TIME) + timedelta(minutes=args.opening_minutes)).time().strftime('%H:%M')} America/New_York",
+        "target_profit_pct": settings.target_profit_pct,
+        "min_opening_range_pct": round(min_opening_range_bps / 10_000, 4),
+        "as_of": as_of.isoformat(),
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Pre-session REST screener for opening_impulse candidates. "
+            "Uses previous regular-session opening bars and one quote snapshot; "
+            "it does not open a live stream."
+        )
+    )
+    parser.add_argument("--symbols", default="", help="Comma-separated universe override.")
+    parser.add_argument("--universe-file", type=Path, help="File with comma/newline separated symbols.")
+    parser.add_argument("--top", type=int, default=12)
+    parser.add_argument("--days", type=int, default=10, help="Prior weekday sessions to inspect.")
+    parser.add_argument("--opening-minutes", type=int, default=30, help="Minutes after 09:30 ET to inspect.")
+    parser.add_argument("--min-opening-days", type=int, default=4)
+    parser.add_argument("--min-price", type=float, default=10.0)
+    parser.add_argument("--max-price", type=float, default=900.0)
+    parser.add_argument("--min-opening-dollar-volume", type=float, default=2_000_000.0)
+    parser.add_argument("--min-impulse-bps", type=float, default=60.0)
+    parser.add_argument(
+        "--min-opening-range-pct",
+        type=float,
+        default=None,
+        help="Minimum median opening-window range. Defaults to TARGET_PROFIT_PCT plus a capped cushion.",
+    )
+    parser.add_argument(
+        "--opening-range-buffer-pct",
+        type=float,
+        default=0.01,
+        help="Maximum extra opening range cushion when --min-opening-range-pct is not set.",
+    )
+    parser.add_argument("--max-spread-bps", type=float, default=8.0)
+    parser.add_argument("--as-of", default=None, help="ISO datetime/date in New York time for reproducible screens.")
+    parser.add_argument("--alpaca-api-key", default=None)
+    parser.add_argument("--alpaca-secret-key", default=None)
+    return parser.parse_args()
+
+
+def main() -> None:
+    result = screen(parse_args())
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print(result["export"])
+
+
+if __name__ == "__main__":
+    main()

@@ -89,6 +89,28 @@ export SYMBOLS=AAPL,MSFT,NVDA,TSLA,META
 venv/bin/python main.py
 ```
 
+## Target Selection
+
+Generate a fresh target list for `opening_impulse` before the session:
+
+```bash
+venv/bin/python scripts/screen_opening_impulse.py --top 12
+```
+
+The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, and quote size, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
+
+By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
+
+```bash
+venv/bin/python scripts/screen_opening_impulse.py --days 10 --opening-minutes 30 --top 12
+```
+
+The minimum expected opening fluctuation follows the configured profit target automatically: `min_opening_range_pct = TARGET_PROFIT_PCT + min(TARGET_PROFIT_PCT, opening_range_buffer_pct)`. With the default `TARGET_PROFIT_PCT=0.01` and `--opening-range-buffer-pct 0.01`, candidates need about a `2%` median opening-window range. A larger target adds the same cushion instead of doubling without limit. Override it only when you intentionally want a different screen:
+
+```bash
+venv/bin/python scripts/screen_opening_impulse.py --min-opening-range-pct 0.015
+```
+
 ## Test
 
 ```bash

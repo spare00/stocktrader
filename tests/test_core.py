@@ -11,6 +11,7 @@ from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, Positio
 from models import Bar, Quote
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
+from scripts.screen_opening_impulse import opening_session_metrics, previous_session_dates, score_candidate
 from strategies import build_strategies
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
@@ -37,7 +38,63 @@ def bar(symbol: str, close: float, volume: float, end_ms: int) -> Bar:
     )
 
 
+def opening_bar(
+    symbol: str,
+    open_price: float,
+    high: float,
+    close: float,
+    volume: float,
+    start_ms: int,
+) -> Bar:
+    return Bar(
+        symbol=symbol,
+        open=open_price,
+        high=high,
+        low=min(open_price, close),
+        close=close,
+        volume=volume,
+        vwap=close,
+        start_ms=start_ms,
+        end_ms=start_ms + 60_000,
+    )
+
+
 class CoreTradingTests(unittest.TestCase):
+    def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
+        as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
+
+        self.assertEqual(
+            [value.isoformat() for value in previous_session_dates(as_of, 2)],
+            ["2026-04-23", "2026-04-24"],
+        )
+
+        bars = [
+            opening_bar("AAPL", 100.0, 101.0, 100.8, 50_000, market_ms(2026, 4, 23, 9, 30)),
+            opening_bar("AAPL", 101.0, 103.0, 102.0, 60_000, market_ms(2026, 4, 24, 9, 45)),
+            opening_bar("AAPL", 102.0, 120.0, 119.0, 1_000, market_ms(2026, 4, 24, 8, 0)),
+            opening_bar("AAPL", 102.0, 130.0, 129.0, 1_000, market_ms(2026, 4, 24, 10, 5)),
+        ]
+
+        sessions = opening_session_metrics(bars, opening_minutes=30)
+        result = score_candidate(
+            symbol="AAPL",
+            bars=bars,
+            quote=Quote("AAPL", bid=102.0, ask=102.04, bid_size=200, ask_size=200, timestamp_ms=0),
+            opening_minutes=30,
+            min_price=10.0,
+            max_price=900.0,
+            min_opening_days=2,
+            min_opening_dollar_volume=1_000_000.0,
+            min_impulse_bps=60.0,
+            min_opening_range_bps=100.0,
+            max_spread_bps=8.0,
+        )
+
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(result["opening_days"], 2)
+        self.assertGreaterEqual(result["median_opening_high_move_bps"], 100.0)
+        self.assertGreaterEqual(result["median_opening_range_bps"], 100.0)
+
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
         state = SymbolState("AAPL")
