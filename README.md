@@ -115,6 +115,8 @@ Run the monitor with the plan when you want the AI-filtered symbols and conserva
 venv/bin/python main.py --use-opening-plan
 ```
 
+Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio.
+
 The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, quote size, daily trend/reversal context, and opening follow-through quality, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
 
 The `data/` files act like embedded memory for the workflow. The universe builder writes `data/opening_universe.txt` by default. When that file exists, the daily screener reads it by default; if it has not been generated yet, the screener falls back to its built-in starter universe. The daily screener writes `data/opening_screen.json` by default, and the AI plan step writes `data/opening_plan.json` by default.

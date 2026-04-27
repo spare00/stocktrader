@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from ai_agent import SignalReviewer
@@ -16,10 +17,29 @@ from strategies import build_strategies
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
+LOG_DIR = Path("logs")
+LOG_FILE = LOG_DIR / "trader.log"
 
 
 def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
+
+
+def setup_logging() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter(LOG_FORMAT)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(formatter)
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5_000_000, backupCount=10)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(console)
+    root.addHandler(file_handler)
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,7 +50,7 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main(args: argparse.Namespace | None = None) -> None:
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    setup_logging()
 
     args = args or parse_args()
     settings = load_settings()

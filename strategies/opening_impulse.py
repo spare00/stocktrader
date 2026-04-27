@@ -1,5 +1,6 @@
 from collections import deque
 from datetime import datetime
+import logging
 from statistics import median
 
 from candle import SymbolState
@@ -9,50 +10,88 @@ from models import ExitDecision, Signal
 from strategies.base import Strategy
 
 
+LOG = logging.getLogger(__name__)
+
+
 class OpeningImpulseStrategy(Strategy):
     name = "opening_impulse"
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.market_tz = MARKET_TZ
+        self._last_reject_log_ms: dict[tuple[str, str], int] = {}
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "quote":
             return None
 
         if not self._within_trading_window(state.last_event_ms):
-            return None
+            return self._reject(state, "window", "outside opening impulse entry window")
 
         quotes = self._recent_quotes(state, self.settings.opening_impulse_window_seconds)
         if len(quotes) < self.settings.opening_impulse_min_quotes:
-            return None
+            return self._reject(
+                state,
+                "quotes",
+                f"quotes {len(quotes)} < {self.settings.opening_impulse_min_quotes}",
+            )
 
         first = quotes[0]
         last = quotes[-1]
         change_pct = (last.mid - first.mid) / first.mid
         if change_pct < self.settings.opening_impulse_change_pct:
-            return None
+            return self._reject(
+                state,
+                "change",
+                f"change {change_pct:.3%} < {self.settings.opening_impulse_change_pct:.3%}",
+            )
 
         if change_pct > self.settings.opening_impulse_skip_extended_pct:
-            return None
+            return self._reject(
+                state,
+                "extended",
+                f"change {change_pct:.3%} > {self.settings.opening_impulse_skip_extended_pct:.3%}",
+            )
 
         spread_bps = last.spread_bps
         if spread_bps > self.settings.opening_impulse_max_spread_bps:
-            return None
+            return self._reject(
+                state,
+                "spread",
+                f"spread {spread_bps:.2f}bps > {self.settings.opening_impulse_max_spread_bps:.2f}bps",
+            )
 
         if min(last.bid_size, last.ask_size) < self.settings.opening_impulse_min_quote_size:
-            return None
+            return self._reject(
+                state,
+                "quote_size",
+                f"quote size {min(last.bid_size, last.ask_size)} < {self.settings.opening_impulse_min_quote_size}",
+            )
 
-        if not self._velocity_positive(quotes):
-            return None
+        negative_steps = self._negative_steps(quotes)
+        if negative_steps > self.settings.opening_impulse_max_negative_steps:
+            return self._reject(
+                state,
+                "velocity",
+                f"negative quote steps {negative_steps} > {self.settings.opening_impulse_max_negative_steps}",
+            )
 
         recent_high = max(quote.mid for quote in quotes)
         if last.mid < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
-            return None
+            retrace_pct = (recent_high - last.mid) / recent_high
+            return self._reject(
+                state,
+                "retrace",
+                f"retrace {retrace_pct:.3%} > {self.settings.opening_impulse_retrace_from_high_pct:.3%}",
+            )
 
         volume_ratio = self._volume_ratio(state)
         if volume_ratio < self.settings.opening_impulse_volume_ratio:
-            return None
+            return self._reject(
+                state,
+                "volume",
+                f"volume {volume_ratio:.2f}x < {self.settings.opening_impulse_volume_ratio:.2f}x",
+            )
 
         elapsed_seconds = (last.timestamp_ms - first.timestamp_ms) / 1000
         return Signal(
@@ -93,6 +132,15 @@ class OpeningImpulseStrategy(Strategy):
 
         return None
 
+    def _reject(self, state: SymbolState, code: str, detail: str) -> None:
+        timestamp_ms = state.last_event_ms or 0
+        key = (state.symbol, code)
+        last_log_ms = self._last_reject_log_ms.get(key, -10_000)
+        if timestamp_ms - last_log_ms >= 10_000:
+            self._last_reject_log_ms[key] = timestamp_ms
+            LOG.debug("No opening_impulse entry %s: %s", state.symbol, detail)
+        return None
+
     def _within_trading_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None:
             return False
@@ -110,12 +158,13 @@ class OpeningImpulseStrategy(Strategy):
         threshold = latest_ms - (window_seconds * 1000)
         return [quote for quote in state.quotes if quote.timestamp_ms >= threshold]
 
-    def _velocity_positive(self, quotes: list) -> bool:
-        rises = 0
+    @staticmethod
+    def _negative_steps(quotes: list) -> int:
+        negative_steps = 0
         for index in range(1, len(quotes)):
-            if quotes[index].mid >= quotes[index - 1].mid:
-                rises += 1
-        return rises >= max(len(quotes) - self.settings.opening_impulse_max_negative_steps, 1)
+            if quotes[index].mid < quotes[index - 1].mid:
+                negative_steps += 1
+        return negative_steps
 
     @staticmethod
     def _volume_ratio(state: SymbolState) -> float:

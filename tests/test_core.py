@@ -2,6 +2,7 @@ import unittest
 import sys
 import types
 import tempfile
+import logging
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 from candle import SymbolState
 from config import Settings
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
+import main as trading_main
 from models import Bar, Quote
 from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan, plan_overrides
 from risk import RiskManager
@@ -894,6 +896,31 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.strategy, "opening_impulse")
         self.assertEqual(signal.side, "BUY")
 
+    def test_opening_impulse_logs_rejection_reason(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_min_quotes=10,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=100.0,
+                ask=100.02,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 4, 24, 9, 45),
+            )
+        )
+
+        with self.assertLogs("strategies.opening_impulse", level="DEBUG") as captured:
+            signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNone(signal)
+        self.assertIn("quotes 1 < 10", "\n".join(captured.output))
+
     def test_opening_impulse_exit_on_momentum_fade(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
         strategy = OpeningImpulseStrategy(settings)
@@ -926,6 +953,32 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertIn("momentum", decision.reason)
+
+    def test_setup_logging_creates_rotating_log_file(self):
+        old_log_dir = trading_main.LOG_DIR
+        old_log_file = trading_main.LOG_FILE
+        old_handlers = logging.getLogger().handlers[:]
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                trading_main.LOG_DIR = Path(tmpdir) / "logs"
+                trading_main.LOG_FILE = trading_main.LOG_DIR / "trader.log"
+
+                trading_main.setup_logging()
+                logging.debug("diagnostic test")
+
+                for handler in logging.getLogger().handlers:
+                    handler.flush()
+
+                self.assertTrue(trading_main.LOG_FILE.exists())
+                self.assertIn("diagnostic test", trading_main.LOG_FILE.read_text())
+        finally:
+            for handler in logging.getLogger().handlers[:]:
+                handler.close()
+                logging.getLogger().removeHandler(handler)
+            for handler in old_handlers:
+                logging.getLogger().addHandler(handler)
+            trading_main.LOG_DIR = old_log_dir
+            trading_main.LOG_FILE = old_log_file
 
     def test_build_strategies_returns_enabled_strategies(self):
         settings = Settings(
