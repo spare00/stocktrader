@@ -11,19 +11,15 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+cp profiles/paper.env.example profiles/paper.env
 ```
 
-Set your Alpaca paper credentials in your shell or `.env` loader. Optional OpenAI reviews require `OPENAI_API_KEY` and `AI_REVIEW=true`.
+Set your Alpaca/OpenAI keys in `.env`. Keep experiment tunables in `profiles/paper.env`; that is the file to adjust while searching for better paper-trading behavior. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
 
-For Alpaca paper mode, export:
+For Alpaca paper mode, run:
 
 ```bash
-export ALPACA_API_KEY=...
-export ALPACA_SECRET_KEY=...
-export ALPACA_PAPER=true
-export ALPACA_DATA_FEED=iex
-export EXECUTION_MODE=local
-export STRATEGIES=opening_impulse
+scripts/run_paper.sh
 ```
 
 ## Alpaca Smoke Test
@@ -109,10 +105,22 @@ Optionally turn that screen into a bounded AI pre-market plan:
 venv/bin/python scripts/ai_opening_plan.py
 ```
 
-Run the monitor with the plan when you want the AI-filtered symbols and conservative setting adjustments:
+Run the monitor with keys from `.env` and tunables from `profiles/paper.env`:
 
 ```bash
-venv/bin/python main.py --use-opening-plan
+scripts/run_paper.sh
+```
+
+To test a different paper profile without editing the default one:
+
+```bash
+TUNING_PROFILE=profiles/paper_aggressive.env scripts/run_paper.sh
+```
+
+If you intentionally want to use the AI-filtered opening plan, pass the normal `main.py` option through:
+
+```bash
+scripts/run_paper.sh --use-opening-plan
 ```
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
