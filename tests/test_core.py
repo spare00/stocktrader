@@ -1281,6 +1281,78 @@ class CoreTradingTests(unittest.TestCase):
         finally:
             remove_fake_alpaca_modules()
 
+    def test_alpaca_buy_generates_unique_client_order_id(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["AAPL"],
+                regular_market_only=False,
+                alpaca_fill_timeout_seconds=0.0,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.clients = FakeClients(
+                [FakeOrder("buy-1", status="filled", filled_qty="5", filled_avg_price="100.00")]
+            )
+            signal = Signal(
+                symbol="AAPL",
+                side="BUY",
+                price=100.0,
+                change_pct=0.01,
+                volume_ratio=2.5,
+                spread_bps=4.0,
+                reason="test",
+                timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+                strategy="opening_impulse",
+            )
+
+            executor.buy(signal)
+            first = executor.clients.trading.submitted_orders[0].client_order_id
+            executor.clients.trading.orders.append(FakeOrder("buy-2", status="filled", filled_qty="5", filled_avg_price="100.00"))
+            executor.tracker.positions.pop("AAPL", None)
+            executor.buy(signal)
+            second = executor.clients.trading.submitted_orders[1].client_order_id
+
+            self.assertNotEqual(first, second)
+        finally:
+            remove_fake_alpaca_modules()
+
+    def test_alpaca_buy_api_error_is_logged_and_skipped(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["AAPL"],
+                regular_market_only=False,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.clients = FakeClients([], submit_error=FakeAPIError('{"code":40010001,"message":"client_order_id must be unique"}'))
+            signal = Signal(
+                symbol="AAPL",
+                side="BUY",
+                price=100.0,
+                change_pct=0.01,
+                volume_ratio=2.5,
+                spread_bps=4.0,
+                reason="test",
+                timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+                strategy="opening_impulse",
+            )
+
+            with self.assertLogs("execution", level="WARNING") as captured:
+                fill = executor.buy(signal)
+
+            self.assertIsNone(fill)
+            self.assertIn("Alpaca buy order rejected", captured.output[0])
+        finally:
+            remove_fake_alpaca_modules()
+
     def test_shutdown_flatten_only_runs_inside_close_window(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], flatten_before_close_minutes=5)
         executor = FakeExecutor()
@@ -1779,11 +1851,13 @@ class FakeTrading:
         positions: list[FakePosition] | None = None,
         open_orders: list[FakeOrder] | None = None,
         cash: str = "10000.00",
+        submit_error: Exception | None = None,
     ):
         self.orders = orders
         self.positions = positions or []
         self.open_orders = open_orders or []
         self.cash = cash
+        self.submit_error = submit_error
         self.cancel_called = False
         self.canceled_order_ids = []
         self.submitted_orders = []
@@ -1802,6 +1876,8 @@ class FakeTrading:
 
     def submit_order(self, order_data):
         self.submitted_orders.append(order_data)
+        if self.submit_error is not None:
+            raise self.submit_error
         return self.orders.pop(0)
 
     def cancel_order_by_id(self, order_id: str) -> None:
@@ -1819,8 +1895,9 @@ class FakeClients:
         positions: list[FakePosition] | None = None,
         open_orders: list[FakeOrder] | None = None,
         cash: str = "10000.00",
+        submit_error: Exception | None = None,
     ):
-        self.trading = FakeTrading(orders, positions=positions, open_orders=open_orders, cash=cash)
+        self.trading = FakeTrading(orders, positions=positions, open_orders=open_orders, cash=cash, submit_error=submit_error)
 
 
 class FakeExecutor:
@@ -1832,7 +1909,10 @@ class FakeExecutor:
 
 
 def install_fake_alpaca_modules() -> None:
+    global FakeAPIError
     alpaca = types.ModuleType("alpaca")
+    common = types.ModuleType("alpaca.common")
+    exceptions = types.ModuleType("alpaca.common.exceptions")
     trading = types.ModuleType("alpaca.trading")
     enums = types.ModuleType("alpaca.trading.enums")
     requests = types.ModuleType("alpaca.trading.requests")
@@ -1848,16 +1928,25 @@ def install_fake_alpaca_modules() -> None:
             self.time_in_force = time_in_force
             self.client_order_id = client_order_id
 
+    class APIError(Exception):
+        pass
+
+    FakeAPIError = APIError
+    exceptions.APIError = APIError
     requests.MarketOrderRequest = MarketOrderRequest
     sys.modules["alpaca"] = alpaca
+    sys.modules["alpaca.common"] = common
+    sys.modules["alpaca.common.exceptions"] = exceptions
     sys.modules["alpaca.trading"] = trading
     sys.modules["alpaca.trading.enums"] = enums
     sys.modules["alpaca.trading.requests"] = requests
 
 
 def remove_fake_alpaca_modules() -> None:
-    for name in ["alpaca.trading.requests", "alpaca.trading.enums", "alpaca.trading", "alpaca"]:
+    for name in ["alpaca.common.exceptions", "alpaca.common", "alpaca.trading.requests", "alpaca.trading.enums", "alpaca.trading", "alpaca"]:
         sys.modules.pop(name, None)
+
+FakeAPIError = Exception
 
 
 if __name__ == "__main__":

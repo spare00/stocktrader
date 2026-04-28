@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -235,6 +236,7 @@ class AlpacaPaperExecutor:
         return self.tracker.total_pnl(mark_prices)
 
     def buy(self, signal: Signal) -> Fill | None:
+        from alpaca.common.exceptions import APIError
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
@@ -255,9 +257,13 @@ class AlpacaPaperExecutor:
             qty=shares,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY,
-            client_order_id=f"codex-{signal.symbol.lower()}-{signal.timestamp_ms}-buy",
+            client_order_id=self._new_client_order_id(signal.symbol, "buy", signal.timestamp_ms),
         )
-        order = self.clients.trading.submit_order(order_data=request)
+        try:
+            order = self.clients.trading.submit_order(order_data=request)
+        except APIError as exc:
+            LOG.warning("Skipping %s: Alpaca buy order rejected: %s", signal.symbol, exc)
+            return None
         settled = self._settled_fill(order)
         if settled is None:
             LOG.info("Skipping %s: Alpaca buy order was not confirmed filled | order=%s", signal.symbol, order.id)
@@ -275,6 +281,7 @@ class AlpacaPaperExecutor:
         return fill
 
     def manage_exit(self, state, strategies_by_name, now_ms: int | None = None) -> Fill | None:
+        from alpaca.common.exceptions import APIError
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
@@ -320,9 +327,13 @@ class AlpacaPaperExecutor:
             qty=position.shares,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
-            client_order_id=f"codex-{state.symbol.lower()}-{event_ms}-sell",
+            client_order_id=self._new_client_order_id(state.symbol, "sell", event_ms),
         )
-        order = self.clients.trading.submit_order(order_data=request)
+        try:
+            order = self.clients.trading.submit_order(order_data=request)
+        except APIError as exc:
+            LOG.warning("Keeping %s open: Alpaca sell order rejected: %s", state.symbol, exc)
+            return None
         settled = self._settled_fill(order)
         if settled is None:
             LOG.info("Keeping %s open: Alpaca sell order was not confirmed filled | order=%s", state.symbol, order.id)
@@ -343,6 +354,11 @@ class AlpacaPaperExecutor:
 
     def _market_is_open(self) -> bool:
         return bool(self.clients.trading.get_clock().is_open)
+
+    @staticmethod
+    def _new_client_order_id(symbol: str, side: str, timestamp_ms: int) -> str:
+        nonce = uuid4().hex[:8]
+        return f"codex-{symbol.lower()}-{timestamp_ms}-{side}-{nonce}"
 
     def _sync_account_cash(self) -> None:
         try:
