@@ -964,13 +964,15 @@ class CoreTradingTests(unittest.TestCase):
                 trading_main.LOG_FILE = trading_main.LOG_DIR / "trader.log"
 
                 trading_main.setup_logging()
-                logging.debug("diagnostic test")
+                logging.getLogger("strategies.opening_impulse").debug("diagnostic test")
 
                 for handler in logging.getLogger().handlers:
                     handler.flush()
 
                 self.assertTrue(trading_main.LOG_FILE.exists())
                 self.assertIn("diagnostic test", trading_main.LOG_FILE.read_text())
+                self.assertEqual(logging.getLogger("strategies.opening_impulse").level, logging.DEBUG)
+                self.assertEqual(logging.getLogger("websockets.client").level, logging.INFO)
         finally:
             for handler in logging.getLogger().handlers[:]:
                 handler.close()
@@ -979,6 +981,44 @@ class CoreTradingTests(unittest.TestCase):
                 logging.getLogger().addHandler(handler)
             trading_main.LOG_DIR = old_log_dir
             trading_main.LOG_FILE = old_log_file
+
+    def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):
+        log_filter = trading_main.FriendlyAlpacaStreamErrorFilter(min_interval_seconds=60)
+        exc = OSError("[Errno 8] nodename nor servname provided, or not known")
+        record = logging.LogRecord(
+            "alpaca.data.live.websocket",
+            logging.ERROR,
+            "stream.py",
+            10,
+            "error during websocket communication: %s",
+            (exc,),
+            (type(exc), exc, None),
+        )
+
+        self.assertTrue(log_filter.filter(record))
+
+        message = record.getMessage()
+        self.assertIn("Alpaca market-data stream connection problem", message)
+        self.assertIn("Check internet/DNS/VPN", message)
+        self.assertIsNone(record.exc_info)
+
+    def test_alpaca_stream_error_filter_throttles_repeated_dns_errors(self):
+        log_filter = trading_main.FriendlyAlpacaStreamErrorFilter(min_interval_seconds=60)
+        exc = OSError("[Errno 8] nodename nor servname provided, or not known")
+
+        def make_record() -> logging.LogRecord:
+            return logging.LogRecord(
+                "alpaca.data.live.websocket",
+                logging.ERROR,
+                "stream.py",
+                10,
+                "error during websocket communication: %s",
+                (exc,),
+                (type(exc), exc, None),
+            )
+
+        self.assertTrue(log_filter.filter(make_record()))
+        self.assertFalse(log_filter.filter(make_record()))
 
     def test_build_strategies_returns_enabled_strategies(self):
         settings = Settings(

@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import logging
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -19,6 +20,65 @@ from strategies import build_strategies
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "trader.log"
+DIAGNOSTIC_LOGGERS = ("strategies.opening_impulse",)
+NOISY_LOGGERS = (
+    "alpaca",
+    "alpaca.data.live.websocket",
+    "websockets",
+    "websockets.client",
+)
+ALPACA_STREAM_LOGGER = "alpaca.data.live.websocket"
+
+
+class FriendlyAlpacaStreamErrorFilter(logging.Filter):
+    def __init__(self, min_interval_seconds: float = 60.0):
+        super().__init__()
+        self.min_interval_seconds = min_interval_seconds
+        self._last_logged: dict[str, float] = {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != ALPACA_STREAM_LOGGER or "error during websocket communication" not in record.getMessage():
+            return True
+
+        detail = self._error_detail(record)
+        key = "dns" if self._is_dns_error(detail) else "websocket"
+        now = time.monotonic()
+        last_logged = self._last_logged.get(key)
+        if last_logged is not None and now - last_logged < self.min_interval_seconds:
+            return False
+        self._last_logged[key] = now
+
+        if key == "dns":
+            record.msg = (
+                "Alpaca market-data stream connection problem: cannot resolve Alpaca's data host. "
+                "Check internet/DNS/VPN; the bot will not receive live quotes until the stream reconnects. "
+                "Detail: %s"
+            )
+        else:
+            record.msg = (
+                "Alpaca market-data stream interrupted. The bot may miss live quotes until the stream reconnects. "
+                "Detail: %s"
+            )
+        record.args = (detail,)
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+    @staticmethod
+    def _error_detail(record: logging.LogRecord) -> str:
+        if record.exc_info and record.exc_info[1]:
+            return str(record.exc_info[1]) or record.exc_info[1].__class__.__name__
+        message = record.getMessage().replace("error during websocket communication", "").strip(": ")
+        return message or "unknown stream error"
+
+    @staticmethod
+    def _is_dns_error(detail: str) -> bool:
+        detail_lower = detail.lower()
+        return (
+            "nodename nor servname provided" in detail_lower
+            or "name or service not known" in detail_lower
+            or "temporary failure in name resolution" in detail_lower
+        )
 
 
 def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
@@ -31,15 +91,22 @@ def setup_logging() -> None:
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(formatter)
+    console.addFilter(FriendlyAlpacaStreamErrorFilter())
     file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5_000_000, backupCount=10)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(FriendlyAlpacaStreamErrorFilter())
 
     root = logging.getLogger()
     root.handlers.clear()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
     root.addHandler(console)
     root.addHandler(file_handler)
+
+    for logger_name in DIAGNOSTIC_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.DEBUG)
+    for logger_name in NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.INFO)
 
 
 def parse_args() -> argparse.Namespace:
