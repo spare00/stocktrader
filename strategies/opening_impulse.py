@@ -43,27 +43,25 @@ class OpeningImpulseStrategy(Strategy):
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
 
     def evaluate(self, state: SymbolState) -> Signal | None:
-        if state.last_event_kind != "quote":
+        if state.last_event_kind not in {"quote", "bar"}:
             return None
 
         if not self._within_trading_window(state.last_event_ms):
             return self._reject(state, "window", "outside opening impulse entry window")
 
+        last = self._latest_valid_quote(state)
+        if last is None:
+            return self._reject(state, "quote", "invalid or missing latest quote")
+
         quotes = self._recent_quotes(state, self.settings.opening_impulse_window_seconds)
-        if len(quotes) < self.settings.opening_impulse_min_quotes:
-            return self._reject(
-                state,
-                "quotes",
-                f"quotes {len(quotes)} < {self.settings.opening_impulse_min_quotes}",
-            )
-
-        first = quotes[0]
-        last = quotes[-1]
-        quote_change_pct = (last.mid - first.mid) / first.mid
+        quote_change_pct = 0.0
+        if len(quotes) >= self.settings.opening_impulse_min_quotes and quotes[0].mid > 0:
+            quote_change_pct = (quotes[-1].mid - quotes[0].mid) / quotes[0].mid
         volume_ratio = self._volume_ratio(state)
-        candidate = None
+        candidate = self._range_impulse(state, last) or self._bar_impulse(state)
 
-        if quote_change_pct >= self.settings.opening_impulse_change_pct:
+        if candidate is None and quote_change_pct >= self.settings.opening_impulse_change_pct:
+            first = quotes[0]
             candidate = EntryCandidate(
                 change_pct=quote_change_pct,
                 volume_ratio=volume_ratio,
@@ -74,61 +72,53 @@ class OpeningImpulseStrategy(Strategy):
                 ),
                 kind="quote_impulse",
             )
-        else:
-            candidate = self._bar_impulse(state) or self._range_impulse(state, last)
-            if candidate is None:
-                return self._reject(
-                    state,
-                    "change",
-                    f"change {quote_change_pct:.3%} < {self.settings.opening_impulse_change_pct:.3%}",
-                )
+
+        if candidate is None:
+            quote_detail = (
+                f"quotes {len(quotes)} < {self.settings.opening_impulse_min_quotes}"
+                if len(quotes) < self.settings.opening_impulse_min_quotes
+                else f"quote change {quote_change_pct:.3%} < {self.settings.opening_impulse_change_pct:.3%}"
+            )
+            return self._reject(state, "change", f"no bar/range signal and {quote_detail}")
+
+        penalty = 0.0
+        warnings = []
 
         if candidate.change_pct > self.settings.opening_impulse_skip_extended_pct:
-            return self._reject(
-                state,
-                "extended",
-                f"change {candidate.change_pct:.3%} > {self.settings.opening_impulse_skip_extended_pct:.3%}",
+            penalty += 1.0
+            warnings.append(
+                f"extended {candidate.change_pct:.3%} > {self.settings.opening_impulse_skip_extended_pct:.3%}"
             )
 
         spread_bps = last.spread_bps
         if spread_bps > self.settings.opening_impulse_max_spread_bps:
-            return self._reject(
-                state,
-                "spread",
-                f"spread {spread_bps:.2f}bps > {self.settings.opening_impulse_max_spread_bps:.2f}bps",
-            )
+            penalty += 1.0
+            warnings.append(f"wide spread {spread_bps:.2f}bps")
 
         if min(last.bid_size, last.ask_size) < self.settings.opening_impulse_min_quote_size:
-            return self._reject(
-                state,
-                "quote_size",
-                f"quote size {min(last.bid_size, last.ask_size)} < {self.settings.opening_impulse_min_quote_size}",
-            )
+            penalty += 0.5
+            warnings.append(f"thin quote size {min(last.bid_size, last.ask_size)}")
 
-        if candidate.kind == "quote_impulse":
+        if quotes:
             negative_steps = self._negative_steps(quotes)
             if negative_steps > self.settings.opening_impulse_max_negative_steps:
-                return self._reject(
-                    state,
-                    "velocity",
-                    f"negative quote steps {negative_steps} > {self.settings.opening_impulse_max_negative_steps}",
-                )
+                penalty += 1.0
+                warnings.append(f"negative quote steps {negative_steps}")
 
             recent_high = max(quote.mid for quote in quotes)
             if last.mid < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
                 retrace_pct = (recent_high - last.mid) / recent_high
-                return self._reject(
-                    state,
-                    "retrace",
-                    f"retrace {retrace_pct:.3%} > {self.settings.opening_impulse_retrace_from_high_pct:.3%}",
-                )
+                penalty += 1.0
+                warnings.append(f"quote retrace {retrace_pct:.3%}")
 
+        if candidate.kind == "quote_impulse":
             if candidate.volume_ratio < self.settings.opening_impulse_volume_ratio:
-                return self._reject(
-                    state,
-                    "volume",
-                    f"volume {candidate.volume_ratio:.2f}x < {self.settings.opening_impulse_volume_ratio:.2f}x",
-                )
+                penalty += 1.0
+                warnings.append(f"volume {candidate.volume_ratio:.2f}x")
+
+        reason = candidate.reason
+        if warnings:
+            reason = f"{reason} | entry_warnings penalty={penalty:.1f}: {', '.join(warnings)}"
 
         return Signal(
             strategy=self.name,
@@ -139,32 +129,39 @@ class OpeningImpulseStrategy(Strategy):
             change_pct=candidate.change_pct,
             volume_ratio=candidate.volume_ratio,
             spread_bps=spread_bps,
-            reason=candidate.reason,
+            reason=reason,
         )
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
-        if state.last_event_kind != "quote" or position.strategy != self.name:
+        if state.last_event_kind not in {"quote", "bar"} or position.strategy != self.name:
             return None
+
+        price = state.last_price
+        if price is None:
+            return None
+
+        event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
+        age_seconds = (event_ms - position.entry_ms) / 1000
+        if age_seconds < self.settings.opening_impulse_min_hold_seconds:
+            return None
+
+        bars = list(state.bars)[-max(2, self.settings.opening_impulse_bar_window) :]
+        if len(bars) >= 2:
+            recent_low = min(bar.low for bar in bars[:-1])
+            if price < recent_low:
+                return ExitDecision("break structure")
+
+            recent_high = max(bar.high for bar in bars)
+            if price < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
+                return ExitDecision("retrace from high")
 
         quotes = self._recent_quotes(state, self.settings.opening_impulse_exit_window_seconds)
         if len(quotes) < self.settings.opening_impulse_exit_min_quotes:
             return None
 
-        latest = quotes[-1]
-        age_seconds = ((state.last_event_ms or latest.timestamp_ms) - position.entry_ms) / 1000
-        if (
-            age_seconds >= self.settings.opening_impulse_min_hold_seconds
-            and latest.mid <= position.entry_price * (1 + self.settings.opening_impulse_stall_buffer_pct)
-        ):
-            return ExitDecision("momentum stall")
-
-        recent_high = max(quote.mid for quote in quotes)
-        if latest.mid < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
-            return ExitDecision("retrace from local high")
-
         recent_changes = [quotes[index].mid - quotes[index - 1].mid for index in range(1, len(quotes))]
         negative_steps = sum(1 for change in recent_changes if change < 0)
-        if negative_steps >= self.settings.opening_impulse_exit_negative_steps:
+        if negative_steps > self.settings.opening_impulse_exit_negative_steps:
             return ExitDecision("momentum fade")
 
         return None
@@ -194,6 +191,15 @@ class OpeningImpulseStrategy(Strategy):
         latest_ms = state.quotes[-1].timestamp_ms
         threshold = latest_ms - (window_seconds * 1000)
         return [quote for quote in state.quotes if quote.timestamp_ms >= threshold]
+
+    @staticmethod
+    def _latest_valid_quote(state: SymbolState):
+        quote = state.quote or (state.quotes[-1] if state.quotes else None)
+        if quote is None:
+            return None
+        if quote.bid <= 0 or quote.ask <= 0 or quote.ask < quote.bid:
+            return None
+        return quote
 
     @staticmethod
     def _negative_steps(quotes: list) -> int:

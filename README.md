@@ -61,7 +61,7 @@ Execution modes:
 Strategies:
 
 - `spike`: short-window price/volume spike detection
-- `opening_impulse`: market-open impulse capture using quote momentum or recent 1-minute bar confirmation, with quote spread and size checks before entry
+- `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 
 Choose one or many with `STRATEGIES=spike,opening_impulse`.
 
@@ -179,7 +179,7 @@ The first strategy watches each symbol for:
 - volume at least `VOLUME_RATIO` times the recent baseline
 - quote spread below `MAX_SPREAD_BPS`
 
-`opening_impulse` can enter from a fast quote move, a confirmed 1-minute bar impulse, an opening-range breakout, or an opening flush/reclaim reversal. Quotes are still used as the final spread and size safety check. The bar and range paths are controlled by:
+`opening_impulse` prioritizes opening-range breakout/reversal and confirmed 1-minute bar impulses. Fast quote moves are fallback entries only when no bar/range signal is present. Wide spread, thin quote size, quote retrace, and negative quote steps are recorded as entry warnings rather than hard filters; invalid quotes remain hard rejects. The bar and range paths are controlled by:
 
 - `OPENING_IMPULSE_BAR_CONFIRMATION=true`
 - `OPENING_IMPULSE_BAR_WINDOW=3`
@@ -191,7 +191,9 @@ The first strategy watches each symbol for:
 - `OPENING_IMPULSE_ENABLE_RANGE_REVERSAL=true`
 - `OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT=0.005`
 - `OPENING_IMPULSE_RANGE_VOLUME_RATIO=1.2`
-- `OPENING_IMPULSE_MIN_HOLD_SECONDS=30`, which delays only the `momentum stall` exit
+- `OPENING_IMPULSE_MIN_HOLD_SECONDS=60`, which delays strategy-managed exits so a 1-minute candle structure can form
+- `OPENING_IMPULSE_EXIT_NEGATIVE_STEPS=3`, with quote fade used as a less-sensitive fallback exit after structural checks
+- `OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT=0.008`, leaving room for normal opening volatility before a retrace exit
 
 Accepted paper entries use:
 

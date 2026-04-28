@@ -1298,7 +1298,35 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("opening bar impulse", signal.reason)
         self.assertGreaterEqual(signal.change_pct, 0.003)
 
-    def test_opening_impulse_bar_confirmation_still_requires_tight_quote(self):
+    def test_opening_impulse_bar_signal_does_not_require_quote_window(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_min_quotes=10,
+            opening_impulse_bar_confirmation=True,
+            opening_impulse_bar_window=3,
+            opening_impulse_bar_change_pct=0.003,
+            opening_impulse_bar_volume_ratio=1.5,
+            opening_impulse_max_spread_bps=8.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        base_ms = 1777037400000
+        state.update_quote(Quote("AAPL", bid=100.69, ask=100.70, bid_size=30, ask_size=30, timestamp_ms=base_ms))
+        state.add_bar(Bar("AAPL", open=100.00, high=100.25, low=99.90, close=100.20, volume=100, vwap=100.1, start_ms=base_ms, end_ms=base_ms + 60_000))
+        state.add_bar(Bar("AAPL", open=100.20, high=100.50, low=100.10, close=100.45, volume=120, vwap=100.3, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000))
+        state.add_bar(Bar("AAPL", open=100.45, high=100.80, low=100.40, close=100.70, volume=260, vwap=100.6, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000))
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(state.last_event_kind, "bar")
+        self.assertIn("opening bar impulse", signal.reason)
+
+    def test_opening_impulse_bar_confirmation_softens_wide_spread(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -1331,6 +1359,32 @@ class CoreTradingTests(unittest.TestCase):
                     timestamp_ms=base_ms + 180_000 + (index * 3_000),
                 )
             )
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("opening bar impulse", signal.reason)
+        self.assertIn("wide spread", signal.reason)
+
+    def test_opening_impulse_still_rejects_invalid_quote(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_min_quotes=1,
+            opening_impulse_bar_confirmation=True,
+            opening_impulse_bar_window=3,
+            opening_impulse_bar_change_pct=0.003,
+            opening_impulse_bar_volume_ratio=1.5,
+        )
+        state = SymbolState("AAPL")
+        base_ms = 1777037400000
+        state.add_bar(Bar("AAPL", open=100.00, high=100.25, low=99.90, close=100.20, volume=100, vwap=100.1, start_ms=base_ms, end_ms=base_ms + 60_000))
+        state.add_bar(Bar("AAPL", open=100.20, high=100.50, low=100.10, close=100.45, volume=120, vwap=100.3, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000))
+        state.add_bar(Bar("AAPL", open=100.45, high=100.80, low=100.40, close=100.70, volume=260, vwap=100.6, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000))
+        state.update_quote(Quote("AAPL", bid=100.60, ask=0.0, bid_size=30, ask_size=30, timestamp_ms=base_ms + 180_000))
 
         signal = OpeningImpulseStrategy(settings).evaluate(state)
 
@@ -1454,6 +1508,7 @@ class CoreTradingTests(unittest.TestCase):
                 Quote("AAPL", bid=101.00, ask=101.02, bid_size=20, ask_size=20, timestamp_ms=12_000),
                 Quote("AAPL", bid=100.97, ask=100.99, bid_size=20, ask_size=20, timestamp_ms=14_000),
                 Quote("AAPL", bid=100.96, ask=100.98, bid_size=20, ask_size=20, timestamp_ms=16_000),
+                Quote("AAPL", bid=100.95, ask=100.97, bid_size=20, ask_size=20, timestamp_ms=18_000),
             ],
             maxlen=2400,
         )
@@ -1477,7 +1532,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertIn("momentum", decision.reason)
 
-    def test_opening_impulse_min_hold_delays_momentum_stall(self):
+    def test_opening_impulse_min_hold_delays_structure_exit(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -1511,13 +1566,16 @@ class CoreTradingTests(unittest.TestCase):
             stop_price=100.4,
         )
 
+        state.add_bar(Bar("AAPL", open=101.00, high=101.10, low=100.97, close=101.00, volume=100, vwap=101.0, start_ms=8_000, end_ms=9_000))
+        state.add_bar(Bar("AAPL", open=101.00, high=101.05, low=100.95, close=100.96, volume=100, vwap=101.0, start_ms=9_000, end_ms=10_000))
+
         self.assertIsNone(strategy.should_exit(state, position))
 
         position.entry_ms = -20_000
         decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "momentum stall")
+        self.assertEqual(decision.reason, "break structure")
 
     def test_setup_logging_creates_rotating_log_file(self):
         old_log_dir = trading_main.LOG_DIR
