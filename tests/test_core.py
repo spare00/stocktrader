@@ -3,6 +3,7 @@ import sys
 import types
 import tempfile
 import logging
+import json
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -10,9 +11,10 @@ from zoneinfo import ZoneInfo
 
 from candle import SymbolState
 from config import Settings
+import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
-from models import Bar, Quote
+from models import Bar, Quote, Signal
 from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan, plan_overrides
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
@@ -119,6 +121,15 @@ def uptrend_daily_context(symbol: str = "AAPL") -> list[Bar]:
 
 
 class CoreTradingTests(unittest.TestCase):
+    def setUp(self):
+        self._old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
+        self._trade_journal_tmpdir = tempfile.TemporaryDirectory()
+        execution_module.TRADE_JOURNAL_FILE = Path(self._trade_journal_tmpdir.name) / "logs" / "trade_journal.jsonl"
+
+    def tearDown(self):
+        execution_module.TRADE_JOURNAL_FILE = self._old_trade_journal_file
+        self._trade_journal_tmpdir.cleanup()
+
     def test_opening_plan_applies_symbols_and_bounded_settings(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -727,6 +738,46 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.shares, 4)
         self.assertEqual(tracker.positions["AAPL"].shares, 6)
 
+    def test_position_tracker_writes_trade_journal_entries(self):
+        old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                execution_module.TRADE_JOURNAL_FILE = Path(tmpdir) / "logs" / "trade_journal.jsonl"
+                settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+                tracker = PositionTracker(settings)
+                signal = Signal(
+                    strategy="opening_impulse",
+                    symbol="AAPL",
+                    side="BUY",
+                    price=100.0,
+                    timestamp_ms=market_ms(2026, 4, 24, 9, 35),
+                    change_pct=0.004,
+                    volume_ratio=3.0,
+                    spread_bps=4.0,
+                    reason="test impulse",
+                )
+
+                tracker.record_entry(signal, shares=3, fill_price=100.1, reason="test impulse", order_id="buy-1")
+                tracker.record_exit(
+                    "AAPL",
+                    shares=3,
+                    price=101.2,
+                    timestamp_ms=market_ms(2026, 4, 24, 9, 40),
+                    reason="target profit",
+                    order_id="sell-1",
+                )
+
+                rows = [json.loads(line) for line in execution_module.TRADE_JOURNAL_FILE.read_text().splitlines()]
+
+                self.assertEqual([row["event"] for row in rows], ["buy", "sell"])
+                self.assertEqual(rows[0]["symbol"], "AAPL")
+                self.assertEqual(rows[0]["strategy"], "opening_impulse")
+                self.assertEqual(rows[0]["order_id"], "buy-1")
+                self.assertAlmostEqual(rows[1]["pnl"], 3.3)
+                self.assertEqual(rows[1]["reason"], "target profit")
+        finally:
+            execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
+
     def test_position_tracker_total_pnl_includes_unrealized_loss(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], daily_max_loss=250.0)
         tracker = PositionTracker(settings)
@@ -922,7 +973,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("quotes 1 < 10", "\n".join(captured.output))
 
     def test_opening_impulse_exit_on_momentum_fade(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=0,
+        )
         strategy = OpeningImpulseStrategy(settings)
         state = SymbolState("AAPL")
         state.quotes = deque(
@@ -953,6 +1010,48 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertIn("momentum", decision.reason)
+
+    def test_opening_impulse_min_hold_delays_momentum_stall(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=30,
+            opening_impulse_exit_negative_steps=99,
+            opening_impulse_retrace_from_high_pct=0.1,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.quotes = deque(
+            [
+                Quote("AAPL", bid=100.98, ask=101.00, bid_size=20, ask_size=20, timestamp_ms=10_000),
+                Quote("AAPL", bid=100.97, ask=100.99, bid_size=20, ask_size=20, timestamp_ms=12_000),
+                Quote("AAPL", bid=100.96, ask=100.98, bid_size=20, ask_size=20, timestamp_ms=14_000),
+                Quote("AAPL", bid=100.95, ask=100.97, bid_size=20, ask_size=20, timestamp_ms=16_000),
+            ],
+            maxlen=2400,
+        )
+        state.quote = state.quotes[-1]
+        state.last_event_kind = "quote"
+        state.last_event_ms = state.quote.timestamp_ms
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=101.0,
+            entry_ms=5_000,
+            target_price=103.02,
+            stop_price=100.4,
+        )
+
+        self.assertIsNone(strategy.should_exit(state, position))
+
+        position.entry_ms = -20_000
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "momentum stall")
 
     def test_setup_logging_creates_rotating_log_file(self):
         old_log_dir = trading_main.LOG_DIR

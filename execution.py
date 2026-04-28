@@ -1,6 +1,9 @@
+import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 from config import Settings
 from market_hours import is_regular_market_time, should_flatten_before_close
@@ -8,6 +11,7 @@ from models import Bar, Signal
 
 
 LOG = logging.getLogger(__name__)
+TRADE_JOURNAL_FILE = Path("logs") / "trade_journal.jsonl"
 FILLED_ORDER_STATUSES = {"filled"}
 FINAL_ORDER_STATUSES = {"canceled", "done_for_day", "expired", "rejected", "suspended"}
 
@@ -30,8 +34,10 @@ class Fill:
     shares: int
     price: float
     timestamp_ms: int
+    strategy: str = ""
     pnl: float = 0.0
     reason: str = ""
+    order_id: str = ""
 
 
 @dataclass
@@ -60,7 +66,7 @@ class PositionTracker:
                 unrealized += (mark_price - position.entry_price) * position.shares
         return self.realized_pnl + unrealized
 
-    def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str) -> Fill:
+    def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str, order_id: str = "") -> Fill:
         self.cash -= shares * fill_price
         self.positions[signal.symbol] = Position(
             symbol=signal.symbol,
@@ -71,8 +77,9 @@ class PositionTracker:
             target_price=fill_price * (1 + self.settings.target_profit_pct),
             stop_price=fill_price * (1 - self.settings.stop_loss_pct),
         )
-        fill = Fill(signal.symbol, "BUY", shares, fill_price, signal.timestamp_ms, reason=reason)
+        fill = Fill(signal.symbol, "BUY", shares, fill_price, signal.timestamp_ms, strategy=signal.strategy, reason=reason, order_id=order_id)
         self.fills.append(fill)
+        self._write_trade_journal(fill)
         return fill
 
     def record_reconciled_position(self, symbol: str, shares: int, entry_price: float, timestamp_ms: int) -> None:
@@ -86,7 +93,7 @@ class PositionTracker:
             stop_price=entry_price * (1 - self.settings.stop_loss_pct),
         )
 
-    def record_exit(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str) -> Fill | None:
+    def record_exit(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str, order_id: str = "") -> Fill | None:
         position = self.positions.get(symbol)
         if not position:
             return None
@@ -101,9 +108,32 @@ class PositionTracker:
         else:
             position.shares -= shares
 
-        fill = Fill(symbol, "SELL", shares, price, timestamp_ms, pnl=pnl, reason=reason)
+        fill = Fill(symbol, "SELL", shares, price, timestamp_ms, strategy=position.strategy, pnl=pnl, reason=reason, order_id=order_id)
         self.fills.append(fill)
+        self._write_trade_journal(fill)
         return fill
+
+    def _write_trade_journal(self, fill: Fill) -> None:
+        entry = {
+            "timestamp": datetime.fromtimestamp(fill.timestamp_ms / 1000, tz=timezone.utc).isoformat(),
+            "timestamp_ms": fill.timestamp_ms,
+            "event": fill.side.lower(),
+            "symbol": fill.symbol,
+            "strategy": fill.strategy,
+            "shares": fill.shares,
+            "price": fill.price,
+            "pnl": fill.pnl,
+            "reason": fill.reason,
+        }
+        if fill.order_id:
+            entry["order_id"] = fill.order_id
+
+        try:
+            TRADE_JOURNAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with TRADE_JOURNAL_FILE.open("a", encoding="utf-8") as journal:
+                journal.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
+        except OSError:
+            LOG.exception("Failed to write trade journal entry for %s %s", fill.side, fill.symbol)
 
 
 @dataclass
@@ -239,6 +269,7 @@ class AlpacaPaperExecutor:
             filled_shares,
             fill_price,
             f"{signal.reason} | alpaca_order_id={order.id}",
+            order_id=str(order.id),
         )
         LOG.info("ALPACA PAPER BUY %s %s @ %.2f | order=%s", filled_shares, signal.symbol, fill_price, order.id)
         return fill
@@ -304,6 +335,7 @@ class AlpacaPaperExecutor:
             fill_price,
             event_ms,
             f"{reason} | alpaca_order_id={order.id}",
+            order_id=str(order.id),
         )
         if fill:
             LOG.info("ALPACA PAPER SELL %s %s @ %.2f | order=%s | %s", fill.shares, fill.symbol, fill.price, order.id, reason)

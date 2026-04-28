@@ -118,7 +118,11 @@ class OpeningImpulseStrategy(Strategy):
             return None
 
         latest = quotes[-1]
-        if latest.mid <= position.entry_price * (1 + self.settings.opening_impulse_stall_buffer_pct):
+        age_seconds = ((state.last_event_ms or latest.timestamp_ms) - position.entry_ms) / 1000
+        if (
+            age_seconds >= self.settings.opening_impulse_min_hold_seconds
+            and latest.mid <= position.entry_price * (1 + self.settings.opening_impulse_stall_buffer_pct)
+        ):
             return ExitDecision("momentum stall")
 
         recent_high = max(quote.mid for quote in quotes)
