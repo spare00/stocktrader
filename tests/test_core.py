@@ -19,6 +19,7 @@ from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan, plan_ove
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
 import scripts.build_opening_universe as build_opening_universe
+import scripts.analyze_trade_journal as analyze_trade_journal
 from scripts.ai_opening_plan import build_plan, extract_json_object, plan_from_screen
 from scripts.build_opening_universe import daily_metrics, score_symbol
 import scripts.screen_opening_impulse as screen_opening_impulse
@@ -240,6 +241,80 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["symbols"], ["AAPL"])
         self.assertEqual(saved["symbols"], ["AAPL"])
         self.assertIn("settings", saved)
+
+    def test_trade_journal_analyzer_summarizes_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal = Path(tmpdir) / "trade_journal.jsonl"
+            rows = [
+                {
+                    "event": "buy",
+                    "symbol": "MU",
+                    "strategy": "opening_impulse",
+                    "shares": 4,
+                    "price": 100.0,
+                    "pnl": 0,
+                    "reason": "entry",
+                    "timestamp_ms": 1_000,
+                },
+                {
+                    "event": "sell",
+                    "symbol": "MU",
+                    "strategy": "opening_impulse",
+                    "shares": 4,
+                    "price": 101.0,
+                    "pnl": 4.0,
+                    "reason": "target profit | alpaca_order_id=sell-1",
+                    "timestamp_ms": 11_000,
+                },
+                {
+                    "event": "buy",
+                    "symbol": "CRWD",
+                    "strategy": "opening_impulse",
+                    "shares": 2,
+                    "price": 50.0,
+                    "pnl": 0,
+                    "reason": "entry",
+                    "timestamp_ms": 20_000,
+                },
+                {
+                    "event": "sell",
+                    "symbol": "CRWD",
+                    "strategy": "opening_impulse",
+                    "shares": 2,
+                    "price": 49.5,
+                    "pnl": -1.0,
+                    "reason": "momentum stall | alpaca_order_id=sell-2",
+                    "timestamp_ms": 30_000,
+                },
+            ]
+            journal.write_text("\n".join(json.dumps(row) for row in rows))
+
+            summary = analyze_trade_journal.analyze(journal)
+
+            self.assertEqual(summary["trades"], 2)
+            self.assertEqual(summary["wins"], 1)
+            self.assertEqual(summary["losses"], 1)
+            self.assertAlmostEqual(summary["total_pnl"], 3.0)
+            self.assertAlmostEqual(summary["win_rate"], 0.5)
+            self.assertEqual(summary["by_exit_reason"]["target profit"]["trades"], 1)
+            self.assertEqual(summary["by_exit_reason"]["momentum stall"]["trades"], 1)
+            self.assertEqual(summary["by_symbol"]["MU"]["total_pnl"], 4.0)
+
+    def test_trade_journal_analyzer_allocates_partial_exit_pnl(self):
+        events = [
+            analyze_trade_journal.TradeEvent("buy", "AAPL", 1_000, 10, 100.0, 0.0, "opening_impulse", "entry", "buy-1"),
+            analyze_trade_journal.TradeEvent("sell", "AAPL", 6_000, 4, 101.0, 4.0, "opening_impulse", "partial", "sell-1"),
+            analyze_trade_journal.TradeEvent("sell", "AAPL", 11_000, 6, 99.0, -6.0, "opening_impulse", "stop loss", "sell-2"),
+        ]
+
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+
+        self.assertEqual(summary["trades"], 2)
+        self.assertEqual(summary["unmatched_events"], [])
+        self.assertAlmostEqual(summary["total_pnl"], -2.0)
+        self.assertEqual([trade.shares for trade in round_trips], [4, 6])
+        self.assertAlmostEqual(round_trips[0].hold_seconds, 5.0)
 
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
