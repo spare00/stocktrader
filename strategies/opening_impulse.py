@@ -1,5 +1,6 @@
 from collections import deque
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, time
 import logging
 from statistics import median
 
@@ -11,6 +12,26 @@ from strategies.base import Strategy
 
 
 LOG = logging.getLogger(__name__)
+MARKET_OPEN = time(9, 30)
+
+
+@dataclass(frozen=True)
+class EntryCandidate:
+    change_pct: float
+    volume_ratio: float
+    reason: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class OpeningRange:
+    open: float
+    high: float
+    low: float
+    midpoint: float
+    volume: float
+    start_ms: int
+    end_ms: int
 
 
 class OpeningImpulseStrategy(Strategy):
@@ -40,31 +61,33 @@ class OpeningImpulseStrategy(Strategy):
         last = quotes[-1]
         quote_change_pct = (last.mid - first.mid) / first.mid
         volume_ratio = self._volume_ratio(state)
-        bar_impulse = None
-        signal_change_pct = quote_change_pct
-        signal_reason = ""
+        candidate = None
 
         if quote_change_pct >= self.settings.opening_impulse_change_pct:
-            signal_reason = (
-                f"opening impulse {quote_change_pct:.3%} over "
-                f"{(last.timestamp_ms - first.timestamp_ms) / 1000:.0f}s, "
-                f"volume {volume_ratio:.1f}x baseline"
+            candidate = EntryCandidate(
+                change_pct=quote_change_pct,
+                volume_ratio=volume_ratio,
+                reason=(
+                    f"opening quote impulse {quote_change_pct:.3%} over "
+                    f"{(last.timestamp_ms - first.timestamp_ms) / 1000:.0f}s, "
+                    f"volume {volume_ratio:.1f}x baseline"
+                ),
+                kind="quote_impulse",
             )
         else:
-            bar_impulse = self._bar_impulse(state)
-            if bar_impulse is None:
+            candidate = self._bar_impulse(state) or self._range_impulse(state, last)
+            if candidate is None:
                 return self._reject(
                     state,
                     "change",
                     f"change {quote_change_pct:.3%} < {self.settings.opening_impulse_change_pct:.3%}",
                 )
-            signal_change_pct, volume_ratio, signal_reason = bar_impulse
 
-        if signal_change_pct > self.settings.opening_impulse_skip_extended_pct:
+        if candidate.change_pct > self.settings.opening_impulse_skip_extended_pct:
             return self._reject(
                 state,
                 "extended",
-                f"change {signal_change_pct:.3%} > {self.settings.opening_impulse_skip_extended_pct:.3%}",
+                f"change {candidate.change_pct:.3%} > {self.settings.opening_impulse_skip_extended_pct:.3%}",
             )
 
         spread_bps = last.spread_bps
@@ -82,7 +105,7 @@ class OpeningImpulseStrategy(Strategy):
                 f"quote size {min(last.bid_size, last.ask_size)} < {self.settings.opening_impulse_min_quote_size}",
             )
 
-        if bar_impulse is None:
+        if candidate.kind == "quote_impulse":
             negative_steps = self._negative_steps(quotes)
             if negative_steps > self.settings.opening_impulse_max_negative_steps:
                 return self._reject(
@@ -100,11 +123,11 @@ class OpeningImpulseStrategy(Strategy):
                     f"retrace {retrace_pct:.3%} > {self.settings.opening_impulse_retrace_from_high_pct:.3%}",
                 )
 
-            if volume_ratio < self.settings.opening_impulse_volume_ratio:
+            if candidate.volume_ratio < self.settings.opening_impulse_volume_ratio:
                 return self._reject(
                     state,
                     "volume",
-                    f"volume {volume_ratio:.2f}x < {self.settings.opening_impulse_volume_ratio:.2f}x",
+                    f"volume {candidate.volume_ratio:.2f}x < {self.settings.opening_impulse_volume_ratio:.2f}x",
                 )
 
         return Signal(
@@ -113,10 +136,10 @@ class OpeningImpulseStrategy(Strategy):
             side="BUY",
             price=last.ask,
             timestamp_ms=last.timestamp_ms,
-            change_pct=signal_change_pct,
-            volume_ratio=volume_ratio,
+            change_pct=candidate.change_pct,
+            volume_ratio=candidate.volume_ratio,
             spread_bps=spread_bps,
-            reason=signal_reason,
+            reason=candidate.reason,
         )
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
@@ -180,7 +203,7 @@ class OpeningImpulseStrategy(Strategy):
                 negative_steps += 1
         return negative_steps
 
-    def _bar_impulse(self, state: SymbolState) -> tuple[float, float, str] | None:
+    def _bar_impulse(self, state: SymbolState) -> EntryCandidate | None:
         if not self.settings.opening_impulse_bar_confirmation:
             return None
 
@@ -215,7 +238,98 @@ class OpeningImpulseStrategy(Strategy):
             f"opening bar impulse {change_pct:.3%} over {elapsed_seconds:.0f}s, "
             f"{rising_bars}/{len(bars)} rising bars, volume {volume_ratio:.1f}x baseline"
         )
-        return change_pct, volume_ratio, reason
+        return EntryCandidate(change_pct=change_pct, volume_ratio=volume_ratio, reason=reason, kind="bar_impulse")
+
+    def _range_impulse(self, state: SymbolState, latest_quote) -> EntryCandidate | None:
+        opening_range = self._opening_range(state)
+        if opening_range is None:
+            return None
+
+        latest_bar = state.bars[-1] if state.bars else None
+        if latest_bar is None or latest_bar.end_ms <= opening_range.end_ms:
+            return None
+
+        volume_ratio = self._volume_ratio(state)
+        if volume_ratio < self.settings.opening_impulse_range_volume_ratio:
+            return None
+
+        if not self._bar_momentum(state):
+            return None
+
+        latest_mid = latest_quote.mid
+        breakout_level = opening_range.high * (1 + self.settings.opening_impulse_range_breakout_buffer_pct)
+        if self.settings.opening_impulse_enable_range_breakout and latest_mid >= breakout_level and latest_bar.close >= opening_range.high:
+            change_pct = (latest_mid - opening_range.high) / opening_range.high
+            reason = (
+                f"opening_range_breakout {change_pct:.3%} above {opening_range.high:.2f}, "
+                f"volume {volume_ratio:.1f}x baseline"
+            )
+            return EntryCandidate(
+                change_pct=change_pct,
+                volume_ratio=volume_ratio,
+                reason=reason,
+                kind="opening_range_breakout",
+            )
+
+        opening_drop_pct = (opening_range.open - opening_range.low) / opening_range.open if opening_range.open else 0.0
+        reclaim_level = opening_range.midpoint * (1 + self.settings.opening_impulse_range_reclaim_buffer_pct)
+        reclaimed_midpoint = latest_mid >= reclaim_level and latest_bar.close >= opening_range.midpoint
+        if (
+            self.settings.opening_impulse_enable_range_reversal
+            and opening_drop_pct >= self.settings.opening_impulse_range_reversal_min_drop_pct
+            and reclaimed_midpoint
+        ):
+            change_pct = (latest_mid - opening_range.midpoint) / opening_range.midpoint if opening_range.midpoint else 0.0
+            reason = (
+                f"opening_range_reversal reclaim after {opening_drop_pct:.3%} flush, "
+                f"volume {volume_ratio:.1f}x baseline"
+            )
+            return EntryCandidate(
+                change_pct=change_pct,
+                volume_ratio=volume_ratio,
+                reason=reason,
+                kind="opening_range_reversal",
+            )
+
+        return None
+
+    def _opening_range(self, state: SymbolState) -> OpeningRange | None:
+        range_bars = []
+        for bar in state.bars:
+            start = datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz)
+            end = datetime.fromtimestamp(bar.end_ms / 1000, tz=self.market_tz)
+            if start.time() < MARKET_OPEN:
+                continue
+            minutes_from_open = ((end.hour * 60 + end.minute) - (MARKET_OPEN.hour * 60 + MARKET_OPEN.minute))
+            if 0 < minutes_from_open <= self.settings.opening_impulse_range_minutes:
+                range_bars.append(bar)
+
+        if not range_bars:
+            return None
+
+        high = max(bar.high for bar in range_bars)
+        low = min(bar.low for bar in range_bars)
+        return OpeningRange(
+            open=range_bars[0].open,
+            high=high,
+            low=low,
+            midpoint=(high + low) / 2,
+            volume=sum(bar.volume for bar in range_bars),
+            start_ms=range_bars[0].start_ms,
+            end_ms=range_bars[-1].end_ms,
+        )
+
+    def _bar_momentum(self, state: SymbolState) -> bool:
+        window = max(2, self.settings.opening_impulse_bar_window)
+        bars = list(state.bars)[-window:]
+        if len(bars) < window:
+            return False
+        rising_bars = 0
+        for index, current in enumerate(bars):
+            previous_close = bars[index - 1].close if index > 0 else current.open
+            if current.close >= current.open or current.close > previous_close:
+                rising_bars += 1
+        return rising_bars >= self.settings.opening_impulse_bar_min_rising
 
     @staticmethod
     def _volume_ratio(state: SymbolState) -> float:

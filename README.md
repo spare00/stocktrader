@@ -167,13 +167,18 @@ The first strategy watches each symbol for:
 - volume at least `VOLUME_RATIO` times the recent baseline
 - quote spread below `MAX_SPREAD_BPS`
 
-`opening_impulse` can enter from either a fast quote move or a confirmed 1-minute bar impulse. The bar path is controlled by:
+`opening_impulse` can enter from a fast quote move, a confirmed 1-minute bar impulse, an opening-range breakout, or an opening flush/reclaim reversal. Quotes are still used as the final spread and size safety check. The bar and range paths are controlled by:
 
 - `OPENING_IMPULSE_BAR_CONFIRMATION=true`
 - `OPENING_IMPULSE_BAR_WINDOW=3`
 - `OPENING_IMPULSE_BAR_MIN_RISING=2`
 - `OPENING_IMPULSE_BAR_CHANGE_PCT=0.003`
 - `OPENING_IMPULSE_BAR_VOLUME_RATIO=1.5`
+- `OPENING_IMPULSE_RANGE_MINUTES=5`
+- `OPENING_IMPULSE_ENABLE_RANGE_BREAKOUT=true`
+- `OPENING_IMPULSE_ENABLE_RANGE_REVERSAL=true`
+- `OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT=0.005`
+- `OPENING_IMPULSE_RANGE_VOLUME_RATIO=1.2`
 - `OPENING_IMPULSE_MIN_HOLD_SECONDS=30`, which delays only the `momentum stall` exit
 
 Accepted paper entries use:

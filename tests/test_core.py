@@ -1094,6 +1094,83 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_opening_impulse_enters_opening_range_breakout(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_min_quotes=6,
+            opening_impulse_change_pct=0.009,
+            opening_impulse_bar_confirmation=False,
+            opening_impulse_range_minutes=5,
+            opening_impulse_enable_range_breakout=True,
+            opening_impulse_enable_range_reversal=False,
+            opening_impulse_range_volume_ratio=1.2,
+            opening_impulse_max_spread_bps=8.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        base_ms = market_ms(2026, 4, 24, 9, 30)
+        range_bars = [
+            Bar("AAPL", open=100.00, high=100.20, low=99.80, close=100.05, volume=100, vwap=100.0, start_ms=base_ms, end_ms=base_ms + 60_000),
+            Bar("AAPL", open=100.05, high=100.30, low=99.95, close=100.10, volume=100, vwap=100.1, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000),
+            Bar("AAPL", open=100.10, high=100.35, low=100.00, close=100.20, volume=100, vwap=100.2, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000),
+            Bar("AAPL", open=100.20, high=100.40, low=100.10, close=100.35, volume=100, vwap=100.3, start_ms=base_ms + 180_000, end_ms=base_ms + 240_000),
+            Bar("AAPL", open=100.35, high=100.50, low=100.20, close=100.45, volume=100, vwap=100.4, start_ms=base_ms + 240_000, end_ms=base_ms + 300_000),
+            Bar("AAPL", open=100.45, high=100.90, low=100.40, close=100.82, volume=220, vwap=100.7, start_ms=base_ms + 300_000, end_ms=base_ms + 360_000),
+        ]
+        for item in range_bars:
+            state.add_bar(item)
+        for index in range(6):
+            bid = 100.84 + (index * 0.001)
+            state.update_quote(Quote("AAPL", bid=bid, ask=bid + 0.01, bid_size=30, ask_size=30, timestamp_ms=base_ms + 360_000 + (index * 3_000)))
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("opening_range_breakout", signal.reason)
+
+    def test_opening_impulse_enters_opening_range_reversal(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_min_quotes=6,
+            opening_impulse_change_pct=0.009,
+            opening_impulse_bar_confirmation=False,
+            opening_impulse_range_minutes=5,
+            opening_impulse_enable_range_breakout=False,
+            opening_impulse_enable_range_reversal=True,
+            opening_impulse_range_reversal_min_drop_pct=0.005,
+            opening_impulse_range_volume_ratio=1.2,
+            opening_impulse_max_spread_bps=8.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        base_ms = market_ms(2026, 4, 24, 9, 30)
+        bars = [
+            Bar("AAPL", open=100.00, high=100.10, low=99.20, close=99.40, volume=120, vwap=99.6, start_ms=base_ms, end_ms=base_ms + 60_000),
+            Bar("AAPL", open=99.40, high=99.60, low=98.80, close=99.10, volume=120, vwap=99.2, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000),
+            Bar("AAPL", open=99.10, high=99.50, low=98.90, close=99.30, volume=120, vwap=99.2, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000),
+            Bar("AAPL", open=99.30, high=99.70, low=99.20, close=99.55, volume=120, vwap=99.4, start_ms=base_ms + 180_000, end_ms=base_ms + 240_000),
+            Bar("AAPL", open=99.55, high=99.80, low=99.40, close=99.65, volume=120, vwap=99.6, start_ms=base_ms + 240_000, end_ms=base_ms + 300_000),
+            Bar("AAPL", open=99.65, high=100.05, low=99.60, close=99.75, volume=220, vwap=99.8, start_ms=base_ms + 300_000, end_ms=base_ms + 360_000),
+        ]
+        for item in bars:
+            state.add_bar(item)
+        for index in range(6):
+            bid = 99.76 + (index * 0.001)
+            state.update_quote(Quote("AAPL", bid=bid, ask=bid + 0.01, bid_size=30, ask_size=30, timestamp_ms=base_ms + 360_000 + (index * 3_000)))
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("opening_range_reversal", signal.reason)
+
     def test_opening_impulse_logs_rejection_reason(self):
         settings = Settings(
             alpaca_api_key="test",
