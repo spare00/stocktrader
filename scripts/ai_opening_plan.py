@@ -15,6 +15,9 @@ from config import Settings
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_SCREEN_FILE = Path("data/opening_screen.json")
 DEFAULT_OUTPUT_FILE = Path("data/opening_plan.json")
+MIN_CLOSE_CAPTURE_RATIO = 0.1
+MIN_POSITIVE_CLOSE_DAY_RATIO = 0.5
+MIN_MEDIAN_OPENING_CLOSE_BPS = 0.0
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -36,37 +39,53 @@ def load_universe(path: Path) -> list[str]:
     return [part.strip().upper() for part in path.read_text().replace("\n", ",").split(",") if part.strip()]
 
 
+def candidate_rejection_reason(candidate: dict[str, Any]) -> str | None:
+    close_capture = float(candidate.get("close_capture_ratio", 0.0) or 0.0)
+    positive_ratio = float(candidate.get("positive_close_day_ratio", 0.0) or 0.0)
+    median_close_bps = float(candidate.get("median_opening_close_move_bps", 0.0) or 0.0)
+    fade_bps = float(candidate.get("fade_bps", 0.0) or 0.0)
+    reasons = []
+    if median_close_bps < MIN_MEDIAN_OPENING_CLOSE_BPS:
+        reasons.append(f"median_opening_close_move_bps={median_close_bps:.1f}")
+    if close_capture < MIN_CLOSE_CAPTURE_RATIO:
+        reasons.append(f"close_capture={close_capture:.3f}")
+    if positive_ratio < MIN_POSITIVE_CLOSE_DAY_RATIO:
+        reasons.append(f"positive_close_day_ratio={positive_ratio:.3f}")
+    if not reasons:
+        return None
+    reasons.append(f"fade_bps={fade_bps:.1f}")
+    return "follow-through weak: " + ", ".join(reasons)
+
+
 def plan_from_screen(screen: dict[str, Any], limit: int) -> dict[str, Any]:
     candidates = list(screen.get("candidates") or [])
     keep = []
     rejected = []
     for candidate in candidates:
         symbol = str(candidate.get("symbol", "")).upper()
-        close_capture = float(candidate.get("close_capture_ratio", 0.0) or 0.0)
-        positive_ratio = float(candidate.get("positive_close_day_ratio", 0.0) or 0.0)
-        fade_bps = float(candidate.get("fade_bps", 0.0) or 0.0)
-        if close_capture >= 0.1 and positive_ratio >= 0.5:
+        reason = candidate_rejection_reason(candidate)
+        if reason is None:
             keep.append(symbol)
         else:
             rejected.append(
                 {
                     "symbol": symbol,
-                    "reason": f"follow-through weak: close_capture={close_capture:.3f}, positive_close_day_ratio={positive_ratio:.3f}, fade_bps={fade_bps:.1f}",
+                    "reason": reason,
                 }
             )
 
-    selected = keep[:limit] if keep else [str(candidate.get("symbol", "")).upper() for candidate in candidates[:limit]]
+    selected = keep[:limit]
     selected = [symbol for symbol in selected if symbol]
     settings = {
         "MAX_OPEN_POSITIONS": 1 if len(selected) <= 2 else 2,
     }
     return {
-        "date": date.today().isoformat(),
+        "date": str(screen.get("as_of", date.today().isoformat()))[:10],
         "strategy": "opening_impulse",
         "symbols": selected,
         "rejected": rejected,
         "settings": settings,
-        "risk_note": "Generated from deterministic screen fallback; review before use.",
+        "risk_note": "Generated from deterministic screen fallback; no-trade is acceptable when screened candidates lack opening follow-through.",
     }
 
 
@@ -109,6 +128,36 @@ def ai_plan(settings: Settings, screen: dict[str, Any], universe_symbols: list[s
     return extract_json_object(response.output_text)
 
 
+def validated_plan(plan: dict[str, Any], screen: dict[str, Any], limit: int) -> dict[str, Any]:
+    candidates = {str(candidate.get("symbol", "")).upper(): candidate for candidate in screen.get("candidates") or []}
+    selected = []
+    rejected = list(plan.get("rejected") or [])
+    rejected_symbols = {str(item.get("symbol", "")).upper() for item in rejected if isinstance(item, dict)}
+
+    for raw_symbol in plan.get("symbols") or []:
+        symbol = str(raw_symbol).upper()
+        candidate = candidates.get(symbol)
+        if not symbol:
+            continue
+        if candidate is None:
+            if symbol not in rejected_symbols:
+                rejected.append({"symbol": symbol, "reason": "not present in latest screen.candidates"})
+            continue
+        reason = candidate_rejection_reason(candidate)
+        if reason is not None:
+            if symbol not in rejected_symbols:
+                rejected.append({"symbol": symbol, "reason": reason})
+            continue
+        if symbol not in selected:
+            selected.append(symbol)
+        if len(selected) >= limit:
+            break
+
+    plan["symbols"] = selected
+    plan["rejected"] = rejected
+    return plan
+
+
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     settings_kwargs = {}
     if args.alpaca_api_key:
@@ -124,6 +173,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     plan = ai_plan(settings, screen, universe_symbols, args.limit)
     if plan is None:
         plan = plan_from_screen(screen, args.limit)
+    else:
+        plan = validated_plan(plan, screen, args.limit)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")

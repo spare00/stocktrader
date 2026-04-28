@@ -167,6 +167,8 @@ dmypy.json
 data/opening_universe.txt
 data/opening_screen.json
 data/opening_plan.json
+data/daily_pattern_candidates.json
+data/trade_candidates.jsonl
 
 # Runtime logs
 logs/

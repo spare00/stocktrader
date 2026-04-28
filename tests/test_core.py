@@ -20,10 +20,11 @@ from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
 import scripts.build_opening_universe as build_opening_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
-from scripts.ai_opening_plan import build_plan, extract_json_object, plan_from_screen
+import scripts.score_daily_patterns as score_daily_patterns
+from scripts.ai_opening_plan import build_plan, extract_json_object, plan_from_screen, validated_plan
 from scripts.build_opening_universe import daily_metrics, score_symbol
 import scripts.screen_opening_impulse as screen_opening_impulse
-from scripts.screen_opening_impulse import DEFAULT_UNIVERSE, load_universe, opening_session_metrics, previous_session_dates, score_candidate, usable_quote, write_screen_output
+from scripts.screen_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
 from strategies import build_strategies
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
@@ -201,17 +202,74 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_ai_opening_plan_fallback_filters_weak_candidates(self):
         screen = {
+            "as_of": "2026-04-28T08:00:00-04:00",
             "candidates": [
-                {"symbol": "KEEP", "close_capture_ratio": 0.25, "positive_close_day_ratio": 0.7, "fade_bps": 50},
-                {"symbol": "DROP", "close_capture_ratio": -0.1, "positive_close_day_ratio": 0.4, "fade_bps": 180},
+                {
+                    "symbol": "KEEP",
+                    "close_capture_ratio": 0.25,
+                    "positive_close_day_ratio": 0.7,
+                    "median_opening_close_move_bps": 30,
+                    "fade_bps": 50,
+                },
+                {
+                    "symbol": "DROP",
+                    "close_capture_ratio": -0.1,
+                    "positive_close_day_ratio": 0.4,
+                    "median_opening_close_move_bps": -10,
+                    "fade_bps": 180,
+                },
             ]
         }
 
         plan = plan_from_screen(screen, limit=12)
 
         self.assertEqual(plan["symbols"], ["KEEP"])
+        self.assertEqual(plan["date"], "2026-04-28")
         self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
         self.assertEqual(plan["rejected"][0]["symbol"], "DROP")
+
+    def test_ai_opening_plan_fallback_allows_empty_no_trade_plan(self):
+        screen = {
+            "candidates": [
+                {
+                    "symbol": "DROP",
+                    "close_capture_ratio": -0.1,
+                    "positive_close_day_ratio": 0.4,
+                    "median_opening_close_move_bps": -10,
+                    "fade_bps": 180,
+                },
+            ]
+        }
+
+        plan = plan_from_screen(screen, limit=12)
+
+        self.assertEqual(plan["symbols"], [])
+        self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
+
+    def test_ai_opening_plan_validates_ai_symbols_against_latest_screen(self):
+        screen = {
+            "candidates": [
+                {
+                    "symbol": "KEEP",
+                    "close_capture_ratio": 0.25,
+                    "positive_close_day_ratio": 0.7,
+                    "median_opening_close_move_bps": 30,
+                    "fade_bps": 50,
+                },
+                {
+                    "symbol": "FADE",
+                    "close_capture_ratio": -0.1,
+                    "positive_close_day_ratio": 0.4,
+                    "median_opening_close_move_bps": -10,
+                    "fade_bps": 180,
+                },
+            ]
+        }
+
+        plan = validated_plan({"symbols": ["KEEP", "FADE", "GONE"], "rejected": []}, screen, limit=12)
+
+        self.assertEqual(plan["symbols"], ["KEEP"])
+        self.assertEqual([item["symbol"] for item in plan["rejected"]], ["FADE", "GONE"])
 
     def test_ai_opening_plan_writes_default_shape_without_openai(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -220,7 +278,7 @@ class CoreTradingTests(unittest.TestCase):
             universe_file = root / "opening_universe.txt"
             output = root / "opening_plan.json"
             screen_file.write_text(
-                '{"candidates":[{"symbol":"AAPL","close_capture_ratio":0.2,"positive_close_day_ratio":0.6,"fade_bps":40}]}\n'
+                '{"candidates":[{"symbol":"AAPL","close_capture_ratio":0.2,"positive_close_day_ratio":0.6,"median_opening_close_move_bps":20,"fade_bps":40}]}\n'
             )
             universe_file.write_text("AAPL,MSFT\n")
 
@@ -382,7 +440,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(usable_quote(Quote("AAPL", bid=102.0, ask=0.0, bid_size=0, ask_size=0, timestamp_ms=0)))
         self.assertIsNone(usable_quote(Quote("AAPL", bid=102.0, ask=101.0, bid_size=10, ask_size=10, timestamp_ms=0)))
 
-    def test_opening_impulse_screener_rejects_weak_daily_context(self):
+    def test_opening_impulse_screener_penalizes_weak_daily_context(self):
         bars = opening_candidate()
 
         result = score_candidate(
@@ -410,7 +468,9 @@ class CoreTradingTests(unittest.TestCase):
             require_daily_context=True,
         )
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["daily_context"], "weak")
+        self.assertTrue(any("weak daily context" in flag for flag in result["quality_flags"]))
 
     def test_opening_impulse_screener_rewards_follow_through_over_fade(self):
         common = {
@@ -429,6 +489,9 @@ class CoreTradingTests(unittest.TestCase):
             "min_trend_bps": 50.0,
             "min_reversal_bps": 100.0,
             "require_daily_context": True,
+            "min_close_capture_ratio": -10.0,
+            "min_positive_close_day_ratio": 0.0,
+            "min_median_opening_close_bps": -200.0,
         }
 
         follow_through = score_candidate(
@@ -444,6 +507,30 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fade)
         self.assertGreater(follow_through["score"], fade["score"])
         self.assertGreater(follow_through["close_capture_ratio"], fade["close_capture_ratio"])
+
+    def test_opening_impulse_screener_penalizes_spike_and_fade_history(self):
+        result = score_candidate(
+            symbol="AAPL",
+            bars=opening_candidate(closes=(99.7, 99.8), highs=(103.0, 103.0)),
+            daily_bars=uptrend_daily_context(),
+            quote=Quote("AAPL", bid=104.0, ask=104.04, bid_size=200, ask_size=200, timestamp_ms=0),
+            opening_minutes=30,
+            min_price=10.0,
+            max_price=900.0,
+            min_opening_days=2,
+            min_opening_dollar_volume=1_000_000.0,
+            min_impulse_bps=60.0,
+            min_opening_range_bps=100.0,
+            max_spread_bps=8.0,
+            trend_lookback_days=5,
+            min_trend_bps=50.0,
+            min_reversal_bps=100.0,
+            require_daily_context=True,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertLess(result["close_capture_ratio"], 0.1)
+        self.assertTrue(any("close_capture_ratio" in flag for flag in result["quality_flags"]))
 
     def test_opening_impulse_screener_accepts_bottom_reversal_context(self):
         result = score_candidate(
@@ -473,8 +560,82 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["daily_context"], "bottom_reversal")
+        self.assertEqual(result["pattern_score"], 7.0)
 
-    def test_opening_impulse_screener_rejects_filter_boundaries(self):
+    def test_opening_impulse_screener_boosts_daily_state_patterns(self):
+        common = {
+            "symbol": "AAPL",
+            "bars": opening_candidate(),
+            "quote": Quote("AAPL", bid=104.0, ask=104.04, bid_size=200, ask_size=200, timestamp_ms=0),
+            "opening_minutes": 30,
+            "min_price": 10.0,
+            "max_price": 900.0,
+            "min_opening_days": 2,
+            "min_opening_dollar_volume": 1_000_000.0,
+            "min_impulse_bps": 60.0,
+            "min_opening_range_bps": 100.0,
+            "max_spread_bps": 8.0,
+            "trend_lookback_days": 5,
+            "min_trend_bps": 50.0,
+            "min_reversal_bps": 100.0,
+            "require_daily_context": True,
+        }
+        trend = score_candidate(daily_bars=uptrend_daily_context(), **common)
+        selloff = score_candidate(
+            daily_bars=[
+                daily_bar("AAPL", 110.0, 109.0, 112.0, market_ms(2026, 4, 20, 9, 30)),
+                daily_bar("AAPL", 108.0, 107.0, 110.0, market_ms(2026, 4, 21, 9, 30)),
+                daily_bar("AAPL", 105.0, 104.0, 106.0, market_ms(2026, 4, 22, 9, 30)),
+                daily_bar("AAPL", 102.0, 101.0, 104.0, market_ms(2026, 4, 23, 9, 30)),
+                daily_bar("AAPL", 100.0, 99.0, 103.0, market_ms(2026, 4, 24, 9, 30)),
+            ],
+            **common,
+        )
+
+        self.assertEqual(trend["pattern_score"], 9.0)
+        self.assertEqual(selloff["pattern_score"], 7.0)
+
+    def test_opening_impulse_screener_boosts_gap_compression_and_opening_impulse_patterns(self):
+        compression_bars = [
+            daily_bar_with_volume("AAPL", 100.0, 94.0, 104.0, 1_000_000, market_ms(2026, 4, 22, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 95.0, 103.0, 1_000_000, market_ms(2026, 4, 23, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 96.0, 102.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 1_000_000, market_ms(2026, 4, 27, 9, 30)),
+        ]
+        gap_up_bars = [
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
+            Bar("AAPL", open=103.0, high=104.0, low=102.0, close=103.5, volume=1_000_000, vwap=103.0, start_ms=market_ms(2026, 4, 27, 9, 30), end_ms=market_ms(2026, 4, 27, 9, 31)),
+        ]
+        gap_down_bars = [
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
+            Bar("AAPL", open=97.0, high=98.0, low=96.0, close=97.5, volume=1_000_000, vwap=97.0, start_ms=market_ms(2026, 4, 27, 9, 30), end_ms=market_ms(2026, 4, 27, 9, 31)),
+        ]
+
+        result = score_candidate(
+            symbol="AAPL",
+            bars=opening_candidate(highs=(101.0, 101.0), closes=(100.8, 100.8)),
+            daily_bars=compression_bars,
+            quote=Quote("AAPL", bid=100.0, ask=100.04, bid_size=200, ask_size=200, timestamp_ms=0),
+            opening_minutes=30,
+            min_price=10.0,
+            max_price=900.0,
+            min_opening_days=2,
+            min_opening_dollar_volume=1_000_000.0,
+            min_impulse_bps=60.0,
+            min_opening_range_bps=100.0,
+            max_spread_bps=8.0,
+            trend_lookback_days=5,
+            min_trend_bps=50.0,
+            min_reversal_bps=100.0,
+            require_daily_context=True,
+        )
+
+        self.assertEqual(daily_gap_score(gap_up_bars), 3.0)
+        self.assertEqual(daily_gap_score(gap_down_bars), 2.0)
+        self.assertEqual(recent_compression_score(compression_bars), 2.0)
+        self.assertGreaterEqual(result["pattern_score"], 4.0)
+
+    def test_opening_impulse_screener_scores_weak_boundaries_instead_of_filtering(self):
         common = {
             "symbol": "AAPL",
             "bars": opening_candidate(),
@@ -495,15 +656,18 @@ class CoreTradingTests(unittest.TestCase):
         }
 
         cases = [
-            {"bars": opening_candidate(volumes=(100, 100))},
-            {"bars": opening_candidate(highs=(100.5, 100.5), closes=(100.4, 100.4))},
-            {"bars": [opening_candidate()[0]]},
-            {"quote": Quote("AAPL", bid=104.0, ask=105.0, bid_size=200, ask_size=200, timestamp_ms=0)},
+            ({"bars": opening_candidate(volumes=(100, 100))}, "opening dollar volume"),
+            ({"bars": [opening_candidate()[0]]}, "opening_days"),
+            ({"bars": []}, "opening_days"),
+            ({"bars": opening_candidate(highs=(100.5, 100.5), closes=(100.4, 100.4))}, "opening range"),
+            ({"quote": Quote("AAPL", bid=104.0, ask=105.0, bid_size=200, ask_size=200, timestamp_ms=0)}, "spread"),
         ]
-        for override in cases:
+        for override, expected_flag in cases:
             params = {**common, **override}
             with self.subTest(override=override):
-                self.assertIsNone(score_candidate(**params))
+                result = score_candidate(**params)
+                self.assertIsNotNone(result)
+                self.assertTrue(any(expected_flag in flag for flag in result["quality_flags"]))
 
     def test_opening_impulse_screener_falls_back_when_quote_is_invalid(self):
         result = score_candidate(
@@ -529,26 +693,26 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(result["spread_bps"], 8.0)
         self.assertEqual(result["quote_size"], 0)
 
-    def test_opening_universe_builder_scores_liquid_movers(self):
+    def test_opening_universe_builder_scores_liquid_symbols_without_pattern_filtering(self):
         bars = [
-            daily_bar("AAPL", 100.0, 98.0, 103.0, market_ms(2026, 4, 20, 9, 30)),
-            daily_bar("AAPL", 102.0, 99.0, 105.0, market_ms(2026, 4, 21, 9, 30)),
-            daily_bar("AAPL", 104.0, 101.0, 107.0, market_ms(2026, 4, 22, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 99.8, 100.2, 2_000_000, market_ms(2026, 4, 20, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.1, 99.9, 100.3, 2_200_000, market_ms(2026, 4, 21, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.2, 100.0, 100.4, 2_400_000, market_ms(2026, 4, 22, 9, 30)),
         ]
         result = score_symbol(
             symbol="AAPL",
             bars=bars,
-            quote=Quote("AAPL", bid=104.0, ask=104.04, bid_size=100, ask_size=100, timestamp_ms=0),
-            min_price=10.0,
-            max_price=900.0,
-            min_dollar_volume=1_000_000.0,
-            min_daily_range_bps=100.0,
+            quote=Quote("AAPL", bid=100.0, ask=101.5, bid_size=100, ask_size=100, timestamp_ms=0),
+            min_price=5.0,
+            max_price=500.0,
+            min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
         )
 
         self.assertIsNotNone(result)
-        self.assertGreater(daily_metrics(bars)["median_daily_range_bps"], 100.0)
+        self.assertGreater(daily_metrics(bars)["average_volume"], 1_000_000.0)
         self.assertEqual(result["symbol"], "AAPL")
+        self.assertGreater(result["spread_bps"], 12.0)
 
     def test_opening_universe_builder_sorts_limits_and_writes_output(self):
         original_get_symbols = build_opening_universe.get_active_tradable_symbols
@@ -569,8 +733,8 @@ class CoreTradingTests(unittest.TestCase):
                     daily_bar_with_volume("LOW", 51.0, 50.0, 53.0, 100_000, market_ms(2026, 4, 21, 9, 30)),
                 ],
                 "HIGH": [
-                    daily_bar_with_volume("HIGH", 100.0, 96.0, 106.0, 500_000, market_ms(2026, 4, 20, 9, 30)),
-                    daily_bar_with_volume("HIGH", 108.0, 102.0, 114.0, 500_000, market_ms(2026, 4, 21, 9, 30)),
+                    daily_bar_with_volume("HIGH", 100.0, 99.0, 101.0, 2_000_000, market_ms(2026, 4, 20, 9, 30)),
+                    daily_bar_with_volume("HIGH", 100.5, 99.5, 101.5, 2_000_000, market_ms(2026, 4, 21, 9, 30)),
                 ],
                 "FAIL": [
                     daily_bar_with_volume("FAIL", 5.0, 4.9, 5.1, 500_000, market_ms(2026, 4, 20, 9, 30)),
@@ -594,10 +758,9 @@ class CoreTradingTests(unittest.TestCase):
                         lookback_days=2,
                         batch_size=2,
                         exchanges="NASDAQ,NYSE",
-                        min_price=10.0,
-                        max_price=900.0,
-                        min_dollar_volume=1_000_000.0,
-                        min_daily_range_pct=0.01,
+                        min_price=5.0,
+                        max_price=500.0,
+                        min_average_volume=1_000_000.0,
                         max_spread_bps=12.0,
                         skip_quotes=True,
                         alpaca_api_key="test",
@@ -620,6 +783,85 @@ class CoreTradingTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             build_opening_universe.build_universe(args)
+
+    def test_daily_pattern_scorer_scores_trend_continuation(self):
+        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
+        daily_bars = [
+            daily_bar_with_volume("AAPL", 98.0, 96.0, 99.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 98.0, 101.0, 1_000_000, market_ms(2026, 4, 27, 9, 30)),
+            daily_bar_with_volume("AAPL", 104.0, 100.0, 104.5, 1_500_000, market_ms(2026, 4, 28, 9, 30)),
+        ]
+
+        result = score_daily_patterns.score_patterns("AAPL", daily_bars, [], None, as_of, max_spread_bps=100.0)
+
+        self.assertEqual(result["pattern"], "trend_continuation")
+        self.assertEqual(result["score"], 7.0)
+
+    def test_daily_pattern_scorer_scores_mean_reversion(self):
+        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
+        daily_bars = [
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 102.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 102.0, 1_000_000, market_ms(2026, 4, 27, 9, 30)),
+            daily_bar_with_volume("AAPL", 96.0, 95.5, 100.0, 1_800_000, market_ms(2026, 4, 28, 9, 30)),
+        ]
+
+        result = score_daily_patterns.score_patterns("AAPL", daily_bars, [], None, as_of, max_spread_bps=100.0)
+
+        self.assertEqual(result["pattern"], "mean_reversion")
+        self.assertEqual(result["score"], 7.0)
+
+    def test_daily_pattern_scorer_scores_compression(self):
+        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
+        daily_bars = [
+            daily_bar_with_volume("AAPL", 98.0, 96.0, 100.0, 1_000_000, market_ms(2026, 4, 22, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 97.0, 102.0, 900_000, market_ms(2026, 4, 23, 9, 30)),
+            daily_bar_with_volume("AAPL", 101.0, 98.0, 103.0, 800_000, market_ms(2026, 4, 24, 9, 30)),
+            daily_bar_with_volume("AAPL", 101.8, 100.0, 103.0, 700_000, market_ms(2026, 4, 27, 9, 30)),
+            daily_bar_with_volume("AAPL", 102.4, 101.5, 102.8, 600_000, market_ms(2026, 4, 28, 9, 30)),
+        ]
+
+        result = score_daily_patterns.score_patterns("AAPL", daily_bars, [], None, as_of, max_spread_bps=100.0)
+
+        self.assertEqual(result["pattern"], "compression")
+        self.assertEqual(result["score"], 7.0)
+
+    def test_daily_pattern_scorer_scores_gap_and_go(self):
+        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
+        daily_bars = [
+            daily_bar_with_volume("AAPL", 99.0, 98.0, 100.0, 390_000, market_ms(2026, 4, 24, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 390_000, market_ms(2026, 4, 27, 9, 30)),
+        ]
+        minute_bars = [
+            opening_bar("AAPL", 103.0, 103.5, 103.2, 40_000, market_ms(2026, 4, 28, 4, 0)),
+            opening_bar("AAPL", 103.2, 104.0, 103.8, 5_000, market_ms(2026, 4, 28, 9, 34)),
+        ]
+
+        result = score_daily_patterns.score_patterns("AAPL", daily_bars, minute_bars, None, as_of, max_spread_bps=100.0)
+
+        self.assertEqual(result["pattern"], "gap_and_go")
+        self.assertEqual(result["score"], 7.0)
+
+    def test_daily_pattern_scorer_scores_opening_flush_reversal_and_spread_penalty(self):
+        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
+        daily_bars = [
+            daily_bar_with_volume("AAPL", 99.0, 98.0, 100.0, 390_000, market_ms(2026, 4, 24, 9, 30)),
+            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 390_000, market_ms(2026, 4, 27, 9, 30)),
+        ]
+        minute_bars = [
+            opening_bar("AAPL", 100.0, 100.5, 99.6, 2_000, market_ms(2026, 4, 28, 9, 30)),
+            opening_bar("AAPL", 99.6, 99.8, 98.8, 2_000, market_ms(2026, 4, 28, 9, 31)),
+            opening_bar("AAPL", 98.8, 99.0, 97.0, 2_000, market_ms(2026, 4, 28, 9, 32)),
+            opening_bar("AAPL", 97.5, 98.4, 98.0, 1_000, market_ms(2026, 4, 28, 9, 33)),
+            opening_bar("AAPL", 98.0, 99.2, 99.0, 1_000, market_ms(2026, 4, 28, 9, 34)),
+        ]
+        quote = Quote("AAPL", bid=99.0, ask=101.0, bid_size=100, ask_size=100, timestamp_ms=0)
+
+        result = score_daily_patterns.score_patterns("AAPL", daily_bars, minute_bars, quote, as_of, max_spread_bps=100.0)
+
+        self.assertEqual(result["pattern"], "opening_flush_reversal")
+        self.assertEqual(result["pattern_scores"]["opening_flush_reversal"], 7.0)
+        self.assertEqual(result["spread_penalty"], -2.0)
+        self.assertEqual(result["score"], 5.0)
 
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)

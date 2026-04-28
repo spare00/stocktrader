@@ -200,6 +200,26 @@ def daily_context_metrics(
     }
 
 
+def recent_compression_score(bars: list[Bar]) -> float:
+    ordered = sorted(bars, key=lambda item: item.start_ms)
+    ranges = [((bar.high - bar.low) / bar.close) for bar in ordered[-4:-1] if bar.close > 0]
+    if len(ranges) >= 3 and ranges[-1] < ranges[-2] < ranges[-3]:
+        return 2.0
+    return 0.0
+
+
+def daily_gap_score(bars: list[Bar]) -> float:
+    ordered = sorted(bars, key=lambda item: item.start_ms)
+    if len(ordered) < 2 or ordered[-2].close <= 0:
+        return 0.0
+    gap_pct = (ordered[-1].open - ordered[-2].close) / ordered[-2].close
+    if gap_pct > 0.02:
+        return 3.0
+    if gap_pct < -0.02:
+        return 2.0
+    return 0.0
+
+
 def usable_quote(quote: Quote | None) -> Quote | None:
     if quote is None:
         return None
@@ -227,15 +247,22 @@ def score_candidate(
     min_trend_bps: float,
     min_reversal_bps: float,
     require_daily_context: bool,
+    min_close_capture_ratio: float = 0.1,
+    min_positive_close_day_ratio: float = 0.5,
+    min_median_opening_close_bps: float = 0.0,
 ) -> dict | None:
     sessions = opening_session_metrics(bars, opening_minutes)
-    if len(sessions) < min_opening_days:
-        return None
 
     valid_quote = usable_quote(quote)
-    last_price = valid_quote.mid if valid_quote else bars[-1].close if bars else 0.0
+    fallback_price = bars[-1].close if bars else daily_bars[-1].close if daily_bars else 0.0
+    last_price = valid_quote.mid if valid_quote else fallback_price
+    quality_flags = []
+    if len(sessions) < min_opening_days:
+        quality_flags.append(f"opening_days {len(sessions)} < {min_opening_days}")
+    price_penalty = 0.0
     if last_price < min_price or last_price > max_price:
-        return None
+        quality_flags.append(f"price {last_price:.2f} outside {min_price:.2f}-{max_price:.2f}")
+        price_penalty = 1.5
 
     daily_context = daily_context_metrics(
         daily_bars,
@@ -244,34 +271,62 @@ def score_candidate(
         min_trend_bps=min_trend_bps,
         min_reversal_bps=min_reversal_bps,
     )
+    daily_context_penalty = 0.0
     if require_daily_context and daily_context["daily_context"] not in {"uptrend", "bottom_reversal"}:
-        return None
+        quality_flags.append(f"weak daily context: {daily_context['daily_context']}")
+        daily_context_penalty = 1.5
 
     dollar_volumes = [session["dollar_volume"] for session in sessions if session["dollar_volume"] > 0]
-    if not dollar_volumes:
-        return None
-    median_opening_dollar_volume = median(dollar_volumes)
+    median_opening_dollar_volume = median(dollar_volumes) if dollar_volumes else 0.0
+    liquidity_shortfall_penalty = 0.0
     if median_opening_dollar_volume < min_opening_dollar_volume:
-        return None
+        quality_flags.append(
+            f"opening dollar volume {median_opening_dollar_volume:.0f} < {min_opening_dollar_volume:.0f}"
+        )
+        liquidity_shortfall_penalty = min(
+            (min_opening_dollar_volume - median_opening_dollar_volume) / max(min_opening_dollar_volume, 1.0),
+            1.0,
+        ) * 1.5
 
     high_moves = [session["high_move_bps"] for session in sessions]
     close_moves = [session["close_move_bps"] for session in sessions]
     opening_ranges = [session["opening_range_bps"] for session in sessions]
-    median_high_move_bps = median(high_moves)
-    median_close_move_bps = median(close_moves)
-    median_opening_range_bps = median(opening_ranges)
+    median_high_move_bps = median(high_moves) if high_moves else 0.0
+    median_close_move_bps = median(close_moves) if close_moves else 0.0
+    median_opening_range_bps = median(opening_ranges) if opening_ranges else 0.0
+    opening_range_shortfall_penalty = 0.0
     if median_opening_range_bps < min_opening_range_bps:
-        return None
+        quality_flags.append(
+            f"opening range {median_opening_range_bps:.1f} bps < {min_opening_range_bps:.1f} bps"
+        )
+        opening_range_shortfall_penalty = min(
+            (min_opening_range_bps - median_opening_range_bps) / max(min_opening_range_bps, 1.0),
+            1.0,
+        )
 
-    impulse_day_ratio = sum(move >= min_impulse_bps for move in high_moves) / len(high_moves)
-    range_day_ratio = sum(move >= min_opening_range_bps for move in opening_ranges) / len(opening_ranges)
-    positive_close_day_ratio = sum(move > 0 for move in close_moves) / len(close_moves)
+    impulse_day_ratio = sum(move >= min_impulse_bps for move in high_moves) / len(high_moves) if high_moves else 0.0
+    range_day_ratio = (
+        sum(move >= min_opening_range_bps for move in opening_ranges) / len(opening_ranges) if opening_ranges else 0.0
+    )
+    positive_close_day_ratio = sum(move > 0 for move in close_moves) / len(close_moves) if close_moves else 0.0
     close_capture_ratio = median_close_move_bps / median_high_move_bps if median_high_move_bps > 0 else 0.0
     fade_bps = max(0.0, median_high_move_bps - median_close_move_bps)
+    if median_close_move_bps < min_median_opening_close_bps:
+        quality_flags.append(
+            f"median_opening_close_move_bps {median_close_move_bps:.1f} < {min_median_opening_close_bps:.1f}"
+        )
+    if close_capture_ratio < min_close_capture_ratio:
+        quality_flags.append(f"close_capture_ratio {close_capture_ratio:.3f} < {min_close_capture_ratio:.3f}")
+    if positive_close_day_ratio < min_positive_close_day_ratio:
+        quality_flags.append(
+            f"positive_close_day_ratio {positive_close_day_ratio:.3f} < {min_positive_close_day_ratio:.3f}"
+        )
 
     spread_bps = valid_quote.spread_bps if valid_quote else max_spread_bps
+    spread_penalty = 0.0
     if spread_bps > max_spread_bps:
-        return None
+        quality_flags.append(f"spread {spread_bps:.1f} bps > {max_spread_bps:.1f} bps")
+        spread_penalty = min(spread_bps / max(max_spread_bps, 1.0), 4.0) - 1.0
 
     quote_size = min(valid_quote.bid_size, valid_quote.ask_size) if valid_quote else 0
 
@@ -283,6 +338,33 @@ def score_candidate(
     fade_penalty = min(fade_bps / max(min_opening_range_bps, 1.0), 2.0)
     consistency_score = impulse_day_ratio * 2.0
     size_score = min(quote_size / 100.0, 1.0)
+    pattern_score = 0.0
+    if daily_context["daily_trend_bps"] < -300:
+        pattern_score += 3.0
+    if daily_context["daily_trend_bps"] > 300:
+        pattern_score += 3.0
+    if daily_context["rebound_from_low_bps"] > 200:
+        pattern_score += 2.0
+    pattern_score += daily_gap_score(daily_bars)
+    pattern_score += recent_compression_score(daily_bars)
+    if median_high_move_bps > 80 and median_opening_range_bps > 50:
+        pattern_score += 2.0
+    follow_through_shortfall_penalty = 0.0
+    if median_close_move_bps < min_median_opening_close_bps:
+        follow_through_shortfall_penalty += min(
+            (min_median_opening_close_bps - median_close_move_bps) / max(min_opening_range_bps, 1.0),
+            1.0,
+        )
+    if close_capture_ratio < min_close_capture_ratio:
+        follow_through_shortfall_penalty += min(
+            (min_close_capture_ratio - close_capture_ratio) / max(abs(min_close_capture_ratio), 0.1),
+            1.0,
+        )
+    if positive_close_day_ratio < min_positive_close_day_ratio:
+        follow_through_shortfall_penalty += min(
+            (min_positive_close_day_ratio - positive_close_day_ratio) / max(min_positive_close_day_ratio, 0.1),
+            1.0,
+        )
     score = (
         (liquidity_score * 3.0)
         + (spread_score * 2.0)
@@ -292,7 +374,14 @@ def score_candidate(
         + (follow_through_score * 1.5)
         + consistency_score
         + size_score
+        + (pattern_score * 3.0)
         - fade_penalty
+        - price_penalty
+        - liquidity_shortfall_penalty
+        - daily_context_penalty
+        - opening_range_shortfall_penalty
+        - follow_through_shortfall_penalty
+        - spread_penalty
     )
 
     return {
@@ -315,6 +404,8 @@ def score_candidate(
         "rebound_from_low_bps": round(daily_context["rebound_from_low_bps"], 2),
         "distance_from_high_bps": round(daily_context["distance_from_high_bps"], 2),
         "quote_size": quote_size,
+        "pattern_score": round(pattern_score, 3),
+        "quality_flags": quality_flags,
     }
 
 
@@ -427,6 +518,9 @@ def screen(args: argparse.Namespace) -> dict:
             min_impulse_bps=args.min_impulse_bps,
             min_opening_range_bps=min_opening_range_bps,
             max_spread_bps=args.max_spread_bps,
+            min_close_capture_ratio=args.min_close_capture_ratio,
+            min_positive_close_day_ratio=args.min_positive_close_day_ratio,
+            min_median_opening_close_bps=args.min_median_opening_close_bps,
             trend_lookback_days=args.trend_lookback_days,
             min_trend_bps=args.min_trend_bps,
             min_reversal_bps=args.min_reversal_bps,
@@ -446,6 +540,9 @@ def screen(args: argparse.Namespace) -> dict:
         "opening_window": f"09:30-{(datetime.combine(date.today(), OPEN_TIME) + timedelta(minutes=args.opening_minutes)).time().strftime('%H:%M')} America/New_York",
         "target_profit_pct": settings.target_profit_pct,
         "min_opening_range_pct": round(min_opening_range_bps / 10_000, 4),
+        "min_close_capture_ratio": args.min_close_capture_ratio,
+        "min_positive_close_day_ratio": args.min_positive_close_day_ratio,
+        "min_median_opening_close_bps": args.min_median_opening_close_bps,
         "daily_context_filter": not args.no_daily_context_filter,
         "as_of": as_of.isoformat(),
     }
@@ -487,6 +584,24 @@ def parse_args() -> argparse.Namespace:
         help="Maximum extra opening range cushion when --min-opening-range-pct is not set.",
     )
     parser.add_argument("--max-spread-bps", type=float, default=8.0)
+    parser.add_argument(
+        "--min-close-capture-ratio",
+        type=float,
+        default=0.1,
+        help="Preferred median opening close/high capture. Weak values lower the score.",
+    )
+    parser.add_argument(
+        "--min-positive-close-day-ratio",
+        type=float,
+        default=0.5,
+        help="Preferred share of sampled openings that closed above the opening price. Weak values lower the score.",
+    )
+    parser.add_argument(
+        "--min-median-opening-close-bps",
+        type=float,
+        default=0.0,
+        help="Preferred median move from opening price to opening-window close. Weak values lower the score.",
+    )
     parser.add_argument("--trend-lookback-days", type=int, default=5)
     parser.add_argument("--min-trend-bps", type=float, default=50.0)
     parser.add_argument("--min-reversal-bps", type=float, default=100.0)

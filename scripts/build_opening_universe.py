@@ -103,8 +103,8 @@ def daily_metrics(bars: list[Bar]) -> dict | None:
         return None
 
     dollar_volumes = [bar.close * bar.volume for bar in ordered if bar.close > 0 and bar.volume > 0]
-    ranges = [((bar.high - bar.low) / bar.close) * 10_000 for bar in ordered if bar.close > 0]
-    if not dollar_volumes or not ranges:
+    volumes = [bar.volume for bar in ordered if bar.volume > 0]
+    if not dollar_volumes or not volumes:
         return None
 
     latest = ordered[-1]
@@ -122,8 +122,8 @@ def daily_metrics(bars: list[Bar]) -> dict | None:
 
     return {
         "price": latest.close,
+        "average_volume": sum(volumes) / len(volumes),
         "median_dollar_volume": median(dollar_volumes),
-        "median_daily_range_bps": median(ranges),
         "latest_gap_bps": gap_bps,
         "trend_bps": trend_bps,
         "rebound_from_low_bps": rebound_from_low_bps,
@@ -137,8 +137,7 @@ def score_symbol(
     quote: Quote | None,
     min_price: float,
     max_price: float,
-    min_dollar_volume: float,
-    min_daily_range_bps: float,
+    min_average_volume: float,
     max_spread_bps: float,
 ) -> dict | None:
     metrics = daily_metrics(bars)
@@ -146,40 +145,22 @@ def score_symbol(
         return None
     if metrics["price"] < min_price or metrics["price"] > max_price:
         return None
-    if metrics["median_dollar_volume"] < min_dollar_volume:
-        return None
-    if metrics["median_daily_range_bps"] < min_daily_range_bps:
+    if metrics["average_volume"] < min_average_volume:
         return None
 
     valid_quote = usable_quote(quote)
     spread_bps = valid_quote.spread_bps if valid_quote else None
-    if spread_bps is not None and spread_bps > max_spread_bps:
-        return None
 
-    liquidity_score = min(math.log10(metrics["median_dollar_volume"] / min_dollar_volume + 1), 4.0)
-    range_score = min(metrics["median_daily_range_bps"] / max(min_daily_range_bps, 1.0), 3.0)
-    gap_score = min(abs(metrics["latest_gap_bps"]) / 100.0, 2.0)
-    trend_score = max(0.0, min(metrics["trend_bps"] / 250.0, 2.0))
-    rebound_score = max(0.0, min(metrics["rebound_from_low_bps"] / 250.0, 2.0))
-    spread_score = 1.0 - (spread_bps / max_spread_bps) if spread_bps is not None else 0.0
-    score = (
-        (liquidity_score * 3.0)
-        + (range_score * 2.0)
-        + gap_score
-        + max(trend_score, rebound_score)
-        + spread_score
-    )
+    liquidity_score = min(math.log10(metrics["average_volume"] / min_average_volume + 1), 6.0)
+    quote_score = 0.5 if spread_bps is not None and spread_bps <= max_spread_bps else 0.0
+    score = liquidity_score + quote_score
 
     return {
         "symbol": symbol,
         "score": round(score, 3),
         "price": round(metrics["price"], 2),
+        "average_volume": round(metrics["average_volume"], 2),
         "median_dollar_volume": round(metrics["median_dollar_volume"], 2),
-        "median_daily_range_bps": round(metrics["median_daily_range_bps"], 2),
-        "latest_gap_bps": round(metrics["latest_gap_bps"], 2),
-        "trend_bps": round(metrics["trend_bps"], 2),
-        "rebound_from_low_bps": round(metrics["rebound_from_low_bps"], 2),
-        "distance_from_high_bps": round(metrics["distance_from_high_bps"], 2),
         "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
     }
 
@@ -212,8 +193,7 @@ def build_universe(args: argparse.Namespace) -> dict:
             quote=quotes.get(symbol),
             min_price=args.min_price,
             max_price=args.max_price,
-            min_dollar_volume=args.min_dollar_volume,
-            min_daily_range_bps=args.min_daily_range_pct * 10_000,
+            min_average_volume=args.min_average_volume,
             max_spread_bps=args.max_spread_bps,
         )
         if result:
@@ -234,26 +214,25 @@ def build_universe(args: argparse.Namespace) -> dict:
         "screened": len(symbols),
         "passed": len(candidates),
         "lookback_days": args.lookback_days,
-        "min_daily_range_pct": args.min_daily_range_pct,
+        "min_average_volume": args.min_average_volume,
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "REST-only broad universe builder for opening strategies. "
-            "Run weekly or periodically, then pass the output file to screen_opening_impulse.py."
+            "REST-only broad universe builder. "
+            "Run weekly, then pass the output file to the daily pattern scorer."
         )
     )
-    parser.add_argument("--limit", type=int, default=150)
+    parser.add_argument("--limit", type=int, default=300)
     parser.add_argument("--output", type=Path, default=Path("data/opening_universe.txt"))
     parser.add_argument("--lookback-days", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--exchanges", default="NASDAQ,NYSE,ARCA", help="Comma-separated asset exchanges to include.")
-    parser.add_argument("--min-price", type=float, default=10.0)
-    parser.add_argument("--max-price", type=float, default=900.0)
-    parser.add_argument("--min-dollar-volume", type=float, default=20_000_000.0)
-    parser.add_argument("--min-daily-range-pct", type=float, default=0.015)
+    parser.add_argument("--min-price", type=float, default=5.0)
+    parser.add_argument("--max-price", type=float, default=500.0)
+    parser.add_argument("--min-average-volume", type=float, default=1_000_000.0)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
     parser.add_argument("--skip-quotes", action="store_true", help="Skip latest quote checks, useful on weekends.")
     parser.add_argument("--alpaca-api-key", default=None)
