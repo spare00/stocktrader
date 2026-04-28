@@ -21,7 +21,7 @@ from runtime_safety import flatten_on_shutdown
 import scripts.build_opening_universe as build_opening_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
 import scripts.score_daily_patterns as score_daily_patterns
-from scripts.ai_opening_plan import build_plan, extract_json_object, plan_from_screen, validated_plan
+from scripts.ai_opening_plan import build_plan, candidate_penalty, extract_json_object, plan_from_screen, validated_plan
 from scripts.build_opening_universe import daily_metrics, score_symbol
 import scripts.screen_opening_impulse as screen_opening_impulse
 from scripts.screen_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
@@ -200,12 +200,13 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(result["symbols"], ["AAPL"])
 
-    def test_ai_opening_plan_fallback_filters_weak_candidates(self):
+    def test_ai_opening_plan_fallback_ranks_weak_candidates(self):
         screen = {
             "as_of": "2026-04-28T08:00:00-04:00",
             "candidates": [
                 {
                     "symbol": "KEEP",
+                    "score": 4.0,
                     "close_capture_ratio": 0.25,
                     "positive_close_day_ratio": 0.7,
                     "median_opening_close_move_bps": 30,
@@ -213,6 +214,7 @@ class CoreTradingTests(unittest.TestCase):
                 },
                 {
                     "symbol": "DROP",
+                    "score": 8.0,
                     "close_capture_ratio": -0.1,
                     "positive_close_day_ratio": 0.4,
                     "median_opening_close_move_bps": -10,
@@ -223,16 +225,20 @@ class CoreTradingTests(unittest.TestCase):
 
         plan = plan_from_screen(screen, limit=12)
 
-        self.assertEqual(plan["symbols"], ["KEEP"])
+        self.assertEqual(plan["symbols"], ["DROP", "KEEP"])
         self.assertEqual(plan["date"], "2026-04-28")
         self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
-        self.assertEqual(plan["rejected"][0]["symbol"], "DROP")
+        self.assertEqual(plan["rejected"], [])
+        self.assertEqual(plan["ranked"][0]["symbol"], "DROP")
+        self.assertEqual(plan["ranked"][0]["penalty"], 3.0)
+        self.assertIn("negative follow-through", plan["ranked"][0]["notes"])
 
-    def test_ai_opening_plan_fallback_allows_empty_no_trade_plan(self):
+    def test_ai_opening_plan_fallback_selects_available_candidates(self):
         screen = {
             "candidates": [
                 {
                     "symbol": "DROP",
+                    "score": 2.0,
                     "close_capture_ratio": -0.1,
                     "positive_close_day_ratio": 0.4,
                     "median_opening_close_move_bps": -10,
@@ -243,14 +249,28 @@ class CoreTradingTests(unittest.TestCase):
 
         plan = plan_from_screen(screen, limit=12)
 
-        self.assertEqual(plan["symbols"], [])
+        self.assertEqual(plan["symbols"], ["DROP"])
         self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
+        self.assertEqual(plan["rejected"], [])
+
+    def test_ai_opening_plan_penalty_notes_are_non_filtering(self):
+        penalty, notes = candidate_penalty(
+            {
+                "close_capture_ratio": -0.1,
+                "positive_close_day_ratio": 0.4,
+                "median_opening_close_move_bps": -10,
+            }
+        )
+
+        self.assertEqual(penalty, 3.0)
+        self.assertEqual(notes, ["negative follow-through", "weak close capture", "low positive close ratio"])
 
     def test_ai_opening_plan_validates_ai_symbols_against_latest_screen(self):
         screen = {
             "candidates": [
                 {
                     "symbol": "KEEP",
+                    "score": 4.0,
                     "close_capture_ratio": 0.25,
                     "positive_close_day_ratio": 0.7,
                     "median_opening_close_move_bps": 30,
@@ -258,6 +278,7 @@ class CoreTradingTests(unittest.TestCase):
                 },
                 {
                     "symbol": "FADE",
+                    "score": 8.0,
                     "close_capture_ratio": -0.1,
                     "positive_close_day_ratio": 0.4,
                     "median_opening_close_move_bps": -10,
@@ -268,8 +289,9 @@ class CoreTradingTests(unittest.TestCase):
 
         plan = validated_plan({"symbols": ["KEEP", "FADE", "GONE"], "rejected": []}, screen, limit=12)
 
-        self.assertEqual(plan["symbols"], ["KEEP"])
-        self.assertEqual([item["symbol"] for item in plan["rejected"]], ["FADE", "GONE"])
+        self.assertEqual(plan["symbols"], ["KEEP", "FADE"])
+        self.assertEqual(plan["rejected"], [])
+        self.assertEqual([item["symbol"] for item in plan["ranked"]], ["KEEP", "FADE"])
 
     def test_ai_opening_plan_writes_default_shape_without_openai(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -278,7 +300,7 @@ class CoreTradingTests(unittest.TestCase):
             universe_file = root / "opening_universe.txt"
             output = root / "opening_plan.json"
             screen_file.write_text(
-                '{"candidates":[{"symbol":"AAPL","close_capture_ratio":0.2,"positive_close_day_ratio":0.6,"median_opening_close_move_bps":20,"fade_bps":40}]}\n'
+                '{"candidates":[{"symbol":"AAPL","score":4.0,"close_capture_ratio":0.2,"positive_close_day_ratio":0.6,"median_opening_close_move_bps":20,"fade_bps":40}]}\n'
             )
             universe_file.write_text("AAPL,MSFT\n")
 
@@ -298,6 +320,8 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(plan["symbols"], ["AAPL"])
         self.assertEqual(saved["symbols"], ["AAPL"])
+        self.assertEqual(saved["rejected"], [])
+        self.assertEqual(saved["ranked"][0]["symbol"], "AAPL")
         self.assertIn("settings", saved)
 
     def test_trade_journal_analyzer_summarizes_round_trips(self):

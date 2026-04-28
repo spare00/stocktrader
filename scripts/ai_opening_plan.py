@@ -39,43 +39,49 @@ def load_universe(path: Path) -> list[str]:
     return [part.strip().upper() for part in path.read_text().replace("\n", ",").split(",") if part.strip()]
 
 
-def candidate_rejection_reason(candidate: dict[str, Any]) -> str | None:
+def candidate_penalty(candidate: dict[str, Any]) -> tuple[float, list[str]]:
     close_capture = float(candidate.get("close_capture_ratio", 0.0) or 0.0)
     positive_ratio = float(candidate.get("positive_close_day_ratio", 0.0) or 0.0)
     median_close_bps = float(candidate.get("median_opening_close_move_bps", 0.0) or 0.0)
-    fade_bps = float(candidate.get("fade_bps", 0.0) or 0.0)
-    reasons = []
+    penalty = 0.0
+    notes = []
     if median_close_bps < MIN_MEDIAN_OPENING_CLOSE_BPS:
-        reasons.append(f"median_opening_close_move_bps={median_close_bps:.1f}")
+        penalty += 1.0
+        notes.append("negative follow-through")
     if close_capture < MIN_CLOSE_CAPTURE_RATIO:
-        reasons.append(f"close_capture={close_capture:.3f}")
+        penalty += 1.0
+        notes.append("weak close capture")
     if positive_ratio < MIN_POSITIVE_CLOSE_DAY_RATIO:
-        reasons.append(f"positive_close_day_ratio={positive_ratio:.3f}")
-    if not reasons:
-        return None
-    reasons.append(f"fade_bps={fade_bps:.1f}")
-    return "follow-through weak: " + ", ".join(reasons)
+        penalty += 1.0
+        notes.append("low positive close ratio")
+    return penalty, notes
+
+
+def ranked_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked = []
+    for candidate in candidates:
+        symbol = str(candidate.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        base_score = float(candidate.get("score", 0.0) or 0.0)
+        penalty, notes = candidate_penalty(candidate)
+        ranked.append(
+            {
+                "symbol": symbol,
+                "score": round(base_score - penalty, 3),
+                "base_score": round(base_score, 3),
+                "penalty": round(penalty, 3),
+                "notes": notes,
+            }
+        )
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked
 
 
 def plan_from_screen(screen: dict[str, Any], limit: int) -> dict[str, Any]:
     candidates = list(screen.get("candidates") or [])
-    keep = []
-    rejected = []
-    for candidate in candidates:
-        symbol = str(candidate.get("symbol", "")).upper()
-        reason = candidate_rejection_reason(candidate)
-        if reason is None:
-            keep.append(symbol)
-        else:
-            rejected.append(
-                {
-                    "symbol": symbol,
-                    "reason": reason,
-                }
-            )
-
-    selected = keep[:limit]
-    selected = [symbol for symbol in selected if symbol]
+    ranked = ranked_candidates(candidates)
+    selected = [item["symbol"] for item in ranked[:limit]]
     settings = {
         "MAX_OPEN_POSITIONS": 1 if len(selected) <= 2 else 2,
     }
@@ -83,9 +89,10 @@ def plan_from_screen(screen: dict[str, Any], limit: int) -> dict[str, Any]:
         "date": str(screen.get("as_of", date.today().isoformat()))[:10],
         "strategy": "opening_impulse",
         "symbols": selected,
-        "rejected": rejected,
+        "ranked": ranked[:limit],
+        "rejected": [],
         "settings": settings,
-        "risk_note": "Generated from deterministic screen fallback; no-trade is acceptable when screened candidates lack opening follow-through.",
+        "risk_note": "Ranking-based selection; no strict filtering applied.",
     }
 
 
@@ -116,11 +123,14 @@ def ai_plan(settings: Settings, screen: dict[str, Any], universe_symbols: list[s
         model=settings.openai_model,
         instructions=(
             "Create a conservative pre-market plan for a seconds-level paper-trading opening_impulse strategy. "
-            "Return only JSON. Include keys: date, strategy, symbols, rejected, settings, risk_note. "
+            "Rank candidates instead of rejecting them. Return only JSON. "
+            "Include keys: date, strategy, symbols, ranked, rejected, settings, risk_note. "
             "The symbols value must be an array of ticker strings, not objects. "
-            "Put symbol explanations in rejected or risk_note, not in symbols. "
+            "Put symbol ranking details in ranked, not in symbols. "
             "Symbols must come from screen.candidates. Use settings only from allowed_settings. "
-            "Prefer rejecting spike-and-fade candidates with weak close_capture_ratio or negative close movement. "
+            "Do not eliminate symbols based on historical metrics. "
+            "Focus on current momentum, opening structure, and intraday opportunity. "
+            "Return top symbols ranked by expected opportunity, up to the requested limit when candidates are available. "
             "Never increase MAX_OPEN_POSITIONS or MAX_POSITION_VALUE beyond allowed ranges."
         ),
         input=json.dumps(payload, sort_keys=True),
@@ -130,9 +140,9 @@ def ai_plan(settings: Settings, screen: dict[str, Any], universe_symbols: list[s
 
 def validated_plan(plan: dict[str, Any], screen: dict[str, Any], limit: int) -> dict[str, Any]:
     candidates = {str(candidate.get("symbol", "")).upper(): candidate for candidate in screen.get("candidates") or []}
+    fallback_ranked = ranked_candidates(list(screen.get("candidates") or []))
     selected = []
-    rejected = list(plan.get("rejected") or [])
-    rejected_symbols = {str(item.get("symbol", "")).upper() for item in rejected if isinstance(item, dict)}
+    rejected = []
 
     for raw_symbol in plan.get("symbols") or []:
         symbol = str(raw_symbol).upper()
@@ -140,21 +150,24 @@ def validated_plan(plan: dict[str, Any], screen: dict[str, Any], limit: int) -> 
         if not symbol:
             continue
         if candidate is None:
-            if symbol not in rejected_symbols:
-                rejected.append({"symbol": symbol, "reason": "not present in latest screen.candidates"})
-            continue
-        reason = candidate_rejection_reason(candidate)
-        if reason is not None:
-            if symbol not in rejected_symbols:
-                rejected.append({"symbol": symbol, "reason": reason})
             continue
         if symbol not in selected:
             selected.append(symbol)
         if len(selected) >= limit:
             break
 
+    for item in fallback_ranked:
+        if len(selected) >= limit:
+            break
+        if item["symbol"] not in selected:
+            selected.append(item["symbol"])
+
+    ranked_by_symbol = {item["symbol"]: item for item in fallback_ranked}
+    ranked = [ranked_by_symbol[symbol] for symbol in selected if symbol in ranked_by_symbol]
     plan["symbols"] = selected
+    plan["ranked"] = ranked
     plan["rejected"] = rejected
+    plan["risk_note"] = "Ranking-based selection; no strict filtering applied."
     return plan
 
 
