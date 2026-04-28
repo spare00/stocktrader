@@ -315,6 +315,16 @@ class CoreTradingTests(unittest.TestCase):
                     "timestamp_ms": 1_000,
                 },
                 {
+                    "event": "mark",
+                    "symbol": "MU",
+                    "strategy": "opening_impulse",
+                    "shares": 0,
+                    "price": 102.0,
+                    "pnl": 0,
+                    "reason": "high water mark",
+                    "timestamp_ms": 6_000,
+                },
+                {
                     "event": "sell",
                     "symbol": "MU",
                     "strategy": "opening_impulse",
@@ -333,6 +343,16 @@ class CoreTradingTests(unittest.TestCase):
                     "pnl": 0,
                     "reason": "entry",
                     "timestamp_ms": 20_000,
+                },
+                {
+                    "event": "mark",
+                    "symbol": "CRWD",
+                    "strategy": "opening_impulse",
+                    "shares": 0,
+                    "price": 49.0,
+                    "pnl": 0,
+                    "reason": "low water mark",
+                    "timestamp_ms": 25_000,
                 },
                 {
                     "event": "sell",
@@ -354,14 +374,25 @@ class CoreTradingTests(unittest.TestCase):
             self.assertEqual(summary["losses"], 1)
             self.assertAlmostEqual(summary["total_pnl"], 3.0)
             self.assertAlmostEqual(summary["win_rate"], 0.5)
+            self.assertAlmostEqual(summary["average_pnl_pct"], 0.0)
+            self.assertAlmostEqual(summary["average_mfe_pct"], 0.01)
+            self.assertAlmostEqual(summary["average_mae_pct"], -0.01)
+            self.assertAlmostEqual(summary["average_missed_profit_pct"], 0.01)
             self.assertEqual(summary["by_exit_reason"]["target profit"]["trades"], 1)
+            self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["average_pnl_pct"], 0.01)
+            self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["average_mfe_pct"], 0.02)
+            self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["average_hold_seconds"], 10.0)
             self.assertEqual(summary["by_exit_reason"]["momentum stall"]["trades"], 1)
             self.assertEqual(summary["by_symbol"]["MU"]["total_pnl"], 4.0)
+            self.assertAlmostEqual(summary["best_trade"]["mfe_pct"], 0.02)
+            self.assertAlmostEqual(summary["worst_trade"]["mae_pct"], -0.02)
 
     def test_trade_journal_analyzer_allocates_partial_exit_pnl(self):
         events = [
             analyze_trade_journal.TradeEvent("buy", "AAPL", 1_000, 10, 100.0, 0.0, "opening_impulse", "entry", "buy-1"),
+            analyze_trade_journal.TradeEvent("mark", "AAPL", 3_000, 0, 102.0, 0.0, "opening_impulse", "mark", ""),
             analyze_trade_journal.TradeEvent("sell", "AAPL", 6_000, 4, 101.0, 4.0, "opening_impulse", "partial", "sell-1"),
+            analyze_trade_journal.TradeEvent("mark", "AAPL", 8_000, 0, 98.0, 0.0, "opening_impulse", "mark", ""),
             analyze_trade_journal.TradeEvent("sell", "AAPL", 11_000, 6, 99.0, -6.0, "opening_impulse", "stop loss", "sell-2"),
         ]
 
@@ -373,6 +404,9 @@ class CoreTradingTests(unittest.TestCase):
         self.assertAlmostEqual(summary["total_pnl"], -2.0)
         self.assertEqual([trade.shares for trade in round_trips], [4, 6])
         self.assertAlmostEqual(round_trips[0].hold_seconds, 5.0)
+        self.assertAlmostEqual(round_trips[0].pnl_pct, 0.01)
+        self.assertAlmostEqual(round_trips[0].mfe_pct, 0.02)
+        self.assertAlmostEqual(round_trips[1].mae_pct, -0.02)
 
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)

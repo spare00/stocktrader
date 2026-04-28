@@ -38,6 +38,11 @@ class RoundTrip:
     buy_price: float
     sell_price: float
     pnl: float
+    pnl_pct: float
+    max_price: float
+    min_price: float
+    mfe_pct: float
+    mae_pct: float
     reason: str
     hold_seconds: float
 
@@ -75,6 +80,11 @@ def load_events(path: Path) -> list[TradeEvent]:
 
 def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[dict]]:
     open_lots: dict[str, list[TradeEvent]] = defaultdict(list)
+    price_points_by_symbol = defaultdict(list)
+    for event in events:
+        if event.price > 0:
+            price_points_by_symbol[event.symbol].append((event.timestamp_ms, event.price))
+
     round_trips = []
     unmatched = []
 
@@ -84,7 +94,8 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
             continue
 
         if event.event != "sell":
-            unmatched.append({"event": event.event, "symbol": event.symbol, "reason": "unsupported event"})
+            if event.price <= 0:
+                unmatched.append({"event": event.event, "symbol": event.symbol, "reason": "unsupported event"})
             continue
 
         remaining_shares = event.shares
@@ -92,6 +103,13 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
             buy = open_lots[event.symbol][0]
             matched_shares = min(remaining_shares, buy.shares)
             allocated_pnl = event.pnl * (matched_shares / event.shares) if event.shares else event.pnl
+            max_price, min_price = excursion_prices(
+                price_points_by_symbol[event.symbol],
+                buy.timestamp_ms,
+                event.timestamp_ms,
+                buy.price,
+                event.price,
+            )
             round_trips.append(
                 RoundTrip(
                     symbol=event.symbol,
@@ -102,6 +120,11 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
                     buy_price=buy.price,
                     sell_price=event.price,
                     pnl=allocated_pnl,
+                    pnl_pct=pct_change(event.price, buy.price),
+                    max_price=max_price,
+                    min_price=min_price,
+                    mfe_pct=pct_change(max_price, buy.price),
+                    mae_pct=pct_change(min_price, buy.price),
                     reason=event.reason.split(" | ")[0],
                     hold_seconds=(event.timestamp_ms - buy.timestamp_ms) / 1000,
                 )
@@ -133,12 +156,32 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
     return round_trips, unmatched
 
 
+def pct_change(price: float, entry_price: float) -> float:
+    return (price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+
+def excursion_prices(
+    price_points: list[tuple[int, float]],
+    entry_ms: int,
+    exit_ms: int,
+    entry_price: float,
+    exit_price: float,
+) -> tuple[float, float]:
+    prices = [entry_price, exit_price]
+    prices.extend(price for timestamp_ms, price in price_points if entry_ms <= timestamp_ms <= exit_ms and price > 0)
+    return max(prices), min(prices)
+
+
 def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
     wins = [trade for trade in round_trips if trade.pnl > 0]
     losses = [trade for trade in round_trips if trade.pnl < 0]
     flat = [trade for trade in round_trips if trade.pnl == 0]
     hold_times = [trade.hold_seconds for trade in round_trips]
     pnls = [trade.pnl for trade in round_trips]
+    pnl_pcts = [trade.pnl_pct for trade in round_trips]
+    mfe_pcts = [trade.mfe_pct for trade in round_trips]
+    mae_pcts = [trade.mae_pct for trade in round_trips]
+    missed_profit_pcts = [trade.mfe_pct - trade.pnl_pct for trade in round_trips]
 
     by_symbol = defaultdict(list)
     by_reason = defaultdict(list)
@@ -157,6 +200,10 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "total_pnl": round(sum(pnls), 4),
         "average_pnl": round(mean(pnls), 4) if pnls else 0.0,
         "median_pnl": round(median(pnls), 4) if pnls else 0.0,
+        "average_pnl_pct": round(mean(pnl_pcts), 6) if pnl_pcts else 0.0,
+        "average_mfe_pct": round(mean(mfe_pcts), 6) if mfe_pcts else 0.0,
+        "average_mae_pct": round(mean(mae_pcts), 6) if mae_pcts else 0.0,
+        "average_missed_profit_pct": round(mean(missed_profit_pcts), 6) if missed_profit_pcts else 0.0,
         "average_hold_seconds": round(mean(hold_times), 2) if hold_times else 0.0,
         "median_hold_seconds": round(median(hold_times), 2) if hold_times else 0.0,
         "best_trade": trade_summary(max(round_trips, key=lambda trade: trade.pnl)) if round_trips else None,
@@ -180,6 +227,8 @@ def summarize_groups(groups: dict[str, list[RoundTrip]]) -> dict:
             "win_rate": round(wins / len(trades), 4) if trades else 0.0,
             "total_pnl": round(pnl, 4),
             "average_pnl": round(pnl / len(trades), 4) if trades else 0.0,
+            "average_pnl_pct": round(mean([trade.pnl_pct for trade in trades]), 6) if trades else 0.0,
+            "average_mfe_pct": round(mean([trade.mfe_pct for trade in trades]), 6) if trades else 0.0,
             "average_hold_seconds": round(mean([trade.hold_seconds for trade in trades]), 2) if trades else 0.0,
         }
     return summary
@@ -195,6 +244,12 @@ def trade_summary(trade: RoundTrip) -> dict:
         "buy_price": trade.buy_price,
         "sell_price": trade.sell_price,
         "pnl": round(trade.pnl, 4),
+        "pnl_pct": round(trade.pnl_pct, 6),
+        "max_price": trade.max_price,
+        "min_price": trade.min_price,
+        "mfe_pct": round(trade.mfe_pct, 6),
+        "mae_pct": round(trade.mae_pct, 6),
+        "missed_profit_pct": round(trade.mfe_pct - trade.pnl_pct, 6),
         "reason": trade.reason,
         "hold_seconds": round(trade.hold_seconds, 2),
     }
@@ -208,12 +263,21 @@ def print_text(summary: dict) -> None:
     print("Trade Journal Summary")
     print(f"Trades: {summary['trades']} | Wins: {summary['wins']} | Losses: {summary['losses']} | Win rate: {summary['win_rate']:.1%}")
     print(f"Total P/L: {summary['total_pnl']:.2f} | Avg P/L: {summary['average_pnl']:.2f} | Median P/L: {summary['median_pnl']:.2f}")
+    print(
+        "Avg P/L%: "
+        f"{summary['average_pnl_pct']:.2%} | Avg MFE: {summary['average_mfe_pct']:.2%} | "
+        f"Avg MAE: {summary['average_mae_pct']:.2%} | Avg missed: {summary['average_missed_profit_pct']:.2%}"
+    )
     print(f"Avg hold: {summary['average_hold_seconds']:.1f}s | Median hold: {summary['median_hold_seconds']:.1f}s")
 
     if summary["by_exit_reason"]:
         print("\nExit Reasons")
         for reason, item in sorted(summary["by_exit_reason"].items(), key=lambda pair: pair[1]["trades"], reverse=True):
-            print(f"- {reason}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+            print(
+                f"- {reason}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, "
+                f"avg P/L% {item['average_pnl_pct']:.2%}, avg MFE {item['average_mfe_pct']:.2%}, "
+                f"avg hold {item['average_hold_seconds']:.1f}s, win rate {item['win_rate']:.1%}"
+            )
 
     if summary["by_symbol"]:
         print("\nSymbols")
