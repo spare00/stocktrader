@@ -181,11 +181,15 @@ class LocalPaperExecutor:
             return None
 
         age_seconds = (event_ms - position.entry_ms) / 1000
+        strategy = strategies_by_name.get(position.strategy)
+        exit_activation_delay = strategy.exit_activation_delay_seconds(position) if strategy else 0
         reason = ""
         exit_price = current_price
 
         if should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
+        elif age_seconds < exit_activation_delay:
+            return None
         elif current_price >= position.target_price:
             reason = "target profit"
             exit_price = position.target_price
@@ -196,7 +200,6 @@ class LocalPaperExecutor:
             reason = "max hold"
 
         if not reason:
-            strategy = strategies_by_name.get(position.strategy)
             if strategy:
                 decision = strategy.should_exit(state, position)
                 if decision:
@@ -301,10 +304,14 @@ class AlpacaPaperExecutor:
             return None
 
         age_seconds = (event_ms - position.entry_ms) / 1000
+        strategy = strategies_by_name.get(position.strategy)
+        exit_activation_delay = strategy.exit_activation_delay_seconds(position) if strategy else 0
         reason = ""
 
         if flatten:
             reason = "end-of-day flatten"
+        elif age_seconds < exit_activation_delay:
+            return None
         elif current_price >= position.target_price:
             reason = "target profit"
         elif current_price <= position.stop_price:
@@ -313,7 +320,6 @@ class AlpacaPaperExecutor:
             reason = "max hold"
 
         if not reason:
-            strategy = strategies_by_name.get(position.strategy)
             if strategy:
                 decision = strategy.should_exit(state, position)
                 if decision:
@@ -447,10 +453,18 @@ class AlpacaPaperExecutor:
         return None
 
     def _cancel_unfilled_order(self, order) -> None:
+        from alpaca.common.exceptions import APIError
+
         if self._order_status(order) in FINAL_ORDER_STATUSES:
             return
         try:
             self.clients.trading.cancel_order_by_id(order.id)
+        except APIError as exc:
+            message = str(exc).lower()
+            if "already in" in message and "filled" in message and "state" in message:
+                LOG.info("Cancel skipped for Alpaca order %s: already filled before cancel", order.id)
+                return
+            LOG.exception("Failed to cancel unfilled Alpaca order %s", order.id)
         except Exception:
             LOG.exception("Failed to cancel unfilled Alpaca order %s", order.id)
 

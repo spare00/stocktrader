@@ -19,3 +19,6 @@ class Strategy(ABC):
 
     def should_exit(self, state: SymbolState, position: "Position") -> ExitDecision | None:
         return None
+
+    def exit_activation_delay_seconds(self, position: "Position") -> int:
+        return 0

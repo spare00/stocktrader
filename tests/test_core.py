@@ -985,6 +985,39 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.side, "SELL")
         self.assertGreater(fill.pnl, 0)
 
+    def test_opening_impulse_exit_activation_delay_blocks_immediate_target_exit(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            target_profit_pct=0.01,
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=101.18, ask=101.22, bid_size=20, ask_size=20, timestamp_ms=10_000))
+
+        fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+        self.assertIsNone(fill)
+
+        fill = broker.manage_exit(
+            state,
+            {"opening_impulse": OpeningImpulseStrategy(settings)},
+            now_ms=16_500,
+        )
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "target profit")
+
     def test_paper_broker_flattens_before_close(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -1196,6 +1229,26 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(settled)
         self.assertTrue(executor.clients.trading.cancel_called)
         self.assertEqual(settled[0], 3)
+
+    def test_alpaca_cancel_unfilled_order_ignores_already_filled_race(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.clients = FakeClients(
+                [],
+                cancel_error=FakeAPIError('{"code":42210000,"message":"order is already in \\"filled\\" state"}'),
+            )
+            order = FakeOrder("order-1", status="new")
+
+            with self.assertLogs("execution", level="INFO") as captured:
+                executor._cancel_unfilled_order(order)
+
+            self.assertIn("already filled before cancel", captured.output[0])
+        finally:
+            remove_fake_alpaca_modules()
 
     def test_alpaca_reconciles_only_target_positions(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
@@ -1629,6 +1682,7 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             regular_market_only=False,
             opening_impulse_min_hold_seconds=0,
+            opening_impulse_exit_negative_steps=3,
         )
         strategy = OpeningImpulseStrategy(settings)
         state = SymbolState("AAPL")
@@ -1773,6 +1827,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(log_filter.filter(make_record()))
         self.assertFalse(log_filter.filter(make_record()))
 
+    def test_rejection_log_throttler_suppresses_repeated_rejections(self):
+        throttler = trading_main.RejectionLogThrottler(min_interval_seconds=60)
+
+        self.assertTrue(throttler.should_log("AAPL", "BUY", "opening_impulse", "symbol cooldown active"))
+        self.assertFalse(throttler.should_log("AAPL", "BUY", "opening_impulse", "symbol cooldown active"))
+        self.assertTrue(throttler.should_log("AAPL", "BUY", "opening_impulse", "position already open"))
+
     def test_build_strategies_returns_enabled_strategies(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -1852,12 +1913,14 @@ class FakeTrading:
         open_orders: list[FakeOrder] | None = None,
         cash: str = "10000.00",
         submit_error: Exception | None = None,
+        cancel_error: Exception | None = None,
     ):
         self.orders = orders
         self.positions = positions or []
         self.open_orders = open_orders or []
         self.cash = cash
         self.submit_error = submit_error
+        self.cancel_error = cancel_error
         self.cancel_called = False
         self.canceled_order_ids = []
         self.submitted_orders = []
@@ -1883,6 +1946,8 @@ class FakeTrading:
     def cancel_order_by_id(self, order_id: str) -> None:
         self.cancel_called = True
         self.canceled_order_ids.append(order_id)
+        if self.cancel_error is not None:
+            raise self.cancel_error
 
     def get_order_by_id(self, order_id: str) -> FakeOrder:
         return self.orders.pop(0)
@@ -1896,8 +1961,16 @@ class FakeClients:
         open_orders: list[FakeOrder] | None = None,
         cash: str = "10000.00",
         submit_error: Exception | None = None,
+        cancel_error: Exception | None = None,
     ):
-        self.trading = FakeTrading(orders, positions=positions, open_orders=open_orders, cash=cash, submit_error=submit_error)
+        self.trading = FakeTrading(
+            orders,
+            positions=positions,
+            open_orders=open_orders,
+            cash=cash,
+            submit_error=submit_error,
+            cancel_error=cancel_error,
+        )
 
 
 class FakeExecutor:

@@ -142,10 +142,10 @@ class OpeningImpulseStrategy(Strategy):
 
         event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
-        if age_seconds < self.settings.opening_impulse_min_hold_seconds:
+        if age_seconds < self.exit_activation_delay_seconds(position):
             return None
 
-        bars = list(state.bars)[-max(2, self.settings.opening_impulse_bar_window) :]
+        bars = list(state.bars)[-max(5, self.settings.opening_impulse_bar_window) :]
         if len(bars) >= 2:
             recent_low = min(bar.low for bar in bars[:-1])
             if price < recent_low:
@@ -165,6 +165,9 @@ class OpeningImpulseStrategy(Strategy):
             return ExitDecision("momentum fade")
 
         return None
+
+    def exit_activation_delay_seconds(self, position) -> int:
+        return self.settings.opening_impulse_min_hold_seconds
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0

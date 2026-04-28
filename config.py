@@ -51,7 +51,7 @@ class Settings:
 
     target_profit_pct: float = min(_float_env("TARGET_PROFIT_PCT", 0.01), 0.02)
     stop_loss_pct: float = _float_env("STOP_LOSS_PCT", 0.005)
-    max_hold_seconds: int = _int_env("MAX_HOLD_SECONDS", 150)
+    max_hold_seconds: int = _int_env("MAX_HOLD_SECONDS", 120)
 
     starting_cash: float = _float_env("STARTING_CASH", 25_000.0)
     max_position_value: float = _float_env("MAX_POSITION_VALUE", 2_500.0)
@@ -88,8 +88,8 @@ class Settings:
     opening_impulse_max_negative_steps: int = _int_env("OPENING_IMPULSE_MAX_NEGATIVE_STEPS", 1)
     opening_impulse_exit_window_seconds: int = _int_env("OPENING_IMPULSE_EXIT_WINDOW_SECONDS", 10)
     opening_impulse_exit_min_quotes: int = _int_env("OPENING_IMPULSE_EXIT_MIN_QUOTES", 4)
-    opening_impulse_exit_negative_steps: int = _int_env("OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", 3)
-    opening_impulse_min_hold_seconds: int = _int_env("OPENING_IMPULSE_MIN_HOLD_SECONDS", 60)
+    opening_impulse_exit_negative_steps: int = _int_env("OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", 4)
+    opening_impulse_min_hold_seconds: int = _int_env("OPENING_IMPULSE_MIN_HOLD_SECONDS", 15)
     opening_impulse_stall_buffer_pct: float = _float_env("OPENING_IMPULSE_STALL_BUFFER_PCT", 0.001)
     opening_impulse_retrace_from_high_pct: float = _float_env("OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", 0.008)
 

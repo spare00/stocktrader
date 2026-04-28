@@ -81,6 +81,21 @@ class FriendlyAlpacaStreamErrorFilter(logging.Filter):
         )
 
 
+class RejectionLogThrottler:
+    def __init__(self, min_interval_seconds: float = 30.0):
+        self.min_interval_seconds = min_interval_seconds
+        self._last_logged: dict[tuple[str, str, str, str], float] = {}
+
+    def should_log(self, symbol: str, side: str, strategy: str, reason: str) -> bool:
+        key = (symbol, side, strategy, reason)
+        now = time.monotonic()
+        last_logged = self._last_logged.get(key)
+        if last_logged is not None and now - last_logged < self.min_interval_seconds:
+            return False
+        self._last_logged[key] = now
+        return True
+
+
 def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
 
@@ -133,6 +148,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
     executor = build_executor(settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
+    rejection_logs = RejectionLogThrottler()
 
     logging.info(
         "Monitoring %s with execution mode %s and strategies %s",
@@ -168,13 +184,14 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
                 decision = risk.check_entry(signal, executor.open_symbols(), executor.total_pnl(mark_prices(states)))
                 if not decision.allowed:
-                    logging.info(
-                        "Signal rejected %s %s from %s: %s",
-                        signal.symbol,
-                        signal.side,
-                        signal.strategy,
-                        decision.reason,
-                    )
+                    if rejection_logs.should_log(signal.symbol, signal.side, signal.strategy, decision.reason):
+                        logging.info(
+                            "Signal rejected %s %s from %s: %s",
+                            signal.symbol,
+                            signal.side,
+                            signal.strategy,
+                            decision.reason,
+                        )
                     continue
 
                 note = await asyncio.to_thread(reviewer.review, signal)
