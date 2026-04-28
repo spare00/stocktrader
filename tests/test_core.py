@@ -947,6 +947,78 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.strategy, "opening_impulse")
         self.assertEqual(signal.side, "BUY")
 
+    def test_opening_impulse_uses_bar_confirmation_when_quotes_are_flat(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_window_seconds=30,
+            opening_impulse_min_quotes=6,
+            opening_impulse_change_pct=0.009,
+            opening_impulse_bar_confirmation=True,
+            opening_impulse_bar_window=3,
+            opening_impulse_bar_change_pct=0.003,
+            opening_impulse_bar_volume_ratio=1.5,
+            opening_impulse_max_spread_bps=8.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        base_ms = 1777037400000
+        state.add_bar(Bar("AAPL", open=100.00, high=100.25, low=99.90, close=100.20, volume=100, vwap=100.1, start_ms=base_ms, end_ms=base_ms + 60_000))
+        state.add_bar(Bar("AAPL", open=100.20, high=100.50, low=100.10, close=100.45, volume=120, vwap=100.3, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000))
+        state.add_bar(Bar("AAPL", open=100.45, high=100.80, low=100.40, close=100.70, volume=260, vwap=100.6, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000))
+
+        for index in range(6):
+            bid = 100.69 + (index * 0.001)
+            ask = bid + 0.01
+            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=30, ask_size=30, timestamp_ms=base_ms + 180_000 + (index * 3_000)))
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("opening bar impulse", signal.reason)
+        self.assertGreaterEqual(signal.change_pct, 0.003)
+
+    def test_opening_impulse_bar_confirmation_still_requires_tight_quote(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_min_quotes=6,
+            opening_impulse_change_pct=0.009,
+            opening_impulse_bar_confirmation=True,
+            opening_impulse_bar_window=3,
+            opening_impulse_bar_change_pct=0.003,
+            opening_impulse_bar_volume_ratio=1.5,
+            opening_impulse_max_spread_bps=8.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        base_ms = 1777037400000
+        state.add_bar(Bar("AAPL", open=100.00, high=100.25, low=99.90, close=100.20, volume=100, vwap=100.1, start_ms=base_ms, end_ms=base_ms + 60_000))
+        state.add_bar(Bar("AAPL", open=100.20, high=100.50, low=100.10, close=100.45, volume=120, vwap=100.3, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000))
+        state.add_bar(Bar("AAPL", open=100.45, high=100.80, low=100.40, close=100.70, volume=260, vwap=100.6, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000))
+
+        for index in range(6):
+            state.update_quote(
+                Quote(
+                    "AAPL",
+                    bid=100.60,
+                    ask=101.00,
+                    bid_size=30,
+                    ask_size=30,
+                    timestamp_ms=base_ms + 180_000 + (index * 3_000),
+                )
+            )
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_opening_impulse_logs_rejection_reason(self):
         settings = Settings(
             alpaca_api_key="test",

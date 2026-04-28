@@ -65,7 +65,7 @@ Execution modes:
 Strategies:
 
 - `spike`: short-window price/volume spike detection
-- `opening_impulse`: market-open, quote-velocity, spread, and volume-spike based opening impulse capture
+- `opening_impulse`: market-open impulse capture using quote momentum or recent 1-minute bar confirmation, with quote spread and size checks before entry
 
 Choose one or many with `STRATEGIES=spike,opening_impulse`.
 
@@ -115,7 +115,7 @@ Run the monitor with the plan when you want the AI-filtered symbols and conserva
 venv/bin/python main.py --use-opening-plan
 ```
 
-Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio.
+Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
 
 The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, quote size, daily trend/reversal context, and opening follow-through quality, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
 
@@ -158,6 +158,15 @@ The first strategy watches each symbol for:
 - price move over `SPIKE_LOOKBACK_SECONDS`
 - volume at least `VOLUME_RATIO` times the recent baseline
 - quote spread below `MAX_SPREAD_BPS`
+
+`opening_impulse` can enter from either a fast quote move or a confirmed 1-minute bar impulse. The bar path is controlled by:
+
+- `OPENING_IMPULSE_BAR_CONFIRMATION=true`
+- `OPENING_IMPULSE_BAR_WINDOW=3`
+- `OPENING_IMPULSE_BAR_MIN_RISING=2`
+- `OPENING_IMPULSE_BAR_CHANGE_PCT=0.003`
+- `OPENING_IMPULSE_BAR_VOLUME_RATIO=1.5`
+- `OPENING_IMPULSE_MIN_HOLD_SECONDS=30`, which delays only the `momentum stall` exit
 
 Accepted paper entries use:
 

@@ -17,6 +17,13 @@ def _int_env(name: str, default: int) -> int:
     return default if value is None else int(value)
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def _strategy_env(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
     return [part.strip().lower() for part in raw.split(",") if part.strip()]
@@ -64,6 +71,11 @@ class Settings:
     opening_impulse_change_pct: float = _float_env("OPENING_IMPULSE_CHANGE_PCT", 0.009)
     opening_impulse_skip_extended_pct: float = _float_env("OPENING_IMPULSE_SKIP_EXTENDED_PCT", 0.03)
     opening_impulse_volume_ratio: float = _float_env("OPENING_IMPULSE_VOLUME_RATIO", 2.5)
+    opening_impulse_bar_confirmation: bool = _bool_env("OPENING_IMPULSE_BAR_CONFIRMATION", True)
+    opening_impulse_bar_window: int = _int_env("OPENING_IMPULSE_BAR_WINDOW", 3)
+    opening_impulse_bar_min_rising: int = _int_env("OPENING_IMPULSE_BAR_MIN_RISING", 2)
+    opening_impulse_bar_change_pct: float = _float_env("OPENING_IMPULSE_BAR_CHANGE_PCT", 0.003)
+    opening_impulse_bar_volume_ratio: float = _float_env("OPENING_IMPULSE_BAR_VOLUME_RATIO", 1.5)
     opening_impulse_max_spread_bps: float = _float_env("OPENING_IMPULSE_MAX_SPREAD_BPS", 8.0)
     opening_impulse_min_quote_size: int = _int_env("OPENING_IMPULSE_MIN_QUOTE_SIZE", 25)
     opening_impulse_max_negative_steps: int = _int_env("OPENING_IMPULSE_MAX_NEGATIVE_STEPS", 1)
