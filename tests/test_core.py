@@ -1682,7 +1682,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("gap 0.940% < 2.000%", candidate.quality_flags)
         self.assertIn("premarket volume 1.10x < 2.00x", candidate.quality_flags)
 
-    def test_gap_and_go_skips_entries_outside_window(self):
+    def test_gap_and_go_skips_entries_outside_window_without_log_noise(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -1703,11 +1703,40 @@ class CoreTradingTests(unittest.TestCase):
             )
         )
 
-        with self.assertLogs("strategies.gap_and_go", level="DEBUG") as captured:
-            signal = strategy.evaluate(state)
-
+        signal = strategy.evaluate(state)
         self.assertIsNone(signal)
-        self.assertIn("outside gap-and-go entry window", "\n".join(captured.output))
+        self.assertEqual(strategy._last_reject_log_ms, {})
+
+    def test_gap_and_go_throttles_repeated_rejection_logs(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            gap_and_go_start_minute=0,
+            gap_and_go_end_minute=30,
+        )
+        strategy = GapAndGoStrategy(settings)
+        state = SymbolState("AAPL")
+        start_ms = market_ms(2026, 4, 24, 9, 35)
+
+        with self.assertLogs("strategies.gap_and_go", level="DEBUG") as captured:
+            for index in range(20):
+                state.update_quote(
+                    Quote(
+                        "AAPL",
+                        bid=105.0,
+                        ask=105.02,
+                        bid_size=100,
+                        ask_size=100,
+                        timestamp_ms=start_ms + (index * 1_000),
+                    )
+                )
+                self.assertIsNone(strategy.evaluate(state))
+
+        outside_window_logs = [
+            line for line in captured.output if "missing previous close" in line
+        ]
+        self.assertEqual(len(outside_window_logs), 2)
 
     def test_opening_impulse_enters_opening_range_breakout(self):
         settings = Settings(

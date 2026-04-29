@@ -101,7 +101,7 @@ class GapAndGoStrategy(Strategy):
         if state.last_event_kind not in {"quote", "bar"}:
             return None
         if not self._within_entry_window(state.last_event_ms):
-            return self._reject(state, "window", "outside gap-and-go entry window")
+            return None
 
         prev_close = self._previous_close.get(state.symbol) or self._infer_previous_close(state)
         decision = inspect_gap_and_go_candidate(state, self.settings, previous_close=prev_close)
