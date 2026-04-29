@@ -208,8 +208,6 @@ class LocalPaperExecutor:
             exit_price = position.stop_price
         elif age_seconds < exit_activation_delay:
             return None
-        elif strategy is not None and not strategy.use_fixed_target_exit(position):
-            reason = ""
         elif current_price >= position.target_price:
             reason = "target profit"
             exit_price = position.target_price
@@ -331,8 +329,6 @@ class AlpacaPaperExecutor:
             reason = "stop loss"
         elif age_seconds < exit_activation_delay:
             return None
-        elif strategy is not None and not strategy.use_fixed_target_exit(position):
-            reason = ""
         elif current_price >= position.target_price:
             reason = "target profit"
         elif age_seconds >= self.settings.max_hold_seconds:

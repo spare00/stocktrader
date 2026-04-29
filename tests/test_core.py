@@ -861,7 +861,35 @@ class CoreTradingTests(unittest.TestCase):
             {"opening_impulse": OpeningImpulseStrategy(settings)},
             now_ms=16_500,
         )
-        self.assertIsNone(fill)
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "target profit")
+
+    def test_opening_impulse_max_hold_still_applies_with_strategy_exit_logic(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            opening_impulse_min_hold_seconds=15,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=100.18, ask=100.22, bid_size=20, ask_size=20, timestamp_ms=70_000))
+
+        fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max hold")
 
     def test_opening_impulse_cuts_loser_early_after_activation_delay(self):
         settings = Settings(
