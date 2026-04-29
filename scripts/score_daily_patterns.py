@@ -13,8 +13,8 @@ if str(ROOT) not in sys.path:
 
 from config import Settings
 from models import Bar, Quote
-from scripts.build_opening_universe import batched, parse_symbols
-from scripts.screen_opening_impulse import usable_quote
+from scripts.select_market_universe import batched, parse_symbols
+from scripts.select_opening_impulse import usable_quote
 
 
 MARKET_TZ = ZoneInfo("America/New_York")

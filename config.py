@@ -44,6 +44,17 @@ class Settings:
 
     symbols: list[str] = field(default_factory=lambda: _csv_env("SYMBOLS", "AAPL,MSFT,NVDA,TSLA,META"))
 
+    gap_and_go_start_minute: int = _int_env("GAP_AND_GO_START_MINUTE", 0)
+    gap_and_go_end_minute: int = _int_env("GAP_AND_GO_END_MINUTE", 30)
+    gap_and_go_min_gap_pct: float = _float_env("GAP_AND_GO_MIN_GAP_PCT", 0.02)
+    gap_and_go_premarket_volume_ratio: float = _float_env("GAP_AND_GO_PREMARKET_VOLUME_RATIO", 2.0)
+    gap_and_go_max_spread_bps: float = _float_env("GAP_AND_GO_MAX_SPREAD_BPS", 10.0)
+    gap_and_go_min_price: float = _float_env("GAP_AND_GO_MIN_PRICE", 5.0)
+    gap_and_go_breakout_buffer_pct: float = _float_env("GAP_AND_GO_BREAKOUT_BUFFER_PCT", 0.0)
+    gap_and_go_exit_activation_delay_seconds: int = _int_env("GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", 15)
+    gap_and_go_trailing_retrace_pct: float = _float_env("GAP_AND_GO_TRAILING_RETRACE_PCT", 0.008)
+    gap_and_go_bar_window: int = _int_env("GAP_AND_GO_BAR_WINDOW", 5)
+
     spike_lookback_seconds: int = _int_env("SPIKE_LOOKBACK_SECONDS", 5)
     spike_change_pct: float = _float_env("SPIKE_CHANGE_PCT", 0.0025)
     volume_ratio: float = _float_env("VOLUME_RATIO", 2.0)

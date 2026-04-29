@@ -18,14 +18,16 @@ from models import Bar, Quote, Signal
 from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan, plan_overrides
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
-import scripts.build_opening_universe as build_opening_universe
+import scripts.select_market_universe as select_market_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
 import scripts.score_daily_patterns as score_daily_patterns
-from scripts.ai_opening_plan import build_plan, candidate_penalty, extract_json_object, plan_from_screen, validated_plan
-from scripts.build_opening_universe import daily_metrics, score_symbol
-import scripts.screen_opening_impulse as screen_opening_impulse
-from scripts.screen_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
+import scripts.select_gap_and_go as select_gap_and_go
+from scripts.filter_opening_candidates_with_ai import build_plan, candidate_penalty, extract_json_object, plan_from_screen, validated_plan
+from scripts.select_market_universe import daily_metrics, score_symbol
+import scripts.select_opening_impulse as select_opening_impulse
+from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
 from strategies import build_strategies
+from strategies.gap_and_go import GapAndGoStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
@@ -323,6 +325,24 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(saved["rejected"], [])
         self.assertEqual(saved["ranked"][0]["symbol"], "AAPL")
         self.assertIn("settings", saved)
+
+    def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
+        screen_result = {
+            "as_of": "2026-04-28T08:00:00-04:00",
+            "candidates": [
+                {"symbol": "AAPL", "score": 6.0, "quality_flags": []},
+                {"symbol": "MSFT", "score": 5.0, "quality_flags": ["weak spread"]},
+            ],
+        }
+
+        validated = select_opening_impulse.validated_opening_plan(
+            {"symbols": ["MSFT", "GONE"], "rejected": ["GONE"], "settings": {}, "risk_note": "test"},
+            screen_result,
+            limit=2,
+        )
+
+        self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
+        self.assertEqual(validated["ranked"][0]["symbol"], "MSFT")
 
     def test_trade_journal_analyzer_summarizes_round_trips(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -773,9 +793,9 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(result["spread_bps"], 12.0)
 
     def test_opening_universe_builder_sorts_limits_and_writes_output(self):
-        original_get_symbols = build_opening_universe.get_active_tradable_symbols
-        original_get_bars = build_opening_universe.get_daily_bars
-        original_get_quotes = build_opening_universe.get_latest_quotes
+        original_get_symbols = select_market_universe.get_active_tradable_symbols
+        original_get_bars = select_market_universe.get_daily_bars
+        original_get_quotes = select_market_universe.get_latest_quotes
         captured = {}
 
         def fake_get_symbols(settings, exchanges=None):
@@ -804,12 +824,12 @@ class CoreTradingTests(unittest.TestCase):
             raise AssertionError("quotes should be skipped")
 
         try:
-            build_opening_universe.get_active_tradable_symbols = fake_get_symbols
-            build_opening_universe.get_daily_bars = fake_get_bars
-            build_opening_universe.get_latest_quotes = fake_get_quotes
+            select_market_universe.get_active_tradable_symbols = fake_get_symbols
+            select_market_universe.get_daily_bars = fake_get_bars
+            select_market_universe.get_latest_quotes = fake_get_quotes
             with tempfile.TemporaryDirectory() as tmpdir:
                 output = Path(tmpdir) / "opening_universe.txt"
-                result = build_opening_universe.build_universe(
+                result = select_market_universe.build_universe(
                     types.SimpleNamespace(
                         limit=1,
                         output=output,
@@ -832,15 +852,15 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertEqual(captured["lookback_days"], 2)
                 self.assertEqual(captured["batch_size"], 2)
         finally:
-            build_opening_universe.get_active_tradable_symbols = original_get_symbols
-            build_opening_universe.get_daily_bars = original_get_bars
-            build_opening_universe.get_latest_quotes = original_get_quotes
+            select_market_universe.get_active_tradable_symbols = original_get_symbols
+            select_market_universe.get_daily_bars = original_get_bars
+            select_market_universe.get_latest_quotes = original_get_quotes
 
     def test_opening_universe_builder_rejects_invalid_arguments(self):
         args = types.SimpleNamespace(limit=0, lookback_days=2, batch_size=1)
 
         with self.assertRaises(ValueError):
-            build_opening_universe.build_universe(args)
+            select_market_universe.build_universe(args)
 
     def test_daily_pattern_scorer_scores_trend_continuation(self):
         as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
@@ -1636,6 +1656,123 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_gap_and_go_emits_buy_on_premarket_high_breakout(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            gap_and_go_start_minute=0,
+            gap_and_go_end_minute=30,
+            gap_and_go_min_gap_pct=0.02,
+            gap_and_go_premarket_volume_ratio=2.0,
+            gap_and_go_max_spread_bps=10.0,
+            gap_and_go_min_price=5.0,
+        )
+        strategy = GapAndGoStrategy(settings)
+        state = SymbolState("AAPL")
+        prev_day = market_ms(2026, 4, 23, 15, 0)
+        today_pre = market_ms(2026, 4, 24, 8, 0)
+        today_open = market_ms(2026, 4, 24, 9, 30)
+
+        for index in range(30):
+            start_ms = prev_day + (index * 60_000)
+            state.add_bar(Bar("AAPL", open=99.8, high=100.1, low=99.7, close=100.0, volume=100, vwap=100.0, start_ms=start_ms, end_ms=start_ms + 60_000))
+        for index in range(6):
+            start_ms = today_pre + (index * 60_000)
+            price = 102.0 + (index * 0.1)
+            state.add_bar(Bar("AAPL", open=price, high=price + 0.2, low=price - 0.1, close=price + 0.05, volume=350, vwap=price, start_ms=start_ms, end_ms=start_ms + 60_000))
+        state.add_bar(Bar("AAPL", open=102.5, high=102.8, low=102.4, close=102.7, volume=400, vwap=102.6, start_ms=today_open, end_ms=today_open + 60_000))
+        state.update_quote(Quote("AAPL", bid=102.81, ask=102.83, bid_size=100, ask_size=100, timestamp_ms=today_open + 65_000))
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "gap_and_go")
+        self.assertIn("breakout above premarket high", signal.reason)
+
+    def test_gap_and_go_selector_ranks_best_candidates(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            gap_and_go_min_gap_pct=0.02,
+            gap_and_go_premarket_volume_ratio=2.0,
+            gap_and_go_max_spread_bps=10.0,
+            gap_and_go_min_price=5.0,
+        )
+        leader = SymbolState("AAPL")
+        follower = SymbolState("MSFT")
+        prev_day = market_ms(2026, 4, 23, 15, 0)
+        today_pre = market_ms(2026, 4, 24, 8, 0)
+        today_open = market_ms(2026, 4, 24, 9, 30)
+
+        for symbol, state, close_price, pre_open, pre_volume in (
+            ("AAPL", leader, 100.0, 103.0, 400),
+            ("MSFT", follower, 100.0, 102.2, 240),
+        ):
+            for index in range(30):
+                start_ms = prev_day + (index * 60_000)
+                state.add_bar(Bar(symbol, open=99.8, high=100.1, low=99.7, close=close_price, volume=100, vwap=close_price, start_ms=start_ms, end_ms=start_ms + 60_000))
+            for index in range(6):
+                start_ms = today_pre + (index * 60_000)
+                price = pre_open + (index * 0.1)
+                state.add_bar(Bar(symbol, open=price, high=price + 0.2, low=price - 0.1, close=price + 0.05, volume=pre_volume, vwap=price, start_ms=start_ms, end_ms=start_ms + 60_000))
+            state.add_bar(Bar(symbol, open=pre_open, high=pre_open + 0.4, low=pre_open - 0.1, close=pre_open + 0.2, volume=500, vwap=pre_open + 0.1, start_ms=today_open, end_ms=today_open + 60_000))
+
+        leader.update_quote(Quote("AAPL", bid=103.55, ask=103.57, bid_size=100, ask_size=100, timestamp_ms=today_open + 65_000))
+        follower.update_quote(Quote("MSFT", bid=102.70, ask=102.72, bid_size=100, ask_size=100, timestamp_ms=today_open + 65_000))
+
+        ranked = select_gap_and_go.rank_gap_and_go_candidates(
+            {"AAPL": leader, "MSFT": follower},
+            settings,
+            previous_closes={"AAPL": 100.0, "MSFT": 100.0},
+            top_n=5,
+        )
+
+        self.assertEqual([item.symbol for item in ranked], ["AAPL", "MSFT"])
+        self.assertGreater(ranked[0].score, ranked[1].score)
+
+    def test_gap_and_go_ai_selection_is_bounded_to_ranked_candidates(self):
+        candidates = [
+            select_gap_and_go.GapAndGoCandidate("AAPL", 7.2, 0.03, 3.4, 4.2, 103.5, 100.0, 102.0, 103.2, False),
+            select_gap_and_go.GapAndGoCandidate("MSFT", 6.4, 0.025, 2.8, 5.1, 431.0, 420.0, 429.0, 430.5, False),
+        ]
+
+        validated = select_gap_and_go.validated_gap_and_go_selection(
+            {"symbols": ["MSFT", "GONE"], "rejected": ["GONE"], "risk_note": "test"},
+            candidates,
+            limit=2,
+        )
+
+        self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
+        self.assertEqual(validated["ranked"][0]["symbol"], "MSFT")
+
+    def test_gap_and_go_skips_entries_outside_window(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            gap_and_go_start_minute=0,
+            gap_and_go_end_minute=30,
+        )
+        strategy = GapAndGoStrategy(settings)
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=105.0,
+                ask=105.02,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 4, 24, 10, 15),
+            )
+        )
+
+        with self.assertLogs("strategies.gap_and_go", level="DEBUG") as captured:
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+        self.assertIn("outside gap-and-go entry window", "\n".join(captured.output))
+
     def test_opening_impulse_enters_opening_range_breakout(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -1886,10 +2023,11 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL", "MSFT"],
             execution_mode="alpaca_paper",
-            strategy_names=["opening_impulse", "spike"],
+            strategy_names=["opening_impulse", "spike", "gap_and_go"],
             target_profit_pct=0.01,
             stop_loss_pct=0.005,
             max_hold_seconds=120,
+            gap_and_go_min_gap_pct=0.02,
             opening_impulse_last_entry_hour_et=12,
             opening_impulse_min_hold_seconds=15,
             opening_impulse_exit_negative_steps=4,
@@ -1901,6 +2039,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["execution_mode"], "alpaca_paper")
         self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
+        self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
         self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
@@ -1957,12 +2096,12 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            strategy_names=["spike", "opening_impulse"],
+            strategy_names=["spike", "opening_impulse", "gap_and_go"],
         )
 
         strategies = build_strategies(settings)
 
-        self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse"])
+        self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go"])
 
     def test_risk_rejects_entries_outside_regular_market_hours(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])

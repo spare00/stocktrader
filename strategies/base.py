@@ -17,6 +17,9 @@ class Strategy(ABC):
     def evaluate(self, state: SymbolState) -> Signal | None:
         raise NotImplementedError
 
+    def bootstrap_states(self, states: dict[str, SymbolState]) -> None:
+        return None
+
     def should_exit(self, state: SymbolState, position: "Position") -> ExitDecision | None:
         return None
 

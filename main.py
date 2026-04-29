@@ -21,7 +21,7 @@ from strategies import build_strategies
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "trader.log"
-DIAGNOSTIC_LOGGERS = ("strategies.opening_impulse",)
+DIAGNOSTIC_LOGGERS = ("strategies.opening_impulse", "strategies.gap_and_go")
 NOISY_LOGGERS = (
     "alpaca",
     "alpaca.data.live.websocket",
@@ -136,6 +136,20 @@ def runtime_settings_snapshot(settings) -> dict:
             "max_spread_bps": settings.max_spread_bps,
         }
 
+    if "gap_and_go" in settings.strategy_names:
+        snapshot["gap_and_go"] = {
+            "start_minute": settings.gap_and_go_start_minute,
+            "end_minute": settings.gap_and_go_end_minute,
+            "min_gap_pct": settings.gap_and_go_min_gap_pct,
+            "premarket_volume_ratio": settings.gap_and_go_premarket_volume_ratio,
+            "max_spread_bps": settings.gap_and_go_max_spread_bps,
+            "min_price": settings.gap_and_go_min_price,
+            "breakout_buffer_pct": settings.gap_and_go_breakout_buffer_pct,
+            "exit_activation_delay_seconds": settings.gap_and_go_exit_activation_delay_seconds,
+            "trailing_retrace_pct": settings.gap_and_go_trailing_retrace_pct,
+            "bar_window": settings.gap_and_go_bar_window,
+        }
+
     if "opening_impulse" in settings.strategy_names:
         snapshot["opening_impulse"] = {
             "start_minute": settings.opening_impulse_start_minute,
@@ -218,6 +232,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
     stream = AlpacaStockStream(settings)
     strategies = build_strategies(settings)
+    for strategy in strategies:
+        strategy.bootstrap_states(states)
     strategies_by_name = {strategy.name: strategy for strategy in strategies}
     executor = build_executor(settings)
     risk = RiskManager(settings)

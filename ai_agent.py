@@ -1,6 +1,7 @@
 import json
 import logging
 
+from ai_client import build_openai_client
 from config import Settings
 from models import Signal
 
@@ -11,14 +12,7 @@ LOG = logging.getLogger(__name__)
 class SignalReviewer:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = None
-        if settings.openai_api_key:
-            try:
-                from openai import OpenAI
-
-                self.client = OpenAI(api_key=settings.openai_api_key)
-            except ImportError:
-                LOG.warning("OpenAI package is not installed; AI signal review disabled")
+        self.client = build_openai_client(settings)
 
     def review(self, signal: Signal) -> str | None:
         if not self.settings.ai_review or not self.client:

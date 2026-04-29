@@ -1,9 +1,11 @@
 from strategies.base import Strategy
+from strategies.gap_and_go import GapAndGoStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
 
 STRATEGY_REGISTRY = {
+    "gap_and_go": GapAndGoStrategy,
     "spike": SpikeStrategy,
     "opening_impulse": OpeningImpulseStrategy,
 }

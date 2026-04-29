@@ -87,30 +87,34 @@ venv/bin/python main.py
 
 ## Target Selection
 
-Refresh a broad tradable/liquid universe weekly or periodically. This stage intentionally avoids pattern or historical-performance filtering; it only keeps stocks that can realistically be traded intraday:
+Refresh a broad tradable/liquid universe weekly or periodically. This is the global market-selection stage. It intentionally avoids strategy-specific pattern filtering and only keeps stocks that can realistically be traded intraday:
 
 ```bash
-venv/bin/python scripts/build_opening_universe.py --limit 300
+venv/bin/python scripts/select_market_universe.py --limit 300
 ```
 
-Before each market session, score the broad universe for current state-based intraday patterns and output the top 15 symbols:
+Before each market session, run the selector for the strategy you plan to trade. For `opening_impulse`, rank the broad universe with opening-impulse criteria:
 
 ```bash
-venv/bin/python scripts/score_daily_patterns.py --top 15
+venv/bin/python scripts/select_opening_impulse.py --top 12
 ```
 
-The daily scorer implements mean reversion, compression breakout, trend continuation, gap-and-go, and opening flush reversal as independent pattern scores. The final score is the best single pattern score, with only a light end-stage spread penalty when the latest quote is wider than `100` bps. It writes `data/daily_pattern_candidates.json` and appends each run to `data/trade_candidates.jsonl`.
-
-The older opening-specific screen remains available when you want to focus only on `opening_impulse`:
+Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the normal opening plan file in the same step:
 
 ```bash
-venv/bin/python scripts/screen_opening_impulse.py --top 12
+venv/bin/python scripts/select_opening_impulse.py --top 12 --use-ai
 ```
 
-Optionally turn that screen into a bounded AI pre-market plan:
+For `gap_and_go`, use its dedicated selector:
 
 ```bash
-venv/bin/python scripts/ai_opening_plan.py
+venv/bin/python scripts/select_gap_and_go.py --top 5
+```
+
+It also supports an embedded AI refinement pass:
+
+```bash
+venv/bin/python scripts/select_gap_and_go.py --top 5 --use-ai
 ```
 
 Run the monitor with keys from `.env` and tunables from `profiles/paper.env`:
@@ -125,7 +129,7 @@ To test a different paper profile without editing the default one:
 TUNING_PROFILE=profiles/paper_aggressive.env scripts/run_paper.sh
 ```
 
-If you intentionally want to use the AI-filtered opening plan, pass the normal `main.py` option through:
+If you intentionally want to use the AI-written opening plan with `main.py`, pass the normal option through after running the selector with `--use-ai`:
 
 ```bash
 scripts/run_paper.sh --use-opening-plan
@@ -133,26 +137,26 @@ scripts/run_paper.sh --use-opening-plan
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
 
-The screener is a REST-only pre-session step. It ranks liquid companies by prior opening-window movement, opening-window dollar volume, spread, quote size, daily trend/reversal context, and opening follow-through quality, then prints an `export SYMBOLS=...` line. It does not monitor live data and is not used inside `main.py`, so order handling stays focused on the fixed `SYMBOLS` list.
+The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not used inside `main.py`, so order handling stays focused on the final `SYMBOLS` list you choose to trade.
 
-The `data/` files act like embedded memory for the workflow. The broad weekly universe builder writes `data/opening_universe.txt` by default. Both the daily pattern scorer and the opening-specific legacy screen read that file by default. The daily pattern scorer writes `data/daily_pattern_candidates.json` and appends run history to `data/trade_candidates.jsonl`; the opening-specific legacy flow still writes `data/opening_screen.json` and `data/opening_plan.json`.
+The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default. The `opening_impulse` selection flow writes `data/opening_screen.json` and `data/opening_plan.json`.
 
 By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
 
 ```bash
-venv/bin/python scripts/screen_opening_impulse.py --days 10 --opening-minutes 30 --top 12
+venv/bin/python scripts/select_opening_impulse.py --days 10 --opening-minutes 30 --top 12
 ```
 
 The minimum expected opening fluctuation follows the configured profit target automatically: `min_opening_range_pct = TARGET_PROFIT_PCT + min(TARGET_PROFIT_PCT, opening_range_buffer_pct)`. With the default `TARGET_PROFIT_PCT=0.01` and `--opening-range-buffer-pct 0.01`, candidates need about a `2%` median opening-window range. A larger target adds the same cushion instead of doubling without limit. Override it only when you intentionally want a different screen:
 
 ```bash
-venv/bin/python scripts/screen_opening_impulse.py --min-opening-range-pct 0.015
+venv/bin/python scripts/select_opening_impulse.py --min-opening-range-pct 0.015
 ```
 
 By default candidates must also show either a short recent daily uptrend or a bottom-reversal pattern. The screen now requires a basic opening follow-through profile too: non-negative median opening-window close movement, at least `0.1` median close/high capture, and at least half of sampled openings closing above the opening price. This keeps the output focused on names that have historically converted opening attention into follow-through instead of only early wick volatility. Override those gates only when you intentionally want to study spike-and-fade behavior:
 
 ```bash
-venv/bin/python scripts/screen_opening_impulse.py --min-close-capture-ratio 0 --min-positive-close-day-ratio 0 --min-median-opening-close-bps -100
+venv/bin/python scripts/select_opening_impulse.py --min-close-capture-ratio 0 --min-positive-close-day-ratio 0 --min-median-opening-close-bps -100
 ```
 
 ## Test
