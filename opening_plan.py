@@ -6,7 +6,6 @@ from typing import Any
 from config import Settings
 
 
-LEGACY_OPENING_PLAN_FILE = Path("data/opening_plan.json")
 DEFAULT_PLAN_FILES = {
     "opening_impulse": Path("data/opening_impulse_plan.json"),
     "gap_and_go": Path("data/gap_and_go_plan.json"),
@@ -42,7 +41,7 @@ def default_plan_file_for_strategy(strategy_name: str) -> Path:
 def default_plan_file_for_settings(settings: Settings) -> Path:
     if settings.strategy_names:
         return default_plan_file_for_strategy(settings.strategy_names[0])
-    return LEGACY_OPENING_PLAN_FILE
+    return DEFAULT_OPENING_PLAN_FILE
 
 
 def selector_command_for_strategy(strategy_name: str) -> str:

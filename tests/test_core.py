@@ -26,9 +26,7 @@ from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
 import scripts.select_market_universe as select_market_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
-import scripts.score_daily_patterns as score_daily_patterns
 import scripts.select_gap_and_go as select_gap_and_go
-from scripts.filter_opening_candidates_with_ai import build_plan, candidate_penalty, extract_json_object, plan_from_screen, validated_plan
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
 from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
@@ -205,137 +203,6 @@ class CoreTradingTests(unittest.TestCase):
             selector_command_for_strategy("gap_and_go"),
             "venv/bin/python scripts/select_gap_and_go.py --top 5",
         )
-
-    def test_ai_opening_plan_extracts_json_before_export_line(self):
-        text = '{"symbols":["AAPL"],"settings":{"MAX_OPEN_POSITIONS":1}}\nexport SYMBOLS=AAPL\n'
-
-        result = extract_json_object(text)
-
-        self.assertEqual(result["symbols"], ["AAPL"])
-
-    def test_ai_opening_plan_fallback_ranks_weak_candidates(self):
-        screen = {
-            "as_of": "2026-04-28T08:00:00-04:00",
-            "candidates": [
-                {
-                    "symbol": "KEEP",
-                    "score": 4.0,
-                    "close_capture_ratio": 0.25,
-                    "positive_close_day_ratio": 0.7,
-                    "median_opening_close_move_bps": 30,
-                    "fade_bps": 50,
-                },
-                {
-                    "symbol": "DROP",
-                    "score": 8.0,
-                    "close_capture_ratio": -0.1,
-                    "positive_close_day_ratio": 0.4,
-                    "median_opening_close_move_bps": -10,
-                    "fade_bps": 180,
-                },
-            ]
-        }
-
-        plan = plan_from_screen(screen, limit=12)
-
-        self.assertEqual(plan["symbols"], ["DROP", "KEEP"])
-        self.assertEqual(plan["date"], "2026-04-28")
-        self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
-        self.assertEqual(plan["rejected"], [])
-        self.assertEqual(plan["ranked"][0]["symbol"], "DROP")
-        self.assertEqual(plan["ranked"][0]["penalty"], 3.0)
-        self.assertIn("negative follow-through", plan["ranked"][0]["notes"])
-
-    def test_ai_opening_plan_fallback_selects_available_candidates(self):
-        screen = {
-            "candidates": [
-                {
-                    "symbol": "DROP",
-                    "score": 2.0,
-                    "close_capture_ratio": -0.1,
-                    "positive_close_day_ratio": 0.4,
-                    "median_opening_close_move_bps": -10,
-                    "fade_bps": 180,
-                },
-            ]
-        }
-
-        plan = plan_from_screen(screen, limit=12)
-
-        self.assertEqual(plan["symbols"], ["DROP"])
-        self.assertEqual(plan["settings"]["MAX_OPEN_POSITIONS"], 1)
-        self.assertEqual(plan["rejected"], [])
-
-    def test_ai_opening_plan_penalty_notes_are_non_filtering(self):
-        penalty, notes = candidate_penalty(
-            {
-                "close_capture_ratio": -0.1,
-                "positive_close_day_ratio": 0.4,
-                "median_opening_close_move_bps": -10,
-            }
-        )
-
-        self.assertEqual(penalty, 3.0)
-        self.assertEqual(notes, ["negative follow-through", "weak close capture", "low positive close ratio"])
-
-    def test_ai_opening_plan_validates_ai_symbols_against_latest_screen(self):
-        screen = {
-            "candidates": [
-                {
-                    "symbol": "KEEP",
-                    "score": 4.0,
-                    "close_capture_ratio": 0.25,
-                    "positive_close_day_ratio": 0.7,
-                    "median_opening_close_move_bps": 30,
-                    "fade_bps": 50,
-                },
-                {
-                    "symbol": "FADE",
-                    "score": 8.0,
-                    "close_capture_ratio": -0.1,
-                    "positive_close_day_ratio": 0.4,
-                    "median_opening_close_move_bps": -10,
-                    "fade_bps": 180,
-                },
-            ]
-        }
-
-        plan = validated_plan({"symbols": ["KEEP", "FADE", "GONE"], "rejected": []}, screen, limit=12)
-
-        self.assertEqual(plan["symbols"], ["KEEP", "FADE"])
-        self.assertEqual(plan["rejected"], [])
-        self.assertEqual([item["symbol"] for item in plan["ranked"]], ["KEEP", "FADE"])
-
-    def test_ai_opening_plan_writes_default_shape_without_openai(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            screen_file = root / "opening_screen.json"
-            universe_file = root / "opening_universe.txt"
-            output = root / "opening_plan.json"
-            screen_file.write_text(
-                '{"candidates":[{"symbol":"AAPL","score":4.0,"close_capture_ratio":0.2,"positive_close_day_ratio":0.6,"median_opening_close_move_bps":20,"fade_bps":40}]}\n'
-            )
-            universe_file.write_text("AAPL,MSFT\n")
-
-            plan = build_plan(
-                types.SimpleNamespace(
-                    universe_file=universe_file,
-                    screen_file=screen_file,
-                    output=output,
-                    limit=12,
-                    openai_api_key="",
-                    alpaca_api_key="test",
-                    alpaca_secret_key="test",
-                )
-            )
-
-            saved = extract_json_object(output.read_text())
-
-        self.assertEqual(plan["symbols"], ["AAPL"])
-        self.assertEqual(saved["symbols"], ["AAPL"])
-        self.assertEqual(saved["rejected"], [])
-        self.assertEqual(saved["ranked"][0]["symbol"], "AAPL")
-        self.assertIn("settings", saved)
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
         screen_result = {
@@ -550,7 +417,7 @@ class CoreTradingTests(unittest.TestCase):
 
             write_screen_output({"selected_symbols": ["AAPL"], "export": "export SYMBOLS=AAPL"}, output)
 
-            self.assertEqual(extract_json_object(output.read_text())["selected_symbols"], ["AAPL"])
+            self.assertEqual(json.loads(output.read_text())["selected_symbols"], ["AAPL"])
 
     def test_opening_impulse_screener_ignores_invalid_quote_snapshot(self):
         self.assertIsNone(usable_quote(Quote("AAPL", bid=102.0, ask=0.0, bid_size=0, ask_size=0, timestamp_ms=0)))
@@ -899,85 +766,6 @@ class CoreTradingTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             select_market_universe.build_universe(args)
-
-    def test_daily_pattern_scorer_scores_trend_continuation(self):
-        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
-        daily_bars = [
-            daily_bar_with_volume("AAPL", 98.0, 96.0, 99.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.0, 98.0, 101.0, 1_000_000, market_ms(2026, 4, 27, 9, 30)),
-            daily_bar_with_volume("AAPL", 104.0, 100.0, 104.5, 1_500_000, market_ms(2026, 4, 28, 9, 30)),
-        ]
-
-        result = score_daily_patterns.score_patterns("AAPL", daily_bars, [], None, as_of, max_spread_bps=100.0)
-
-        self.assertEqual(result["pattern"], "trend_continuation")
-        self.assertEqual(result["score"], 7.0)
-
-    def test_daily_pattern_scorer_scores_mean_reversion(self):
-        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
-        daily_bars = [
-            daily_bar_with_volume("AAPL", 100.0, 99.0, 102.0, 1_000_000, market_ms(2026, 4, 24, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.0, 99.0, 102.0, 1_000_000, market_ms(2026, 4, 27, 9, 30)),
-            daily_bar_with_volume("AAPL", 96.0, 95.5, 100.0, 1_800_000, market_ms(2026, 4, 28, 9, 30)),
-        ]
-
-        result = score_daily_patterns.score_patterns("AAPL", daily_bars, [], None, as_of, max_spread_bps=100.0)
-
-        self.assertEqual(result["pattern"], "mean_reversion")
-        self.assertEqual(result["score"], 7.0)
-
-    def test_daily_pattern_scorer_scores_compression(self):
-        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
-        daily_bars = [
-            daily_bar_with_volume("AAPL", 98.0, 96.0, 100.0, 1_000_000, market_ms(2026, 4, 22, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.0, 97.0, 102.0, 900_000, market_ms(2026, 4, 23, 9, 30)),
-            daily_bar_with_volume("AAPL", 101.0, 98.0, 103.0, 800_000, market_ms(2026, 4, 24, 9, 30)),
-            daily_bar_with_volume("AAPL", 101.8, 100.0, 103.0, 700_000, market_ms(2026, 4, 27, 9, 30)),
-            daily_bar_with_volume("AAPL", 102.4, 101.5, 102.8, 600_000, market_ms(2026, 4, 28, 9, 30)),
-        ]
-
-        result = score_daily_patterns.score_patterns("AAPL", daily_bars, [], None, as_of, max_spread_bps=100.0)
-
-        self.assertEqual(result["pattern"], "compression")
-        self.assertEqual(result["score"], 7.0)
-
-    def test_daily_pattern_scorer_scores_gap_and_go(self):
-        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
-        daily_bars = [
-            daily_bar_with_volume("AAPL", 99.0, 98.0, 100.0, 390_000, market_ms(2026, 4, 24, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 390_000, market_ms(2026, 4, 27, 9, 30)),
-        ]
-        minute_bars = [
-            opening_bar("AAPL", 103.0, 103.5, 103.2, 40_000, market_ms(2026, 4, 28, 4, 0)),
-            opening_bar("AAPL", 103.2, 104.0, 103.8, 5_000, market_ms(2026, 4, 28, 9, 34)),
-        ]
-
-        result = score_daily_patterns.score_patterns("AAPL", daily_bars, minute_bars, None, as_of, max_spread_bps=100.0)
-
-        self.assertEqual(result["pattern"], "gap_and_go")
-        self.assertEqual(result["score"], 7.0)
-
-    def test_daily_pattern_scorer_scores_opening_flush_reversal_and_spread_penalty(self):
-        as_of = datetime(2026, 4, 28, 9, 35, tzinfo=MARKET_TZ)
-        daily_bars = [
-            daily_bar_with_volume("AAPL", 99.0, 98.0, 100.0, 390_000, market_ms(2026, 4, 24, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.0, 99.0, 101.0, 390_000, market_ms(2026, 4, 27, 9, 30)),
-        ]
-        minute_bars = [
-            opening_bar("AAPL", 100.0, 100.5, 99.6, 2_000, market_ms(2026, 4, 28, 9, 30)),
-            opening_bar("AAPL", 99.6, 99.8, 98.8, 2_000, market_ms(2026, 4, 28, 9, 31)),
-            opening_bar("AAPL", 98.8, 99.0, 97.0, 2_000, market_ms(2026, 4, 28, 9, 32)),
-            opening_bar("AAPL", 97.5, 98.4, 98.0, 1_000, market_ms(2026, 4, 28, 9, 33)),
-            opening_bar("AAPL", 98.0, 99.2, 99.0, 1_000, market_ms(2026, 4, 28, 9, 34)),
-        ]
-        quote = Quote("AAPL", bid=99.0, ask=101.0, bid_size=100, ask_size=100, timestamp_ms=0)
-
-        result = score_daily_patterns.score_patterns("AAPL", daily_bars, minute_bars, quote, as_of, max_spread_bps=100.0)
-
-        self.assertEqual(result["pattern"], "opening_flush_reversal")
-        self.assertEqual(result["pattern_scores"]["opening_flush_reversal"], 7.0)
-        self.assertEqual(result["spread_penalty"], -2.0)
-        self.assertEqual(result["score"], 5.0)
 
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
