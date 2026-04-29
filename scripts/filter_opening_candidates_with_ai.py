@@ -11,11 +11,12 @@ if str(ROOT) not in sys.path:
 
 from ai_client import request_json_response
 from config import Settings
+from opening_plan import DEFAULT_OPENING_PLAN_FILE
 
 
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_SCREEN_FILE = Path("data/opening_screen.json")
-DEFAULT_OUTPUT_FILE = Path("data/opening_plan.json")
+DEFAULT_OUTPUT_FILE = DEFAULT_OPENING_PLAN_FILE
 MIN_CLOSE_CAPTURE_RATIO = 0.1
 MIN_POSITIVE_CLOSE_DAY_RATIO = 0.5
 MIN_MEDIAN_OPENING_CLOSE_BPS = 0.0

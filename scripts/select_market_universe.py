@@ -166,8 +166,8 @@ def score_symbol(
 
 
 def build_universe(args: argparse.Namespace) -> dict:
-    if args.limit < 1:
-        raise ValueError("--limit must be at least 1.")
+    if args.top < 1:
+        raise ValueError("--top must be at least 1.")
     if args.lookback_days < 2:
         raise ValueError("--lookback-days must be at least 2.")
     if args.batch_size < 1:
@@ -200,7 +200,7 @@ def build_universe(args: argparse.Namespace) -> dict:
             candidates.append(result)
 
     candidates.sort(key=lambda item: item["score"], reverse=True)
-    selected = candidates[: args.limit]
+    selected = candidates[: args.top]
     selected_symbols = [item["symbol"] for item in selected]
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -225,7 +225,7 @@ def parse_args() -> argparse.Namespace:
             "Run periodically, then pass the output file to a per-strategy selector."
         )
     )
-    parser.add_argument("--limit", type=int, default=300)
+    parser.add_argument("--top", type=int, default=300)
     parser.add_argument("--output", type=Path, default=Path("data/opening_universe.txt"))
     parser.add_argument("--lookback-days", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=200)

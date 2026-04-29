@@ -11,6 +11,10 @@ STRATEGY_REGISTRY = {
 }
 
 
+def available_strategy_names() -> list[str]:
+    return list(STRATEGY_REGISTRY)
+
+
 def build_strategies(settings):
     strategies = []
     for name in settings.strategy_names:

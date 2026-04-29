@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import time
+from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -12,10 +13,16 @@ from candle import SymbolState
 from config import load_settings
 from execution import build_executor
 from models import Bar, Heartbeat, Quote
-from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan
+from opening_plan import (
+    apply_opening_plan,
+    default_plan_file_for_settings,
+    load_opening_plan,
+    parse_plan_symbols,
+    selector_command_for_strategy,
+)
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown, manage_all_exits
-from strategies import build_strategies
+from strategies import available_strategy_names, build_strategies
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
@@ -220,23 +227,61 @@ def setup_logging(log_file: Path | None = None) -> None:
         logging.getLogger(logger_name).setLevel(logging.INFO)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the paper-trading monitor.")
-    parser.add_argument("--use-opening-plan", action="store_true", help="Use data/opening_plan.json for pre-market symbols/settings.")
+    parser.add_argument(
+        "-s",
+        "--strategy",
+        choices=available_strategy_names(),
+        help="Run exactly one strategy for this session. Overrides STRATEGIES for main.py.",
+    )
+    parser.add_argument(
+        "-l",
+        "--list-strategies",
+        action="store_true",
+        help="List available strategies and exit.",
+    )
     parser.add_argument("--opening-plan", type=Path, default=None, help=argparse.SUPPRESS)
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def resolve_strategy_plan_path(settings, explicit_path: Path | None) -> Path:
+    return explicit_path or default_plan_file_for_settings(settings)
+
+
+def validate_strategy_plan(path: Path, settings) -> list[str]:
+    if not path.exists():
+        strategy_name = settings.strategy_names[0] if settings.strategy_names else "opening_impulse"
+        command = selector_command_for_strategy(strategy_name)
+        raise FileNotFoundError(
+            f"Missing strategy plan file: {path}. Run the selector first, for example: {command}"
+        )
+
+    plan = load_opening_plan(path)
+    symbols = parse_plan_symbols(plan)
+    if not symbols:
+        strategy_name = settings.strategy_names[0] if settings.strategy_names else "opening_impulse"
+        command = selector_command_for_strategy(strategy_name)
+        raise ValueError(
+            f"Strategy plan file has no selected symbols: {path}. Regenerate it first, for example: {command}"
+        )
+    return symbols
 
 
 async def main(args: argparse.Namespace | None = None) -> None:
     args = args or parse_args()
+    if args.list_strategies:
+        print("\n".join(available_strategy_names()))
+        return
     settings = load_settings()
-    opening_plan_path = args.opening_plan or (DEFAULT_OPENING_PLAN_FILE if args.use_opening_plan else None)
-    if opening_plan_path:
-        settings = apply_opening_plan(settings, opening_plan_path)
+    if args.strategy:
+        settings = replace(settings, strategy_names=[args.strategy])
+    opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan)
+    validate_strategy_plan(opening_plan_path, settings)
+    settings = apply_opening_plan(settings, opening_plan_path)
     log_file = strategy_log_file(settings)
     setup_logging(log_file)
-    if opening_plan_path:
-        logging.info("Loaded opening plan from %s", opening_plan_path)
+    logging.info("Loaded opening plan from %s", opening_plan_path)
 
     settings_snapshot = runtime_settings_snapshot(settings)
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}

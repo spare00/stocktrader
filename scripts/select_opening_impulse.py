@@ -16,13 +16,14 @@ if str(ROOT) not in sys.path:
 from ai_client import request_json_response
 from config import Settings
 from models import Bar, Quote
-from opening_plan import DEFAULT_OPENING_PLAN_FILE
+from opening_plan import default_plan_file_for_strategy
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
 OPEN_TIME = time(9, 30)
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_SCREEN_FILE = Path("data/opening_screen.json")
+DEFAULT_PLAN_FILE = default_plan_file_for_strategy("opening_impulse")
 
 
 DEFAULT_UNIVERSE = [
@@ -577,6 +578,23 @@ def ranked_opening_candidates(candidates: list[dict[str, Any]]) -> list[dict[str
     return ranked
 
 
+def deterministic_opening_plan(screen_result: dict[str, Any], limit: int) -> dict[str, Any]:
+    ranked = ranked_opening_candidates(list(screen_result.get("candidates") or []))
+    selected = [item["symbol"] for item in ranked[:limit]]
+    settings = {
+        "MAX_OPEN_POSITIONS": 1 if len(selected) <= 2 else 2,
+    }
+    return {
+        "date": str(screen_result.get("as_of", date.today().isoformat()))[:10],
+        "strategy": "opening_impulse",
+        "symbols": selected,
+        "ranked": ranked[:limit],
+        "rejected": [],
+        "settings": settings,
+        "risk_note": "Deterministic opening_impulse selection.",
+    }
+
+
 def ai_opening_plan(settings: Settings, screen_result: dict[str, Any], universe_symbols: list[str], limit: int) -> dict[str, Any] | None:
     payload = {
         "strategy": "opening_impulse",
@@ -644,6 +662,12 @@ def validated_opening_plan(plan: dict[str, Any], screen_result: dict[str, Any], 
 
 
 def maybe_apply_ai_selection(result: dict[str, Any], args: argparse.Namespace, settings: Settings, universe_symbols: list[str]) -> dict[str, Any]:
+    deterministic_plan = deterministic_opening_plan(result, args.top)
+    result["selection_plan"] = deterministic_plan
+    if args.plan_output:
+        args.plan_output.parent.mkdir(parents=True, exist_ok=True)
+        args.plan_output.write_text(json.dumps(deterministic_plan, indent=2, sort_keys=True) + "\n")
+
     if not args.use_ai:
         return result
 
@@ -660,6 +684,7 @@ def maybe_apply_ai_selection(result: dict[str, Any], args: argparse.Namespace, s
     result["export"] = f"export SYMBOLS={','.join(selected_symbols)}"
     result["ai_enabled"] = True
     result["ai_plan"] = validated
+    result["selection_plan"] = validated
 
     if args.plan_output:
         args.plan_output.parent.mkdir(parents=True, exist_ok=True)
@@ -743,8 +768,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plan-output",
         type=Path,
-        default=DEFAULT_OPENING_PLAN_FILE,
-        help="When --use-ai is set, write the validated AI selection plan to this file.",
+        default=DEFAULT_PLAN_FILE,
+        help="Write the strategy plan that main.py can consume directly.",
     )
     return parser.parse_args()
 

@@ -64,6 +64,7 @@ Strategies:
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 
 Choose one or many with `STRATEGIES=spike,opening_impulse`.
+When running `main.py`, you can also override that directly with `--strategy`.
 
 Recommended baseline for a “reliable first 1%” style:
 
@@ -85,12 +86,18 @@ export SYMBOLS=AAPL,MSFT,NVDA,TSLA,META
 venv/bin/python main.py
 ```
 
+To see what `main.py` can run without checking the code:
+
+```bash
+venv/bin/python main.py --list-strategies
+```
+
 ## Target Selection
 
 Refresh a broad tradable/liquid universe weekly or periodically. This is the global market-selection stage. It intentionally avoids strategy-specific pattern filtering and only keeps stocks that can realistically be traded intraday:
 
 ```bash
-venv/bin/python scripts/select_market_universe.py --limit 300
+venv/bin/python scripts/select_market_universe.py --top 300
 ```
 
 Before each market session, run the selector for the strategy you plan to trade. For `opening_impulse`, rank the broad universe with opening-impulse criteria:
@@ -99,7 +106,7 @@ Before each market session, run the selector for the strategy you plan to trade.
 venv/bin/python scripts/select_opening_impulse.py --top 12
 ```
 
-Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the normal opening plan file in the same step:
+Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the strategy-specific plan file that `main.py` uses directly:
 
 ```bash
 venv/bin/python scripts/select_opening_impulse.py --top 12 --use-ai
@@ -110,6 +117,10 @@ For `gap_and_go`, use its dedicated selector:
 ```bash
 venv/bin/python scripts/select_gap_and_go.py --top 5
 ```
+
+This selector is pre-market only: it ranks symbols using previous-day bars,
+premarket bars, and the current premarket quote. It does not depend on the
+regular-session open or any post-open breakout behavior.
 
 It also supports an embedded AI refinement pass:
 
@@ -123,23 +134,33 @@ Run the monitor with keys from `.env` and tunables from `profiles/paper.env`:
 scripts/run_paper.sh
 ```
 
+Or choose the active strategy directly at runtime:
+
+```bash
+venv/bin/python main.py --strategy opening_impulse
+venv/bin/python main.py --strategy gap_and_go
+```
+
 To test a different paper profile without editing the default one:
 
 ```bash
 TUNING_PROFILE=profiles/paper_aggressive.env scripts/run_paper.sh
 ```
 
-If you intentionally want to use the AI-written opening plan with `main.py`, pass the normal option through after running the selector with `--use-ai`:
+If you want `main.py` to trade the selector output directly, run the selector first, then start the bot with the strategy you want:
 
 ```bash
-scripts/run_paper.sh --use-opening-plan
+scripts/run_paper.sh --strategy opening_impulse
+scripts/run_paper.sh --strategy gap_and_go
 ```
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
 
 The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not used inside `main.py`, so order handling stays focused on the final `SYMBOLS` list you choose to trade.
 
-The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default. The `opening_impulse` selection flow writes `data/opening_screen.json` and `data/opening_plan.json`.
+The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default and write their own strategy plan files, such as `data/opening_impulse_plan.json` and `data/gap_and_go_plan.json`. The `opening_impulse` selector also writes `data/opening_screen.json` for detailed screening output.
+
+`main.py` now expects the active strategy's plan file to exist. If the file is missing or empty, it stops and tells you which selector command to run first.
 
 By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
 

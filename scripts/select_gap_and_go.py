@@ -19,11 +19,13 @@ from alpaca_client import get_latest_quotes, make_clients, to_bar
 from candle import SymbolState
 from config import Settings
 from market_hours import MARKET_TZ
+from opening_plan import default_plan_file_for_strategy
 
 
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
+DEFAULT_PLAN_FILE = default_plan_file_for_strategy("gap_and_go")
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -60,6 +62,7 @@ class GapAndGoCandidate:
     open_price: float
     premarket_high: float
     has_news: bool
+    quality_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -235,6 +238,75 @@ def inspect_gap_and_go_candidate(
     return GapAndGoDecision(candidate, "accepted", "accepted")
 
 
+def score_gap_and_go_candidate(
+    state: SymbolState,
+    settings: Settings,
+    previous_close: float | None = None,
+    has_news: bool = False,
+) -> GapAndGoCandidate | None:
+    quote = latest_valid_quote(state)
+    if quote is None:
+        return None
+
+    previous_close = previous_close or infer_previous_close(state)
+    high = premarket_high_price(state)
+    if not previous_close or not high:
+        return None
+
+    # This selector runs before the bell, so we rank names using the current
+    # premarket quote as a projected open rather than any post-open price.
+    projected_open_price = quote.ask
+    gap_pct = (projected_open_price - previous_close) / previous_close if previous_close > 0 else 0.0
+    volume_ratio = premarket_volume_ratio(state)
+    breakout_pct = ((quote.ask - high) / high) if high > 0 else 0.0
+    spread_penalty = max(0.0, (quote.spread_bps / max(settings.gap_and_go_max_spread_bps, 0.1)) - 1.0)
+    price_penalty = 0.0
+    quality_flags: list[str] = []
+
+    if quote.ask < settings.gap_and_go_min_price:
+        quality_flags.append(f"price {quote.ask:.2f} < {settings.gap_and_go_min_price:.2f}")
+        price_penalty = 2.0
+
+    if quote.spread_bps > settings.gap_and_go_max_spread_bps:
+        quality_flags.append(
+            f"spread {quote.spread_bps:.2f}bps > {settings.gap_and_go_max_spread_bps:.2f}bps"
+        )
+
+    if gap_pct < settings.gap_and_go_min_gap_pct:
+        quality_flags.append(f"gap {gap_pct:.3%} < {settings.gap_and_go_min_gap_pct:.3%}")
+
+    if volume_ratio < settings.gap_and_go_premarket_volume_ratio:
+        quality_flags.append(
+            f"premarket volume {volume_ratio:.2f}x < {settings.gap_and_go_premarket_volume_ratio:.2f}x"
+        )
+
+    if breakout_pct <= 0:
+        quality_flags.append(f"price {quote.ask:.2f} below premarket high {high:.2f}")
+
+    score = (
+        min(max(gap_pct, -0.05) * 100.0, 8.0)
+        + min(volume_ratio, 6.0)
+        + min(max(breakout_pct, -0.03) * 200.0, 4.0)
+        + (1.0 if has_news else 0.0)
+        - min(spread_penalty, 4.0)
+        - price_penalty
+    )
+
+    return GapAndGoCandidate(
+        symbol=state.symbol,
+        score=round(score, 4),
+        gap_pct=gap_pct,
+        premarket_volume_ratio=volume_ratio,
+        spread_bps=quote.spread_bps,
+        last_price=quote.ask,
+        prev_close=previous_close,
+        open_price=projected_open_price,
+        premarket_high=high,
+        has_news=has_news,
+        quality_flags=tuple(quality_flags),
+    )
+
+
 def rank_gap_and_go_candidates(
     states: dict[str, SymbolState],
     settings: Settings,
@@ -246,14 +318,14 @@ def rank_gap_and_go_candidates(
     news_flags = news_flags or {}
     ranked = []
     for symbol, state in states.items():
-        decision = inspect_gap_and_go_candidate(
+        candidate = score_gap_and_go_candidate(
             state,
             settings,
             previous_close=previous_closes.get(symbol),
             has_news=news_flags.get(symbol, False),
         )
-        if decision.candidate is not None:
-            ranked.append(decision.candidate)
+        if candidate is not None:
+            ranked.append(candidate)
     ranked.sort(key=lambda item: item.score, reverse=True)
     return ranked[:top_n]
 
@@ -317,6 +389,19 @@ def validated_gap_and_go_selection(plan: dict[str, Any], candidates: list[GapAnd
     }
 
 
+def deterministic_gap_and_go_plan(candidates: list[GapAndGoCandidate], limit: int) -> dict[str, Any]:
+    selected = [candidate.symbol for candidate in candidates[:limit]]
+    return {
+        "strategy": "gap_and_go",
+        "selection_stage": "pre_market",
+        "symbols": selected,
+        "ranked": [asdict(candidate) for candidate in candidates[:limit]],
+        "rejected": [],
+        "settings": {},
+        "risk_note": "Deterministic pre-market gap_and_go selection using only previous-day and premarket data.",
+    }
+
+
 def load_states(settings: Settings, symbols: list[str]) -> tuple[dict[str, SymbolState], dict[str, float]]:
     clients = make_clients(settings)
     now = datetime.now(tz=MARKET_TZ)
@@ -363,7 +448,9 @@ def load_states(settings: Settings, symbols: list[str]) -> tuple[dict[str, Symbo
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Rank gap-and-go candidates from the current universe.")
+    parser = argparse.ArgumentParser(
+        description="Rank pre-market gap-and-go candidates from the current universe."
+    )
     parser.add_argument("--symbols", default="", help="Comma-separated symbols. Overrides --universe-file when set.")
     parser.add_argument(
         "--universe-file",
@@ -373,6 +460,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--top", type=int, default=5, help="Maximum number of ranked symbols to return.")
     parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
+    parser.add_argument(
+        "--plan-output",
+        type=Path,
+        default=DEFAULT_PLAN_FILE,
+        help="Write the strategy plan that main.py can consume directly.",
+    )
     return parser.parse_args()
 
 
@@ -382,13 +475,19 @@ def main() -> None:
     settings = Settings()
     states, previous_closes = load_states(settings, symbols)
     candidates = rank_gap_and_go_candidates(states, settings, previous_closes=previous_closes, top_n=args.top)
+    deterministic_plan = deterministic_gap_and_go_plan(candidates, args.top)
     result: dict[str, Any] = {
         "strategy": "gap_and_go",
+        "selection_stage": "pre_market",
         "selected_symbols": [candidate.symbol for candidate in candidates],
         "export": f"export SYMBOLS={','.join(candidate.symbol for candidate in candidates)}",
         "candidates": [asdict(candidate) for candidate in candidates],
+        "selection_plan": deterministic_plan,
         "ai_enabled": args.use_ai,
     }
+    if args.plan_output:
+        args.plan_output.parent.mkdir(parents=True, exist_ok=True)
+        args.plan_output.write_text(json.dumps(deterministic_plan, indent=2, sort_keys=True) + "\n")
     if args.use_ai:
         plan = ai_gap_and_go_selection(settings, candidates, args.top)
         if plan is None:
@@ -397,8 +496,12 @@ def main() -> None:
         else:
             validated = validated_gap_and_go_selection(plan, candidates, args.top)
             result["ai_selection"] = validated
+            result["selection_plan"] = validated
             result["selected_symbols"] = validated["symbols"]
             result["export"] = f"export SYMBOLS={','.join(validated['symbols'])}"
+            if args.plan_output:
+                args.plan_output.parent.mkdir(parents=True, exist_ok=True)
+                args.plan_output.write_text(json.dumps(validated, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

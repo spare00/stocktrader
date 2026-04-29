@@ -6,7 +6,16 @@ from typing import Any
 from config import Settings
 
 
-DEFAULT_OPENING_PLAN_FILE = Path("data/opening_plan.json")
+LEGACY_OPENING_PLAN_FILE = Path("data/opening_plan.json")
+DEFAULT_PLAN_FILES = {
+    "opening_impulse": Path("data/opening_impulse_plan.json"),
+    "gap_and_go": Path("data/gap_and_go_plan.json"),
+}
+DEFAULT_OPENING_PLAN_FILE = DEFAULT_PLAN_FILES["opening_impulse"]
+SELECTOR_COMMANDS = {
+    "opening_impulse": "venv/bin/python scripts/select_opening_impulse.py --top 12",
+    "gap_and_go": "venv/bin/python scripts/select_gap_and_go.py --top 5",
+}
 
 
 PLAN_SETTING_MAP = {
@@ -24,6 +33,20 @@ SETTING_BOUNDS = {
     "target_profit_pct": (0.003, 0.02),
     "stop_loss_pct": (0.002, 0.02),
 }
+
+
+def default_plan_file_for_strategy(strategy_name: str) -> Path:
+    return DEFAULT_PLAN_FILES.get(strategy_name, Path(f"data/{strategy_name}_plan.json"))
+
+
+def default_plan_file_for_settings(settings: Settings) -> Path:
+    if settings.strategy_names:
+        return default_plan_file_for_strategy(settings.strategy_names[0])
+    return LEGACY_OPENING_PLAN_FILE
+
+
+def selector_command_for_strategy(strategy_name: str) -> str:
+    return SELECTOR_COMMANDS.get(strategy_name, f"venv/bin/python scripts/select_{strategy_name}.py")
 
 
 def load_opening_plan(path: Path) -> dict[str, Any]:

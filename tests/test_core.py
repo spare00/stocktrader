@@ -15,7 +15,13 @@ import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
 from models import Bar, Quote, Signal
-from opening_plan import DEFAULT_OPENING_PLAN_FILE, apply_opening_plan, plan_overrides
+from opening_plan import (
+    DEFAULT_OPENING_PLAN_FILE,
+    apply_opening_plan,
+    default_plan_file_for_strategy,
+    plan_overrides,
+    selector_command_for_strategy,
+)
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
 import scripts.select_market_universe as select_market_universe
@@ -26,7 +32,7 @@ from scripts.filter_opening_candidates_with_ai import build_plan, candidate_pena
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
 from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
-from strategies import build_strategies
+from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
@@ -192,8 +198,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(updated.max_open_positions, 1)
         self.assertEqual(updated.opening_impulse_change_pct, 0.008)
 
-    def test_default_opening_plan_path_is_conventional(self):
-        self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_plan.json"))
+    def test_default_opening_plan_path_is_strategy_specific(self):
+        self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
+        self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))
+        self.assertEqual(
+            selector_command_for_strategy("gap_and_go"),
+            "venv/bin/python scripts/select_gap_and_go.py --top 5",
+        )
 
     def test_ai_opening_plan_extracts_json_before_export_line(self):
         text = '{"symbols":["AAPL"],"settings":{"MAX_OPEN_POSITIONS":1}}\nexport SYMBOLS=AAPL\n'
@@ -858,7 +869,7 @@ class CoreTradingTests(unittest.TestCase):
                 output = Path(tmpdir) / "opening_universe.txt"
                 result = select_market_universe.build_universe(
                     types.SimpleNamespace(
-                        limit=1,
+                        top=1,
                         output=output,
                         lookback_days=2,
                         batch_size=2,
@@ -884,7 +895,7 @@ class CoreTradingTests(unittest.TestCase):
             select_market_universe.get_latest_quotes = original_get_quotes
 
     def test_opening_universe_builder_rejects_invalid_arguments(self):
-        args = types.SimpleNamespace(limit=0, lookback_days=2, batch_size=1)
+        args = types.SimpleNamespace(top=0, lookback_days=2, batch_size=1)
 
         with self.assertRaises(ValueError):
             select_market_universe.build_universe(args)
@@ -1758,6 +1769,58 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual([item.symbol for item in ranked], ["AAPL", "MSFT"])
         self.assertGreater(ranked[0].score, ranked[1].score)
 
+    def test_gap_and_go_selector_uses_premarket_data_before_open(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            gap_and_go_min_gap_pct=0.02,
+            gap_and_go_premarket_volume_ratio=2.0,
+            gap_and_go_max_spread_bps=10.0,
+            gap_and_go_min_price=5.0,
+        )
+        state = SymbolState("NVDA")
+        prev_day = market_ms(2026, 4, 23, 15, 0)
+        today_pre = market_ms(2026, 4, 24, 8, 0)
+
+        for index in range(30):
+            start_ms = prev_day + (index * 60_000)
+            state.add_bar(
+                Bar(
+                    "NVDA",
+                    open=99.8,
+                    high=100.1,
+                    low=99.7,
+                    close=100.0,
+                    volume=100,
+                    vwap=100.0,
+                    start_ms=start_ms,
+                    end_ms=start_ms + 60_000,
+                )
+            )
+        for index in range(6):
+            start_ms = today_pre + (index * 60_000)
+            price = 103.0 + (index * 0.1)
+            state.add_bar(
+                Bar(
+                    "NVDA",
+                    open=price,
+                    high=price + 0.2,
+                    low=price - 0.1,
+                    close=price + 0.05,
+                    volume=320,
+                    vwap=price,
+                    start_ms=start_ms,
+                    end_ms=start_ms + 60_000,
+                )
+            )
+        state.update_quote(Quote("NVDA", bid=103.55, ask=103.57, bid_size=100, ask_size=100, timestamp_ms=today_pre + 6 * 60_000))
+
+        candidate = select_gap_and_go.score_gap_and_go_candidate(state, settings, previous_close=100.0)
+
+        self.assertIsNotNone(candidate)
+        self.assertAlmostEqual(candidate.gap_pct, 0.0357, places=4)
+        self.assertAlmostEqual(candidate.open_price, 103.57, places=2)
+
     def test_gap_and_go_ai_selection_is_bounded_to_ranked_candidates(self):
         candidates = [
             select_gap_and_go.GapAndGoCandidate("AAPL", 7.2, 0.03, 3.4, 4.2, 103.5, 100.0, 102.0, 103.2, False),
@@ -1772,6 +1835,36 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
         self.assertEqual(validated["ranked"][0]["symbol"], "MSFT")
+
+    def test_gap_and_go_selector_scores_weak_candidates_instead_of_dropping_them(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            gap_and_go_min_gap_pct=0.02,
+            gap_and_go_premarket_volume_ratio=2.0,
+            gap_and_go_max_spread_bps=10.0,
+            gap_and_go_min_price=5.0,
+        )
+        state = SymbolState("MSFT")
+        prev_day = market_ms(2026, 4, 23, 15, 0)
+        today_pre = market_ms(2026, 4, 24, 8, 0)
+        today_open = market_ms(2026, 4, 24, 9, 30)
+
+        for index in range(30):
+            start_ms = prev_day + (index * 60_000)
+            state.add_bar(Bar("MSFT", open=99.8, high=100.1, low=99.7, close=100.0, volume=100, vwap=100.0, start_ms=start_ms, end_ms=start_ms + 60_000))
+        for index in range(6):
+            start_ms = today_pre + (index * 60_000)
+            price = 100.4 + (index * 0.05)
+            state.add_bar(Bar("MSFT", open=price, high=price + 0.1, low=price - 0.05, close=price + 0.02, volume=110, vwap=price, start_ms=start_ms, end_ms=start_ms + 60_000))
+        state.add_bar(Bar("MSFT", open=100.8, high=101.0, low=100.7, close=100.9, volume=120, vwap=100.85, start_ms=today_open, end_ms=today_open + 60_000))
+        state.update_quote(Quote("MSFT", bid=100.92, ask=100.94, bid_size=100, ask_size=100, timestamp_ms=today_open + 65_000))
+
+        candidate = select_gap_and_go.score_gap_and_go_candidate(state, settings, previous_close=100.0)
+
+        self.assertIsNotNone(candidate)
+        self.assertIn("gap 0.940% < 2.000%", candidate.quality_flags)
+        self.assertIn("premarket volume 1.10x < 2.00x", candidate.quality_flags)
 
     def test_gap_and_go_skips_entries_outside_window(self):
         settings = Settings(
@@ -2141,6 +2234,40 @@ class CoreTradingTests(unittest.TestCase):
         strategies = build_strategies(settings)
 
         self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go"])
+
+    def test_available_strategy_names_lists_registry_order(self):
+        self.assertEqual(available_strategy_names(), ["gap_and_go", "spike", "opening_impulse"])
+
+    def test_parse_args_accepts_strategy_and_list_flag(self):
+        args = trading_main.parse_args(["--strategy", "gap_and_go"])
+
+        self.assertEqual(args.strategy, "gap_and_go")
+        self.assertFalse(args.list_strategies)
+        self.assertIsNone(args.opening_plan)
+
+    def test_validate_strategy_plan_requires_existing_file(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["gap_and_go"],
+        )
+
+        with self.assertRaisesRegex(FileNotFoundError, "Run the selector first"):
+            trading_main.validate_strategy_plan(Path("/tmp/missing-gap-plan.json"), settings)
+
+    def test_validate_strategy_plan_requires_selected_symbols(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["opening_impulse"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "opening_impulse_plan.json"
+            plan_path.write_text(json.dumps({"strategy": "opening_impulse", "symbols": []}))
+
+            with self.assertRaisesRegex(ValueError, "Regenerate it first"):
+                trading_main.validate_strategy_plan(plan_path, settings)
 
     def test_risk_rejects_entries_outside_regular_market_hours(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])

@@ -1,0 +1,289 @@
+{
+  "ranked": [
+    {
+      "gap_pct": 0.04621158808350924,
+      "has_news": false,
+      "last_price": 223.0,
+      "open_price": 223.0,
+      "premarket_high": 213.66,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 213.15,
+      "quality_flags": [
+        "spread 427.79bps > 10.00bps",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": 4.6212,
+      "spread_bps": 427.79279072962964,
+      "symbol": "NVDA"
+    },
+    {
+      "gap_pct": 0.05292453691030201,
+      "has_news": false,
+      "last_price": 115.39,
+      "open_price": 115.39,
+      "premarket_high": 115.21,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 109.59,
+      "quality_flags": [
+        "spread 26.03bps > 10.00bps",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": 4.0017,
+      "spread_bps": 26.032627559874793,
+      "symbol": "SOXL"
+    },
+    {
+      "gap_pct": 0.04320502749410832,
+      "has_news": false,
+      "last_price": 6.64,
+      "open_price": 6.64,
+      "premarket_high": 6.63,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 6.365,
+      "quality_flags": [
+        "spread 15.07bps > 10.00bps",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": 4.115,
+      "spread_bps": 15.071590052750244,
+      "symbol": "NIO"
+    },
+    {
+      "gap_pct": 0.04513274336283184,
+      "has_news": false,
+      "last_price": 11.81,
+      "open_price": 11.81,
+      "premarket_high": 11.87,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 11.3,
+      "quality_flags": [
+        "premarket volume 0.00x < 2.00x",
+        "price 11.81 below premarket high 11.87"
+      ],
+      "score": 3.5023,
+      "spread_bps": 8.47098686997017,
+      "symbol": "NOK"
+    },
+    {
+      "gap_pct": 0.007737899242673672,
+      "has_news": false,
+      "last_price": 61.21,
+      "open_price": 61.21,
+      "premarket_high": 61.25,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 60.74,
+      "quality_flags": [
+        "gap 0.774% < 2.000%",
+        "premarket volume 0.00x < 2.00x",
+        "price 61.21 below premarket high 61.25"
+      ],
+      "score": 0.6432,
+      "spread_bps": 3.267973856209661,
+      "symbol": "TQQQ"
+    },
+    {
+      "gap_pct": 0.0016474464579900802,
+      "has_news": false,
+      "last_price": 12.16,
+      "open_price": 12.16,
+      "premarket_high": 12.15,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 12.14,
+      "quality_flags": [
+        "gap 0.165% < 2.000%",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": 0.3294,
+      "spread_bps": 8.227067050596286,
+      "symbol": "TSLL"
+    },
+    {
+      "gap_pct": 0.010864539990753557,
+      "has_news": false,
+      "last_price": 43.73,
+      "open_price": 43.73,
+      "premarket_high": 43.93,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 43.26,
+      "quality_flags": [
+        "gap 1.086% < 2.000%",
+        "premarket volume 0.00x < 2.00x",
+        "price 43.73 below premarket high 43.93"
+      ],
+      "score": 0.1759,
+      "spread_bps": 4.574565416284543,
+      "symbol": "IBIT"
+    },
+    {
+      "gap_pct": 0.0063327576280943826,
+      "has_news": false,
+      "last_price": 17.48,
+      "open_price": 17.48,
+      "premarket_high": 17.56,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 17.37,
+      "quality_flags": [
+        "gap 0.633% < 2.000%",
+        "premarket volume 0.00x < 2.00x",
+        "price 17.48 below premarket high 17.56"
+      ],
+      "score": -0.2779,
+      "spread_bps": 5.722460658083869,
+      "symbol": "ETHA"
+    },
+    {
+      "gap_pct": -0.0019267822736032127,
+      "has_news": false,
+      "last_price": 5.18,
+      "open_price": 5.18,
+      "premarket_high": 5.17,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 5.19,
+      "quality_flags": [
+        "spread 19.32bps > 10.00bps",
+        "gap -0.193% < 2.000%",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": -0.7382,
+      "spread_bps": 19.32367149758413,
+      "symbol": "TZA"
+    },
+    {
+      "gap_pct": 0.0054446460980036755,
+      "has_news": false,
+      "last_price": 11.08,
+      "open_price": 11.08,
+      "premarket_high": 11.14,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 11.02,
+      "quality_flags": [
+        "spread 18.07bps > 10.00bps",
+        "gap 0.544% < 2.000%",
+        "premarket volume 0.00x < 2.00x",
+        "price 11.08 below premarket high 11.14"
+      ],
+      "score": -1.3394,
+      "spread_bps": 18.066847335139634,
+      "symbol": "MARA"
+    },
+    {
+      "gap_pct": 0.0054844606946984,
+      "has_news": false,
+      "last_price": 5.5,
+      "open_price": 5.5,
+      "premarket_high": 5.49,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 5.47,
+      "quality_flags": [
+        "spread 36.43bps > 10.00bps",
+        "gap 0.548% < 2.000%",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": -1.7302,
+      "spread_bps": 36.42987249544549,
+      "symbol": "OPEN"
+    },
+    {
+      "gap_pct": -0.01657458563535909,
+      "has_news": false,
+      "last_price": 5.34,
+      "open_price": 5.34,
+      "premarket_high": 5.33,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 5.43,
+      "quality_flags": [
+        "spread 37.52bps > 10.00bps",
+        "gap -1.657% < 2.000%",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": -4.0346,
+      "spread_bps": 37.523452157597696,
+      "symbol": "AMDD"
+    },
+    {
+      "gap_pct": -0.04154727793696275,
+      "has_news": false,
+      "last_price": 6.69,
+      "open_price": 6.69,
+      "premarket_high": 6.68,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 6.98,
+      "quality_flags": [
+        "spread 14.96bps > 10.00bps",
+        "gap -4.155% < 2.000%",
+        "premarket volume 0.00x < 2.00x"
+      ],
+      "score": -4.3512,
+      "spread_bps": 14.9588631264034,
+      "symbol": "SCO"
+    },
+    {
+      "gap_pct": -0.04835094460454696,
+      "has_news": false,
+      "last_price": 14.86,
+      "open_price": 14.86,
+      "premarket_high": 14.91,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 15.615,
+      "quality_flags": [
+        "spread 13.47bps > 10.00bps",
+        "gap -4.835% < 2.000%",
+        "premarket volume 0.00x < 2.00x",
+        "price 14.86 below premarket high 14.91"
+      ],
+      "score": -5.8526,
+      "spread_bps": 13.468013468013181,
+      "symbol": "SOXS"
+    },
+    {
+      "gap_pct": -0.08625850340136058,
+      "has_news": false,
+      "last_price": 16.79,
+      "open_price": 16.79,
+      "premarket_high": 16.92,
+      "premarket_volume_ratio": 0.0,
+      "prev_close": 18.375,
+      "quality_flags": [
+        "spread 23.85bps > 10.00bps",
+        "gap -8.626% < 2.000%",
+        "premarket volume 0.00x < 2.00x",
+        "price 16.79 below premarket high 16.92"
+      ],
+      "score": -7.9219,
+      "spread_bps": 23.85211687537218,
+      "symbol": "SOFI"
+    }
+  ],
+  "rejected": [
+    "TQQQ",
+    "TSLL",
+    "IBIT",
+    "ETHA",
+    "TZA",
+    "MARA",
+    "OPEN",
+    "AMDD",
+    "SCO",
+    "SOXS",
+    "SOFI"
+  ],
+  "risk_note": "Conservative long-only shortlist is limited by zero premarket volume across all candidates; most names also have either wider spreads or are trading below premarket highs, reducing breakout quality. NVDA and SOXL rank best on gap size, but confirmation would normally require volume expansion and reclaim/hold above premarket highs.",
+  "strategy": "gap_and_go",
+  "symbols": [
+    "NVDA",
+    "SOXL",
+    "NIO",
+    "NOK",
+    "TQQQ",
+    "TSLL",
+    "IBIT",
+    "ETHA",
+    "TZA",
+    "MARA",
+    "OPEN",
+    "AMDD",
+    "SCO",
+    "SOXS",
+    "SOFI"
+  ]
+}
