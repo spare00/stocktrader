@@ -1015,8 +1015,70 @@ class CoreTradingTests(unittest.TestCase):
             {"opening_impulse": OpeningImpulseStrategy(settings)},
             now_ms=16_500,
         )
+        self.assertIsNone(fill)
+
+    def test_opening_impulse_cuts_loser_early_after_activation_delay(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_early_loss_cut_pct=0.0,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=99.88, ask=99.90, bid_size=20, ask_size=20, timestamp_ms=16_500))
+
+        fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+
         self.assertIsNotNone(fill)
-        self.assertEqual(fill.reason, "target profit")
+        self.assertEqual(fill.reason, "cut loss early")
+        self.assertEqual(fill.trade_type, "loser")
+
+    def test_opening_impulse_trailing_stop_protects_winner(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_winner_min_pnl_pct=0.003,
+            opening_impulse_retrace_from_high_pct=0.008,
+            opening_impulse_exit_negative_steps=99,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.4, low=99.9, close=100.3, volume=100, vwap=100.2, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.3, high=100.8, low=100.2, close=100.7, volume=120, vwap=100.5, start_ms=61_000, end_ms=121_000))
+        state.add_bar(Bar("AAPL", open=100.7, high=101.0, low=100.6, close=100.95, volume=130, vwap=100.8, start_ms=121_000, end_ms=181_000))
+        state.add_bar(Bar("AAPL", open=100.95, high=101.2, low=100.8, close=101.05, volume=140, vwap=101.0, start_ms=181_000, end_ms=241_000))
+        state.add_bar(Bar("AAPL", open=101.05, high=101.25, low=100.35, close=100.4, volume=150, vwap=100.7, start_ms=241_000, end_ms=301_000))
+        state.update_quote(Quote("AAPL", bid=100.39, ask=100.41, bid_size=20, ask_size=20, timestamp_ms=301_000))
+
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=101.0,
+            stop_price=99.5,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "trailing stop")
 
     def test_paper_broker_flattens_before_close(self):
         settings = Settings(
@@ -1183,6 +1245,7 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertEqual(rows[0]["order_id"], "buy-1")
                 self.assertAlmostEqual(rows[1]["pnl"], 3.3)
                 self.assertEqual(rows[1]["reason"], "target profit")
+                self.assertEqual(rows[1]["trade_type"], "winner")
         finally:
             execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
 
@@ -1675,6 +1738,34 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
         self.assertIn("quotes 1 < 10", "\n".join(captured.output))
 
+    def test_opening_impulse_skips_entries_after_noon(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=180,
+            opening_impulse_last_entry_hour_et=12,
+            opening_impulse_min_quotes=1,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=100.0,
+                ask=100.02,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 4, 24, 12, 5),
+            )
+        )
+
+        with self.assertLogs("strategies.opening_impulse", level="DEBUG") as captured:
+            signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNone(signal)
+        self.assertIn("outside opening impulse entry window", "\n".join(captured.output))
+
     def test_opening_impulse_exit_on_momentum_fade(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -1799,8 +1890,10 @@ class CoreTradingTests(unittest.TestCase):
             target_profit_pct=0.01,
             stop_loss_pct=0.005,
             max_hold_seconds=120,
+            opening_impulse_last_entry_hour_et=12,
             opening_impulse_min_hold_seconds=15,
             opening_impulse_exit_negative_steps=4,
+            opening_impulse_winner_min_pnl_pct=0.003,
         )
 
         snapshot = trading_main.runtime_settings_snapshot(settings)
@@ -1808,8 +1901,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["execution_mode"], "alpaca_paper")
         self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
+        self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
+        self.assertEqual(snapshot["opening_impulse"]["winner_min_pnl_pct"], 0.003)
         self.assertEqual(snapshot["spike"]["lookback_seconds"], settings.spike_lookback_seconds)
 
     def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):

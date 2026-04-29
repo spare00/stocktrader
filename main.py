@@ -140,6 +140,7 @@ def runtime_settings_snapshot(settings) -> dict:
         snapshot["opening_impulse"] = {
             "start_minute": settings.opening_impulse_start_minute,
             "end_minute": settings.opening_impulse_end_minute,
+            "last_entry_hour_et": settings.opening_impulse_last_entry_hour_et,
             "window_seconds": settings.opening_impulse_window_seconds,
             "min_quotes": settings.opening_impulse_min_quotes,
             "change_pct": settings.opening_impulse_change_pct,
@@ -164,6 +165,8 @@ def runtime_settings_snapshot(settings) -> dict:
             "exit_min_quotes": settings.opening_impulse_exit_min_quotes,
             "exit_negative_steps": settings.opening_impulse_exit_negative_steps,
             "min_hold_seconds": settings.opening_impulse_min_hold_seconds,
+            "winner_min_pnl_pct": settings.opening_impulse_winner_min_pnl_pct,
+            "early_loss_cut_pct": settings.opening_impulse_early_loss_cut_pct,
             "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
             "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
         }

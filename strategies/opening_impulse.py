@@ -145,29 +145,43 @@ class OpeningImpulseStrategy(Strategy):
         if age_seconds < self.exit_activation_delay_seconds(position):
             return None
 
+        pnl_pct = (price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
+
         bars = list(state.bars)[-max(5, self.settings.opening_impulse_bar_window) :]
         if len(bars) >= 2:
             recent_low = min(bar.low for bar in bars[:-1])
-            if price < recent_low:
+            if pnl_pct <= 0 and price < recent_low:
                 return ExitDecision("break structure")
 
             recent_high = max(bar.high for bar in bars)
-            if price < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
-                return ExitDecision("retrace from high")
+            if pnl_pct > self.settings.opening_impulse_winner_min_pnl_pct:
+                if price < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
+                    return ExitDecision("trailing stop")
+            elif pnl_pct > 0:
+                if price < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
+                    return ExitDecision("retrace from high")
 
         quotes = self._recent_quotes(state, self.settings.opening_impulse_exit_window_seconds)
         if len(quotes) < self.settings.opening_impulse_exit_min_quotes:
+            if pnl_pct <= self.settings.opening_impulse_early_loss_cut_pct:
+                return ExitDecision("cut loss early")
             return None
 
         recent_changes = [quotes[index].mid - quotes[index - 1].mid for index in range(1, len(quotes))]
         negative_steps = sum(1 for change in recent_changes if change < 0)
-        if negative_steps > self.settings.opening_impulse_exit_negative_steps:
+        if pnl_pct <= 0 and negative_steps > self.settings.opening_impulse_exit_negative_steps:
             return ExitDecision("momentum fade")
+
+        if pnl_pct <= self.settings.opening_impulse_early_loss_cut_pct:
+            return ExitDecision("cut loss early")
 
         return None
 
     def exit_activation_delay_seconds(self, position) -> int:
         return self.settings.opening_impulse_min_hold_seconds
+
+    def use_fixed_target_exit(self, position) -> bool:
+        return False
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
@@ -182,6 +196,8 @@ class OpeningImpulseStrategy(Strategy):
         if timestamp_ms is None:
             return False
         current = datetime.fromtimestamp(timestamp_ms / 1000, tz=self.market_tz)
+        if current.hour >= self.settings.opening_impulse_last_entry_hour_et:
+            return False
         minutes = current.hour * 60 + current.minute
         market_open = 9 * 60 + 30
         elapsed = minutes - market_open

@@ -66,6 +66,7 @@ class Settings:
 
     opening_impulse_start_minute: int = _int_env("OPENING_IMPULSE_START_MINUTE", 0)
     opening_impulse_end_minute: int = _int_env("OPENING_IMPULSE_END_MINUTE", 30)
+    opening_impulse_last_entry_hour_et: int = _int_env("OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", 12)
     opening_impulse_window_seconds: int = _int_env("OPENING_IMPULSE_WINDOW_SECONDS", 30)
     opening_impulse_min_quotes: int = _int_env("OPENING_IMPULSE_MIN_QUOTES", 10)
     opening_impulse_change_pct: float = _float_env("OPENING_IMPULSE_CHANGE_PCT", 0.009)
@@ -90,6 +91,8 @@ class Settings:
     opening_impulse_exit_min_quotes: int = _int_env("OPENING_IMPULSE_EXIT_MIN_QUOTES", 4)
     opening_impulse_exit_negative_steps: int = _int_env("OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", 4)
     opening_impulse_min_hold_seconds: int = _int_env("OPENING_IMPULSE_MIN_HOLD_SECONDS", 15)
+    opening_impulse_winner_min_pnl_pct: float = _float_env("OPENING_IMPULSE_WINNER_MIN_PNL_PCT", 0.003)
+    opening_impulse_early_loss_cut_pct: float = _float_env("OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", 0.0)
     opening_impulse_stall_buffer_pct: float = _float_env("OPENING_IMPULSE_STALL_BUFFER_PCT", 0.001)
     opening_impulse_retrace_from_high_pct: float = _float_env("OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", 0.008)
 

@@ -39,6 +39,7 @@ class Fill:
     pnl: float = 0.0
     reason: str = ""
     order_id: str = ""
+    trade_type: str = ""
 
 
 @dataclass
@@ -109,7 +110,19 @@ class PositionTracker:
         else:
             position.shares -= shares
 
-        fill = Fill(symbol, "SELL", shares, price, timestamp_ms, strategy=position.strategy, pnl=pnl, reason=reason, order_id=order_id)
+        trade_type = "winner" if pnl > 0 else "loser"
+        fill = Fill(
+            symbol,
+            "SELL",
+            shares,
+            price,
+            timestamp_ms,
+            strategy=position.strategy,
+            pnl=pnl,
+            reason=reason,
+            order_id=order_id,
+            trade_type=trade_type,
+        )
         self.fills.append(fill)
         self._write_trade_journal(fill)
         return fill
@@ -126,6 +139,8 @@ class PositionTracker:
             "pnl": fill.pnl,
             "reason": fill.reason,
         }
+        if fill.trade_type:
+            entry["trade_type"] = fill.trade_type
         if fill.order_id:
             entry["order_id"] = fill.order_id
 
@@ -188,14 +203,16 @@ class LocalPaperExecutor:
 
         if should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
-        elif age_seconds < exit_activation_delay:
-            return None
-        elif current_price >= position.target_price:
-            reason = "target profit"
-            exit_price = position.target_price
         elif current_price <= position.stop_price:
             reason = "stop loss"
             exit_price = position.stop_price
+        elif age_seconds < exit_activation_delay:
+            return None
+        elif strategy is not None and not strategy.use_fixed_target_exit(position):
+            reason = ""
+        elif current_price >= position.target_price:
+            reason = "target profit"
+            exit_price = position.target_price
         elif age_seconds >= self.tracker.settings.max_hold_seconds:
             reason = "max hold"
 
@@ -310,12 +327,14 @@ class AlpacaPaperExecutor:
 
         if flatten:
             reason = "end-of-day flatten"
-        elif age_seconds < exit_activation_delay:
-            return None
-        elif current_price >= position.target_price:
-            reason = "target profit"
         elif current_price <= position.stop_price:
             reason = "stop loss"
+        elif age_seconds < exit_activation_delay:
+            return None
+        elif strategy is not None and not strategy.use_fixed_target_exit(position):
+            reason = ""
+        elif current_price >= position.target_price:
+            reason = "target profit"
         elif age_seconds >= self.settings.max_hold_seconds:
             reason = "max hold"
 

@@ -22,3 +22,6 @@ class Strategy(ABC):
 
     def exit_activation_delay_seconds(self, position: "Position") -> int:
         return 0
+
+    def use_fixed_target_exit(self, position: "Position") -> bool:
+        return True
