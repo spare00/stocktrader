@@ -1789,6 +1789,29 @@ class CoreTradingTests(unittest.TestCase):
             trading_main.LOG_DIR = old_log_dir
             trading_main.LOG_FILE = old_log_file
 
+    def test_runtime_settings_snapshot_includes_tuning_parameters(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL", "MSFT"],
+            execution_mode="alpaca_paper",
+            strategy_names=["opening_impulse", "spike"],
+            target_profit_pct=0.01,
+            stop_loss_pct=0.005,
+            max_hold_seconds=120,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_negative_steps=4,
+        )
+
+        snapshot = trading_main.runtime_settings_snapshot(settings)
+
+        self.assertEqual(snapshot["execution_mode"], "alpaca_paper")
+        self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
+        self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
+        self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
+        self.assertEqual(snapshot["spike"]["lookback_seconds"], settings.spike_lookback_seconds)
+
     def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):
         log_filter = trading_main.FriendlyAlpacaStreamErrorFilter(min_interval_seconds=60)
         exc = OSError("[Errno 8] nodename nor servname provided, or not known")

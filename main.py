@@ -1,5 +1,6 @@
 import asyncio
 import argparse
+import json
 import logging
 import time
 from logging.handlers import RotatingFileHandler
@@ -100,6 +101,75 @@ def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
 
 
+def runtime_settings_snapshot(settings) -> dict:
+    snapshot = {
+        "execution_mode": settings.execution_mode,
+        "strategies": settings.strategy_names,
+        "symbols": settings.symbols,
+        "alpaca_paper": settings.alpaca_paper,
+        "alpaca_data_feed": settings.alpaca_data_feed,
+        "regular_market_only": settings.regular_market_only,
+        "ai_review": settings.ai_review,
+        "openai_model": settings.openai_model if settings.ai_review else None,
+        "risk": {
+            "target_profit_pct": settings.target_profit_pct,
+            "stop_loss_pct": settings.stop_loss_pct,
+            "max_hold_seconds": settings.max_hold_seconds,
+            "max_position_value": settings.max_position_value,
+            "max_open_positions": settings.max_open_positions,
+            "trade_cooldown_seconds": settings.trade_cooldown_seconds,
+            "daily_max_loss": settings.daily_max_loss,
+            "flatten_before_close_minutes": settings.flatten_before_close_minutes,
+        },
+        "stream": {
+            "heartbeat_seconds": settings.heartbeat_seconds,
+            "alpaca_fill_timeout_seconds": settings.alpaca_fill_timeout_seconds,
+            "alpaca_fill_poll_seconds": settings.alpaca_fill_poll_seconds,
+        },
+    }
+
+    if "spike" in settings.strategy_names:
+        snapshot["spike"] = {
+            "lookback_seconds": settings.spike_lookback_seconds,
+            "change_pct": settings.spike_change_pct,
+            "volume_ratio": settings.volume_ratio,
+            "max_spread_bps": settings.max_spread_bps,
+        }
+
+    if "opening_impulse" in settings.strategy_names:
+        snapshot["opening_impulse"] = {
+            "start_minute": settings.opening_impulse_start_minute,
+            "end_minute": settings.opening_impulse_end_minute,
+            "window_seconds": settings.opening_impulse_window_seconds,
+            "min_quotes": settings.opening_impulse_min_quotes,
+            "change_pct": settings.opening_impulse_change_pct,
+            "skip_extended_pct": settings.opening_impulse_skip_extended_pct,
+            "volume_ratio": settings.opening_impulse_volume_ratio,
+            "bar_confirmation": settings.opening_impulse_bar_confirmation,
+            "bar_window": settings.opening_impulse_bar_window,
+            "bar_min_rising": settings.opening_impulse_bar_min_rising,
+            "bar_change_pct": settings.opening_impulse_bar_change_pct,
+            "bar_volume_ratio": settings.opening_impulse_bar_volume_ratio,
+            "range_minutes": settings.opening_impulse_range_minutes,
+            "range_breakout_enabled": settings.opening_impulse_enable_range_breakout,
+            "range_reversal_enabled": settings.opening_impulse_enable_range_reversal,
+            "range_breakout_buffer_pct": settings.opening_impulse_range_breakout_buffer_pct,
+            "range_reversal_min_drop_pct": settings.opening_impulse_range_reversal_min_drop_pct,
+            "range_reclaim_buffer_pct": settings.opening_impulse_range_reclaim_buffer_pct,
+            "range_volume_ratio": settings.opening_impulse_range_volume_ratio,
+            "max_spread_bps": settings.opening_impulse_max_spread_bps,
+            "min_quote_size": settings.opening_impulse_min_quote_size,
+            "max_negative_steps": settings.opening_impulse_max_negative_steps,
+            "exit_window_seconds": settings.opening_impulse_exit_window_seconds,
+            "exit_min_quotes": settings.opening_impulse_exit_min_quotes,
+            "exit_negative_steps": settings.opening_impulse_exit_negative_steps,
+            "min_hold_seconds": settings.opening_impulse_min_hold_seconds,
+            "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
+            "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
+        }
+
+    return snapshot
+
 def setup_logging() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(LOG_FORMAT)
@@ -141,6 +211,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         settings = apply_opening_plan(settings, opening_plan_path)
         logging.info("Loaded opening plan from %s", opening_plan_path)
 
+    settings_snapshot = runtime_settings_snapshot(settings)
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
     stream = AlpacaStockStream(settings)
     strategies = build_strategies(settings)
@@ -156,6 +227,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         settings.execution_mode,
         ", ".join(settings.strategy_names),
     )
+    logging.info("Runtime settings %s", json.dumps(settings_snapshot, sort_keys=True))
 
     try:
         async for event in stream.events():
