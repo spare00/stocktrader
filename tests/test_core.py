@@ -7,10 +7,11 @@ import json
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from candle import SymbolState
-from config import Settings
+from config import Settings, load_settings
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
@@ -168,6 +169,61 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(overrides["target_profit_pct"], 0.02)
         self.assertEqual(overrides["opening_impulse_volume_ratio"], 1.5)
         self.assertNotIn("regular_market_only", overrides)
+
+    def test_load_settings_reads_only_active_strategy_env(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "ALPACA_API_KEY": "key",
+                "ALPACA_SECRET_KEY": "secret",
+                "STRATEGIES": "gap_and_go",
+                "GAP_AND_GO_END_MINUTE": "45",
+                "OPENING_IMPULSE_END_MINUTE": "360",
+            },
+            clear=True,
+        ):
+            settings = load_settings()
+
+        self.assertEqual(settings.strategy_names, ["gap_and_go"])
+        self.assertEqual(settings.gap_and_go_end_minute, 45)
+        self.assertEqual(settings.opening_impulse_end_minute, 30)
+
+    def test_load_settings_can_read_common_env_only(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "ALPACA_API_KEY": "key",
+                "ALPACA_SECRET_KEY": "secret",
+                "SYMBOLS": "AAPL,MSFT",
+                "GAP_AND_GO_END_MINUTE": "45",
+            },
+            clear=True,
+        ):
+            settings = load_settings(strategy_names=[], validate=False)
+
+        self.assertEqual(settings.strategy_names, [])
+        self.assertEqual(settings.symbols, ["AAPL", "MSFT"])
+        self.assertEqual(settings.gap_and_go_end_minute, 30)
+
+    def test_load_settings_reads_spike_window_only_when_spike_active(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "ALPACA_API_KEY": "key",
+                "ALPACA_SECRET_KEY": "secret",
+                "STRATEGIES": "spike",
+                "SPIKE_START_MINUTE": "15",
+                "SPIKE_END_MINUTE": "120",
+                "GAP_AND_GO_END_MINUTE": "45",
+            },
+            clear=True,
+        ):
+            settings = load_settings()
+
+        self.assertEqual(settings.strategy_names, ["spike"])
+        self.assertEqual(settings.spike_start_minute, 15)
+        self.assertEqual(settings.spike_end_minute, 120)
+        self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_opening_plan_accepts_symbol_objects_from_ai(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
@@ -794,6 +850,22 @@ class CoreTradingTests(unittest.TestCase):
         signal = SpikeStrategy(settings).evaluate(state)
 
         self.assertIsNone(signal)
+
+    def test_spike_strategy_respects_entry_window(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            spike_start_minute=15,
+            spike_end_minute=60,
+        )
+
+        before_window = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 9, 40)))
+        inside_window = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 10, 0)))
+
+        self.assertIsNone(before_window)
+        self.assertIsNotNone(inside_window)
 
     def test_risk_rejects_short_entries(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
@@ -2021,6 +2093,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
         self.assertEqual(snapshot["opening_impulse"]["winner_min_pnl_pct"], 0.003)
+        self.assertEqual(snapshot["spike"]["start_minute"], settings.spike_start_minute)
+        self.assertEqual(snapshot["spike"]["end_minute"], settings.spike_end_minute)
         self.assertEqual(snapshot["spike"]["lookback_seconds"], settings.spike_lookback_seconds)
 
     def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):

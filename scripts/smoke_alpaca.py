@@ -14,7 +14,7 @@ from config import load_settings
 
 
 def rest_check(symbols: list[str]) -> None:
-    settings = load_settings()
+    settings = load_settings(strategy_names=[])
     clients = make_clients(settings)
 
     account = clients.trading.get_account()
@@ -71,7 +71,7 @@ def rest_check(symbols: list[str]) -> None:
 
 
 async def stream_check(symbols: list[str], seconds: int, max_messages: int) -> None:
-    settings = load_settings()
+    settings = load_settings(strategy_names=[])
     clients = make_clients(settings)
     queue: asyncio.Queue[dict] = asyncio.Queue()
 

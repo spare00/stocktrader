@@ -32,7 +32,7 @@ def compact_order(order) -> dict:
 
 
 def run(symbol: str, qty: int, cancel_after_submit: bool, wait_seconds: float, force_submit: bool) -> None:
-    settings = load_settings()
+    settings = load_settings(strategy_names=[])
     if settings.execution_mode != "alpaca_paper" and not force_submit:
         raise SystemExit(
             "Refusing to submit an Alpaca paper order while EXECUTION_MODE is not 'alpaca_paper'. "

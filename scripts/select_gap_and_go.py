@@ -17,7 +17,7 @@ from alpaca.data.timeframe import TimeFrame
 
 from alpaca_client import get_latest_quotes, make_clients, to_bar
 from candle import SymbolState
-from config import Settings
+from config import Settings, load_settings
 from market_hours import MARKET_TZ
 from opening_plan import default_plan_file_for_strategy
 
@@ -472,7 +472,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     symbols = load_universe(args.universe_file, args.symbols)
-    settings = Settings()
+    settings = load_settings(strategy_names=["gap_and_go"], validate=False)
     states, previous_closes = load_states(settings, symbols)
     candidates = rank_gap_and_go_candidates(states, settings, previous_closes=previous_closes, top_n=args.top)
     deterministic_plan = deterministic_gap_and_go_plan(candidates, args.top)

@@ -66,6 +66,15 @@ Strategies:
 Choose one or many with `STRATEGIES=spike,opening_impulse`.
 When running `main.py`, you can also override that directly with `--strategy`.
 
+Strategy entry windows are configured independently, in minutes from the
+regular-market open at `09:30` New York time. For example, `0` means `09:30`,
+`30` means `10:00`, `150` means `12:00`, and negative values are premarket
+minutes. Supported window variables:
+
+- `OPENING_IMPULSE_START_MINUTE` / `OPENING_IMPULSE_END_MINUTE`
+- `GAP_AND_GO_START_MINUTE` / `GAP_AND_GO_END_MINUTE`
+- `SPIKE_START_MINUTE` / `SPIKE_END_MINUTE` (unset by default, so spike has no strategy-specific window)
+
 Recommended baseline for a “reliable first 1%” style:
 
 - `STRATEGIES=opening_impulse`

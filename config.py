@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -17,6 +18,11 @@ def _int_env(name: str, default: int) -> int:
     return default if value is None else int(value)
 
 
+def _optional_int_env(name: str, default: int | None = None) -> int | None:
+    value = os.getenv(name)
+    return default if value is None or value == "" else int(value)
+
+
 def _bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -31,90 +37,202 @@ def _strategy_env(name: str, default: str) -> list[str]:
 
 @dataclass(frozen=True)
 class Settings:
-    alpaca_api_key: str | None = os.getenv("ALPACA_API_KEY")
-    alpaca_secret_key: str | None = os.getenv("ALPACA_SECRET_KEY")
-    alpaca_paper: bool = os.getenv("ALPACA_PAPER", "true").lower() in {"1", "true", "yes", "on"}
-    alpaca_data_feed: str = os.getenv("ALPACA_DATA_FEED", "iex").lower()
-    alpaca_stream_url: str | None = os.getenv("ALPACA_STREAM_URL")
-    execution_mode: str = os.getenv("EXECUTION_MODE", "local").lower()
-    strategy_names: list[str] = field(default_factory=lambda: _strategy_env("STRATEGIES", "opening_impulse"))
+    alpaca_api_key: str | None = None
+    alpaca_secret_key: str | None = None
+    alpaca_paper: bool = True
+    alpaca_data_feed: str = "iex"
+    alpaca_stream_url: str | None = None
+    execution_mode: str = "local"
+    strategy_names: list[str] = field(default_factory=lambda: ["opening_impulse"])
 
-    openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-5.4-mini"
 
-    symbols: list[str] = field(default_factory=lambda: _csv_env("SYMBOLS", "AAPL,MSFT,NVDA,TSLA,META"))
+    symbols: list[str] = field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "TSLA", "META"])
 
-    gap_and_go_start_minute: int = _int_env("GAP_AND_GO_START_MINUTE", 0)
-    gap_and_go_end_minute: int = _int_env("GAP_AND_GO_END_MINUTE", 30)
-    gap_and_go_min_gap_pct: float = _float_env("GAP_AND_GO_MIN_GAP_PCT", 0.02)
-    gap_and_go_premarket_volume_ratio: float = _float_env("GAP_AND_GO_PREMARKET_VOLUME_RATIO", 2.0)
-    gap_and_go_max_spread_bps: float = _float_env("GAP_AND_GO_MAX_SPREAD_BPS", 10.0)
-    gap_and_go_min_price: float = _float_env("GAP_AND_GO_MIN_PRICE", 5.0)
-    gap_and_go_breakout_buffer_pct: float = _float_env("GAP_AND_GO_BREAKOUT_BUFFER_PCT", 0.0)
-    gap_and_go_exit_activation_delay_seconds: int = _int_env("GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", 15)
-    gap_and_go_trailing_retrace_pct: float = _float_env("GAP_AND_GO_TRAILING_RETRACE_PCT", 0.008)
-    gap_and_go_bar_window: int = _int_env("GAP_AND_GO_BAR_WINDOW", 5)
+    gap_and_go_start_minute: int = 0
+    gap_and_go_end_minute: int = 30
+    gap_and_go_min_gap_pct: float = 0.02
+    gap_and_go_premarket_volume_ratio: float = 2.0
+    gap_and_go_max_spread_bps: float = 10.0
+    gap_and_go_min_price: float = 5.0
+    gap_and_go_breakout_buffer_pct: float = 0.0
+    gap_and_go_exit_activation_delay_seconds: int = 15
+    gap_and_go_trailing_retrace_pct: float = 0.008
+    gap_and_go_bar_window: int = 5
 
-    spike_lookback_seconds: int = _int_env("SPIKE_LOOKBACK_SECONDS", 5)
-    spike_change_pct: float = _float_env("SPIKE_CHANGE_PCT", 0.0025)
-    volume_ratio: float = _float_env("VOLUME_RATIO", 2.0)
-    max_spread_bps: float = _float_env("MAX_SPREAD_BPS", 12.0)
+    spike_lookback_seconds: int = 5
+    spike_change_pct: float = 0.0025
+    spike_start_minute: int | None = None
+    spike_end_minute: int | None = None
+    volume_ratio: float = 2.0
+    max_spread_bps: float = 12.0
 
-    target_profit_pct: float = min(_float_env("TARGET_PROFIT_PCT", 0.01), 0.02)
-    stop_loss_pct: float = _float_env("STOP_LOSS_PCT", 0.005)
-    max_hold_seconds: int = _int_env("MAX_HOLD_SECONDS", 120)
+    target_profit_pct: float = 0.01
+    stop_loss_pct: float = 0.005
+    max_hold_seconds: int = 120
 
-    starting_cash: float = _float_env("STARTING_CASH", 25_000.0)
-    max_position_value: float = _float_env("MAX_POSITION_VALUE", 2_500.0)
-    max_open_positions: int = _int_env("MAX_OPEN_POSITIONS", 2)
-    trade_cooldown_seconds: int = _int_env("TRADE_COOLDOWN_SECONDS", 60)
-    daily_max_loss: float = _float_env("DAILY_MAX_LOSS", 250.0)
-    regular_market_only: bool = os.getenv("REGULAR_MARKET_ONLY", "true").lower() in {"1", "true", "yes", "on"}
-    flatten_before_close_minutes: int = _int_env("FLATTEN_BEFORE_CLOSE_MINUTES", 15)
-    heartbeat_seconds: int = _int_env("HEARTBEAT_SECONDS", 5)
-    alpaca_fill_timeout_seconds: float = _float_env("ALPACA_FILL_TIMEOUT_SECONDS", 15.0)
-    alpaca_fill_poll_seconds: float = _float_env("ALPACA_FILL_POLL_SECONDS", 0.25)
+    starting_cash: float = 25_000.0
+    max_position_value: float = 2_500.0
+    max_open_positions: int = 2
+    trade_cooldown_seconds: int = 60
+    daily_max_loss: float = 250.0
+    regular_market_only: bool = True
+    flatten_before_close_minutes: int = 15
+    heartbeat_seconds: int = 5
+    alpaca_fill_timeout_seconds: float = 15.0
+    alpaca_fill_poll_seconds: float = 0.25
 
-    opening_impulse_start_minute: int = _int_env("OPENING_IMPULSE_START_MINUTE", 0)
-    opening_impulse_end_minute: int = _int_env("OPENING_IMPULSE_END_MINUTE", 30)
-    opening_impulse_last_entry_hour_et: int = _int_env("OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", 12)
-    opening_impulse_window_seconds: int = _int_env("OPENING_IMPULSE_WINDOW_SECONDS", 30)
-    opening_impulse_min_quotes: int = _int_env("OPENING_IMPULSE_MIN_QUOTES", 10)
-    opening_impulse_change_pct: float = _float_env("OPENING_IMPULSE_CHANGE_PCT", 0.009)
-    opening_impulse_skip_extended_pct: float = _float_env("OPENING_IMPULSE_SKIP_EXTENDED_PCT", 0.03)
-    opening_impulse_volume_ratio: float = _float_env("OPENING_IMPULSE_VOLUME_RATIO", 2.5)
-    opening_impulse_bar_confirmation: bool = _bool_env("OPENING_IMPULSE_BAR_CONFIRMATION", True)
-    opening_impulse_bar_window: int = _int_env("OPENING_IMPULSE_BAR_WINDOW", 3)
-    opening_impulse_bar_min_rising: int = _int_env("OPENING_IMPULSE_BAR_MIN_RISING", 2)
-    opening_impulse_bar_change_pct: float = _float_env("OPENING_IMPULSE_BAR_CHANGE_PCT", 0.003)
-    opening_impulse_bar_volume_ratio: float = _float_env("OPENING_IMPULSE_BAR_VOLUME_RATIO", 1.5)
-    opening_impulse_range_minutes: int = _int_env("OPENING_IMPULSE_RANGE_MINUTES", 5)
-    opening_impulse_enable_range_breakout: bool = _bool_env("OPENING_IMPULSE_ENABLE_RANGE_BREAKOUT", True)
-    opening_impulse_enable_range_reversal: bool = _bool_env("OPENING_IMPULSE_ENABLE_RANGE_REVERSAL", True)
-    opening_impulse_range_breakout_buffer_pct: float = _float_env("OPENING_IMPULSE_RANGE_BREAKOUT_BUFFER_PCT", 0.0005)
-    opening_impulse_range_reversal_min_drop_pct: float = _float_env("OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT", 0.005)
-    opening_impulse_range_reclaim_buffer_pct: float = _float_env("OPENING_IMPULSE_RANGE_RECLAIM_BUFFER_PCT", 0.0)
-    opening_impulse_range_volume_ratio: float = _float_env("OPENING_IMPULSE_RANGE_VOLUME_RATIO", 1.2)
-    opening_impulse_max_spread_bps: float = _float_env("OPENING_IMPULSE_MAX_SPREAD_BPS", 8.0)
-    opening_impulse_min_quote_size: int = _int_env("OPENING_IMPULSE_MIN_QUOTE_SIZE", 25)
-    opening_impulse_max_negative_steps: int = _int_env("OPENING_IMPULSE_MAX_NEGATIVE_STEPS", 1)
-    opening_impulse_exit_window_seconds: int = _int_env("OPENING_IMPULSE_EXIT_WINDOW_SECONDS", 10)
-    opening_impulse_exit_min_quotes: int = _int_env("OPENING_IMPULSE_EXIT_MIN_QUOTES", 4)
-    opening_impulse_exit_negative_steps: int = _int_env("OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", 4)
-    opening_impulse_min_hold_seconds: int = _int_env("OPENING_IMPULSE_MIN_HOLD_SECONDS", 15)
-    opening_impulse_winner_min_pnl_pct: float = _float_env("OPENING_IMPULSE_WINNER_MIN_PNL_PCT", 0.003)
-    opening_impulse_early_loss_cut_pct: float = _float_env("OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", 0.0)
-    opening_impulse_stall_buffer_pct: float = _float_env("OPENING_IMPULSE_STALL_BUFFER_PCT", 0.001)
-    opening_impulse_retrace_from_high_pct: float = _float_env("OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", 0.008)
+    opening_impulse_start_minute: int = 0
+    opening_impulse_end_minute: int = 30
+    opening_impulse_last_entry_hour_et: int = 12
+    opening_impulse_window_seconds: int = 30
+    opening_impulse_min_quotes: int = 10
+    opening_impulse_change_pct: float = 0.009
+    opening_impulse_skip_extended_pct: float = 0.03
+    opening_impulse_volume_ratio: float = 2.5
+    opening_impulse_bar_confirmation: bool = True
+    opening_impulse_bar_window: int = 3
+    opening_impulse_bar_min_rising: int = 2
+    opening_impulse_bar_change_pct: float = 0.003
+    opening_impulse_bar_volume_ratio: float = 1.5
+    opening_impulse_range_minutes: int = 5
+    opening_impulse_enable_range_breakout: bool = True
+    opening_impulse_enable_range_reversal: bool = True
+    opening_impulse_range_breakout_buffer_pct: float = 0.0005
+    opening_impulse_range_reversal_min_drop_pct: float = 0.005
+    opening_impulse_range_reclaim_buffer_pct: float = 0.0
+    opening_impulse_range_volume_ratio: float = 1.2
+    opening_impulse_max_spread_bps: float = 8.0
+    opening_impulse_min_quote_size: int = 25
+    opening_impulse_max_negative_steps: int = 1
+    opening_impulse_exit_window_seconds: int = 10
+    opening_impulse_exit_min_quotes: int = 4
+    opening_impulse_exit_negative_steps: int = 4
+    opening_impulse_min_hold_seconds: int = 15
+    opening_impulse_winner_min_pnl_pct: float = 0.003
+    opening_impulse_early_loss_cut_pct: float = 0.0
+    opening_impulse_stall_buffer_pct: float = 0.001
+    opening_impulse_retrace_from_high_pct: float = 0.008
 
-    ai_review: bool = os.getenv("AI_REVIEW", "false").lower() in {"1", "true", "yes", "on"}
+    ai_review: bool = False
 
 
-def load_settings() -> Settings:
-    settings = Settings()
+EnvReader = Callable[[str, Any], Any]
+EnvSpec = tuple[str, str, EnvReader, Any]
+
+
+def _str_env(name: str, default: str | None = None) -> str | None:
+    return os.getenv(name, default)
+
+
+def _lower_env(name: str, default: str) -> str:
+    return os.getenv(name, default).lower()
+
+
+COMMON_ENV: tuple[EnvSpec, ...] = (
+    ("alpaca_api_key", "ALPACA_API_KEY", _str_env, None),
+    ("alpaca_secret_key", "ALPACA_SECRET_KEY", _str_env, None),
+    ("alpaca_paper", "ALPACA_PAPER", _bool_env, True),
+    ("alpaca_data_feed", "ALPACA_DATA_FEED", _lower_env, "iex"),
+    ("alpaca_stream_url", "ALPACA_STREAM_URL", _str_env, None),
+    ("execution_mode", "EXECUTION_MODE", _lower_env, "local"),
+    ("openai_api_key", "OPENAI_API_KEY", _str_env, None),
+    ("openai_model", "OPENAI_MODEL", _str_env, "gpt-5.4-mini"),
+    ("symbols", "SYMBOLS", _csv_env, "AAPL,MSFT,NVDA,TSLA,META"),
+    ("target_profit_pct", "TARGET_PROFIT_PCT", _float_env, 0.01),
+    ("stop_loss_pct", "STOP_LOSS_PCT", _float_env, 0.005),
+    ("max_hold_seconds", "MAX_HOLD_SECONDS", _int_env, 120),
+    ("starting_cash", "STARTING_CASH", _float_env, 25_000.0),
+    ("max_position_value", "MAX_POSITION_VALUE", _float_env, 2_500.0),
+    ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 2),
+    ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
+    ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
+    ("regular_market_only", "REGULAR_MARKET_ONLY", _bool_env, True),
+    ("flatten_before_close_minutes", "FLATTEN_BEFORE_CLOSE_MINUTES", _int_env, 15),
+    ("heartbeat_seconds", "HEARTBEAT_SECONDS", _int_env, 5),
+    ("alpaca_fill_timeout_seconds", "ALPACA_FILL_TIMEOUT_SECONDS", _float_env, 15.0),
+    ("alpaca_fill_poll_seconds", "ALPACA_FILL_POLL_SECONDS", _float_env, 0.25),
+    ("ai_review", "AI_REVIEW", _bool_env, False),
+)
+
+STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
+    "spike": (
+        ("spike_lookback_seconds", "SPIKE_LOOKBACK_SECONDS", _int_env, 5),
+        ("spike_change_pct", "SPIKE_CHANGE_PCT", _float_env, 0.0025),
+        ("spike_start_minute", "SPIKE_START_MINUTE", _optional_int_env, None),
+        ("spike_end_minute", "SPIKE_END_MINUTE", _optional_int_env, None),
+        ("volume_ratio", "VOLUME_RATIO", _float_env, 2.0),
+        ("max_spread_bps", "MAX_SPREAD_BPS", _float_env, 12.0),
+    ),
+    "gap_and_go": (
+        ("gap_and_go_start_minute", "GAP_AND_GO_START_MINUTE", _int_env, 0),
+        ("gap_and_go_end_minute", "GAP_AND_GO_END_MINUTE", _int_env, 30),
+        ("gap_and_go_min_gap_pct", "GAP_AND_GO_MIN_GAP_PCT", _float_env, 0.02),
+        ("gap_and_go_premarket_volume_ratio", "GAP_AND_GO_PREMARKET_VOLUME_RATIO", _float_env, 2.0),
+        ("gap_and_go_max_spread_bps", "GAP_AND_GO_MAX_SPREAD_BPS", _float_env, 10.0),
+        ("gap_and_go_min_price", "GAP_AND_GO_MIN_PRICE", _float_env, 5.0),
+        ("gap_and_go_breakout_buffer_pct", "GAP_AND_GO_BREAKOUT_BUFFER_PCT", _float_env, 0.0),
+        ("gap_and_go_exit_activation_delay_seconds", "GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", _int_env, 15),
+        ("gap_and_go_trailing_retrace_pct", "GAP_AND_GO_TRAILING_RETRACE_PCT", _float_env, 0.008),
+        ("gap_and_go_bar_window", "GAP_AND_GO_BAR_WINDOW", _int_env, 5),
+    ),
+    "opening_impulse": (
+        ("opening_impulse_start_minute", "OPENING_IMPULSE_START_MINUTE", _int_env, 0),
+        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", _int_env, 30),
+        ("opening_impulse_last_entry_hour_et", "OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", _int_env, 12),
+        ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", _int_env, 30),
+        ("opening_impulse_min_quotes", "OPENING_IMPULSE_MIN_QUOTES", _int_env, 10),
+        ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", _float_env, 0.009),
+        ("opening_impulse_skip_extended_pct", "OPENING_IMPULSE_SKIP_EXTENDED_PCT", _float_env, 0.03),
+        ("opening_impulse_volume_ratio", "OPENING_IMPULSE_VOLUME_RATIO", _float_env, 2.5),
+        ("opening_impulse_bar_confirmation", "OPENING_IMPULSE_BAR_CONFIRMATION", _bool_env, True),
+        ("opening_impulse_bar_window", "OPENING_IMPULSE_BAR_WINDOW", _int_env, 3),
+        ("opening_impulse_bar_min_rising", "OPENING_IMPULSE_BAR_MIN_RISING", _int_env, 2),
+        ("opening_impulse_bar_change_pct", "OPENING_IMPULSE_BAR_CHANGE_PCT", _float_env, 0.003),
+        ("opening_impulse_bar_volume_ratio", "OPENING_IMPULSE_BAR_VOLUME_RATIO", _float_env, 1.5),
+        ("opening_impulse_range_minutes", "OPENING_IMPULSE_RANGE_MINUTES", _int_env, 5),
+        ("opening_impulse_enable_range_breakout", "OPENING_IMPULSE_ENABLE_RANGE_BREAKOUT", _bool_env, True),
+        ("opening_impulse_enable_range_reversal", "OPENING_IMPULSE_ENABLE_RANGE_REVERSAL", _bool_env, True),
+        ("opening_impulse_range_breakout_buffer_pct", "OPENING_IMPULSE_RANGE_BREAKOUT_BUFFER_PCT", _float_env, 0.0005),
+        ("opening_impulse_range_reversal_min_drop_pct", "OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT", _float_env, 0.005),
+        ("opening_impulse_range_reclaim_buffer_pct", "OPENING_IMPULSE_RANGE_RECLAIM_BUFFER_PCT", _float_env, 0.0),
+        ("opening_impulse_range_volume_ratio", "OPENING_IMPULSE_RANGE_VOLUME_RATIO", _float_env, 1.2),
+        ("opening_impulse_max_spread_bps", "OPENING_IMPULSE_MAX_SPREAD_BPS", _float_env, 8.0),
+        ("opening_impulse_min_quote_size", "OPENING_IMPULSE_MIN_QUOTE_SIZE", _int_env, 25),
+        ("opening_impulse_max_negative_steps", "OPENING_IMPULSE_MAX_NEGATIVE_STEPS", _int_env, 1),
+        ("opening_impulse_exit_window_seconds", "OPENING_IMPULSE_EXIT_WINDOW_SECONDS", _int_env, 10),
+        ("opening_impulse_exit_min_quotes", "OPENING_IMPULSE_EXIT_MIN_QUOTES", _int_env, 4),
+        ("opening_impulse_exit_negative_steps", "OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", _int_env, 4),
+        ("opening_impulse_min_hold_seconds", "OPENING_IMPULSE_MIN_HOLD_SECONDS", _int_env, 15),
+        ("opening_impulse_winner_min_pnl_pct", "OPENING_IMPULSE_WINNER_MIN_PNL_PCT", _float_env, 0.003),
+        ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", _float_env, 0.0),
+        ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", _float_env, 0.001),
+        ("opening_impulse_retrace_from_high_pct", "OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", _float_env, 0.008),
+    ),
+}
+
+
+def _read_env(specs: tuple[EnvSpec, ...]) -> dict[str, Any]:
+    return {field_name: reader(env_name, default) for field_name, env_name, reader, default in specs}
+
+
+def load_settings(strategy_names: list[str] | None = None, validate: bool = True) -> Settings:
+    active_strategy_names = _strategy_env("STRATEGIES", "opening_impulse") if strategy_names is None else strategy_names
+    values = _read_env(COMMON_ENV)
+    values["strategy_names"] = active_strategy_names
+    values["target_profit_pct"] = min(values["target_profit_pct"], 0.02)
+
+    for strategy_name in active_strategy_names:
+        values.update(_read_env(STRATEGY_ENV.get(strategy_name, ())))
+
+    settings = Settings(**values)
+    if not validate:
+        return settings
+
     if not settings.symbols:
         raise ValueError("SYMBOLS must include at least one ticker.")
-    if not settings.strategy_names:
+    if strategy_names is None and not settings.strategy_names:
         raise ValueError("STRATEGIES must include at least one strategy.")
     if not settings.alpaca_api_key or not settings.alpaca_secret_key:
         raise ValueError("ALPACA_API_KEY and ALPACA_SECRET_KEY are required.")

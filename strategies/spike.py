@@ -1,9 +1,14 @@
+from datetime import datetime, time
 from statistics import median
 
 from candle import SymbolState
 from config import Settings
+from market_hours import MARKET_TZ
 from models import Bar, Signal
 from strategies.base import Strategy
+
+
+MARKET_OPEN = time(9, 30)
 
 
 class SpikeStrategy(Strategy):
@@ -11,6 +16,7 @@ class SpikeStrategy(Strategy):
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.market_tz = MARKET_TZ
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "bar":
@@ -19,6 +25,9 @@ class SpikeStrategy(Strategy):
         lookback = self.settings.spike_lookback_seconds
         threshold_ms = state.bars[-1].end_ms - (lookback * 1000)
         last = state.bars[-1]
+        if not self._within_entry_window(last.end_ms):
+            return None
+
         prior_index = self._prior_index(list(state.bars), threshold_ms)
         if prior_index is None:
             return None
@@ -65,3 +74,18 @@ class SpikeStrategy(Strategy):
             if bars[index].end_ms <= threshold_ms:
                 return index
         return None
+
+    def _within_entry_window(self, timestamp_ms: int) -> bool:
+        if self.settings.spike_start_minute is None and self.settings.spike_end_minute is None:
+            return True
+
+        current = datetime.fromtimestamp(timestamp_ms / 1000, tz=self.market_tz)
+        minutes = current.hour * 60 + current.minute
+        market_open = (MARKET_OPEN.hour * 60) + MARKET_OPEN.minute
+        elapsed = minutes - market_open
+
+        if self.settings.spike_start_minute is not None and elapsed < self.settings.spike_start_minute:
+            return False
+        if self.settings.spike_end_minute is not None and elapsed > self.settings.spike_end_minute:
+            return False
+        return True

@@ -3,7 +3,6 @@ import argparse
 import json
 import logging
 import time
-from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -137,6 +136,8 @@ def runtime_settings_snapshot(settings) -> dict:
 
     if "spike" in settings.strategy_names:
         snapshot["spike"] = {
+            "start_minute": settings.spike_start_minute,
+            "end_minute": settings.spike_end_minute,
             "lookback_seconds": settings.spike_lookback_seconds,
             "change_pct": settings.spike_change_pct,
             "volume_ratio": settings.volume_ratio,
@@ -273,9 +274,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
     if args.list_strategies:
         print("\n".join(available_strategy_names()))
         return
-    settings = load_settings()
-    if args.strategy:
-        settings = replace(settings, strategy_names=[args.strategy])
+    requested_strategies = [args.strategy] if args.strategy else None
+    settings = load_settings(strategy_names=requested_strategies)
     opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan)
     validate_strategy_plan(opening_plan_path, settings)
     settings = apply_opening_plan(settings, opening_plan_path)

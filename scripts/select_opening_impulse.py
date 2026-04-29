@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ai_client import request_json_response
-from config import Settings
+from config import Settings, load_settings
 from models import Bar, Quote
 from opening_plan import default_plan_file_for_strategy
 
@@ -503,7 +503,9 @@ def screen(args: argparse.Namespace) -> dict:
     if args.alpaca_secret_key:
         settings_kwargs["alpaca_secret_key"] = args.alpaca_secret_key
 
-    settings = Settings(**settings_kwargs)
+    settings = load_settings(strategy_names=["opening_impulse"], validate=False)
+    if settings_kwargs:
+        settings = Settings(**{**settings.__dict__, **settings_kwargs})
     min_opening_range_bps = (
         args.min_opening_range_pct * 10_000
         if args.min_opening_range_pct is not None
@@ -789,7 +791,9 @@ def main() -> None:
         settings_kwargs["alpaca_api_key"] = args.alpaca_api_key
     if args.alpaca_secret_key:
         settings_kwargs["alpaca_secret_key"] = args.alpaca_secret_key
-    settings = Settings(**settings_kwargs)
+    settings = load_settings(strategy_names=["opening_impulse"], validate=False)
+    if settings_kwargs:
+        settings = Settings(**{**settings.__dict__, **settings_kwargs})
     universe = load_universe(args.universe_file, args.symbols)
     result = maybe_apply_ai_selection(result, args, settings, universe)
     write_screen_output(result, args.output)

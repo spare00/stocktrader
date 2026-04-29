@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    settings = load_settings()
+    settings = load_settings(strategy_names=[])
     reviewer = SignalReviewer(settings)
 
     signal = Signal(

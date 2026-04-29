@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config import Settings
+from config import Settings, load_settings
 from models import Bar, Quote
 from scripts.select_opening_impulse import usable_quote
 
@@ -178,7 +178,9 @@ def build_universe(args: argparse.Namespace) -> dict:
         settings_kwargs["alpaca_api_key"] = args.alpaca_api_key
     if args.alpaca_secret_key:
         settings_kwargs["alpaca_secret_key"] = args.alpaca_secret_key
-    settings = Settings(**settings_kwargs)
+    settings = load_settings(strategy_names=[], validate=False)
+    if settings_kwargs:
+        settings = Settings(**{**settings.__dict__, **settings_kwargs})
 
     exchanges = {value.upper() for value in parse_symbols(args.exchanges)} if args.exchanges else None
     symbols = get_active_tradable_symbols(settings, exchanges=exchanges)
