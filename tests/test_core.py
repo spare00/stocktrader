@@ -452,6 +452,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertAlmostEqual(round_trips[0].mfe_pct, 0.02)
         self.assertAlmostEqual(round_trips[1].mae_pct, -0.02)
 
+    def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy", "AAPL", market_ms(2026, 4, 28, 9, 31), 10, 100.0, 0.0, "opening_impulse", "entry", "buy-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "AAPL", market_ms(2026, 4, 28, 9, 40), 10, 101.0, 10.0, "opening_impulse", "target profit", "sell-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy", "MSFT", market_ms(2026, 4, 29, 9, 35), 5, 200.0, 0.0, "gap_and_go", "entry", "buy-2"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "MSFT", market_ms(2026, 4, 29, 9, 45), 5, 198.0, -10.0, "gap_and_go", "stop loss", "sell-2"
+            ),
+        ]
+
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+
+        self.assertEqual(summary["by_strategy"]["opening_impulse"]["trades"], 1)
+        self.assertEqual(summary["by_strategy"]["gap_and_go"]["trades"], 1)
+        self.assertEqual(summary["by_day"]["2026-04-28"]["total_pnl"], 10.0)
+        self.assertEqual(summary["by_day"]["2026-04-29"]["total_pnl"], -10.0)
+        self.assertEqual(summary["by_day_strategy"]["2026-04-28"]["opening_impulse"]["trades"], 1)
+        self.assertEqual(summary["by_day_strategy"]["2026-04-29"]["gap_and_go"]["trades"], 1)
+        self.assertEqual(summary["best_trade"]["trade_day"], "2026-04-28")
+
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
 
@@ -1998,14 +2025,15 @@ class CoreTradingTests(unittest.TestCase):
                 trading_main.LOG_DIR = Path(tmpdir) / "logs"
                 trading_main.LOG_FILE = trading_main.LOG_DIR / "trader.log"
 
-                trading_main.setup_logging()
+                target_log_file = trading_main.LOG_DIR / "trader_opening_impulse.log"
+                trading_main.setup_logging(target_log_file)
                 logging.getLogger("strategies.opening_impulse").debug("diagnostic test")
 
                 for handler in logging.getLogger().handlers:
                     handler.flush()
 
-                self.assertTrue(trading_main.LOG_FILE.exists())
-                self.assertIn("diagnostic test", trading_main.LOG_FILE.read_text())
+                self.assertTrue(target_log_file.exists())
+                self.assertIn("diagnostic test", target_log_file.read_text())
                 self.assertEqual(logging.getLogger("strategies.opening_impulse").level, logging.DEBUG)
                 self.assertEqual(logging.getLogger("websockets.client").level, logging.INFO)
         finally:
@@ -2016,6 +2044,17 @@ class CoreTradingTests(unittest.TestCase):
                 logging.getLogger().addHandler(handler)
             trading_main.LOG_DIR = old_log_dir
             trading_main.LOG_FILE = old_log_file
+
+    def test_strategy_log_file_includes_strategy_names(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["opening_impulse", "gap_and_go"],
+        )
+
+        log_file = trading_main.strategy_log_file(settings)
+
+        self.assertEqual(log_file, trading_main.LOG_DIR / "trader_opening_impulse__gap_and_go.log")
 
     def test_runtime_settings_snapshot_includes_tuning_parameters(self):
         settings = Settings(

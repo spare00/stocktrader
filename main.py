@@ -187,14 +187,23 @@ def runtime_settings_snapshot(settings) -> dict:
 
     return snapshot
 
-def setup_logging() -> None:
+def strategy_log_file(settings) -> Path:
+    strategies = [name.strip().lower().replace(" ", "_") for name in settings.strategy_names if name.strip()]
+    if not strategies:
+        return LOG_FILE
+    suffix = "__".join(strategies)
+    return LOG_DIR / f"trader_{suffix}.log"
+
+
+def setup_logging(log_file: Path | None = None) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(LOG_FORMAT)
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(formatter)
     console.addFilter(FriendlyAlpacaStreamErrorFilter())
-    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5_000_000, backupCount=10)
+    target_log_file = log_file or LOG_FILE
+    file_handler = RotatingFileHandler(target_log_file, maxBytes=5_000_000, backupCount=10)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(FriendlyAlpacaStreamErrorFilter())
@@ -219,13 +228,14 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main(args: argparse.Namespace | None = None) -> None:
-    setup_logging()
-
     args = args or parse_args()
     settings = load_settings()
     opening_plan_path = args.opening_plan or (DEFAULT_OPENING_PLAN_FILE if args.use_opening_plan else None)
     if opening_plan_path:
         settings = apply_opening_plan(settings, opening_plan_path)
+    log_file = strategy_log_file(settings)
+    setup_logging(log_file)
+    if opening_plan_path:
         logging.info("Loaded opening plan from %s", opening_plan_path)
 
     settings_snapshot = runtime_settings_snapshot(settings)

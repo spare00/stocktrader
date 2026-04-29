@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, median
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 
 DEFAULT_JOURNAL_FILE = Path("logs/trade_journal.jsonl")
+TRADING_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -186,10 +188,15 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
     by_symbol = defaultdict(list)
     by_reason = defaultdict(list)
     by_strategy = defaultdict(list)
+    by_day = defaultdict(list)
+    by_day_strategy = defaultdict(lambda: defaultdict(list))
     for trade in round_trips:
         by_symbol[trade.symbol].append(trade)
         by_reason[trade.reason or "unknown"].append(trade)
         by_strategy[trade.strategy or "unknown"].append(trade)
+        day = trade_day(trade)
+        by_day[day].append(trade)
+        by_day_strategy[day][trade.strategy or "unknown"].append(trade)
 
     return {
         "trades": len(round_trips),
@@ -211,6 +218,8 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "by_symbol": summarize_groups(by_symbol),
         "by_exit_reason": summarize_groups(by_reason),
         "by_strategy": summarize_groups(by_strategy),
+        "by_day": summarize_groups(by_day),
+        "by_day_strategy": summarize_nested_groups(by_day_strategy),
         "exit_reason_counts": dict(Counter(trade.reason or "unknown" for trade in round_trips)),
         "unmatched_events": unmatched,
     }
@@ -234,10 +243,22 @@ def summarize_groups(groups: dict[str, list[RoundTrip]]) -> dict:
     return summary
 
 
+def summarize_nested_groups(groups: dict[str, dict[str, list[RoundTrip]]]) -> dict:
+    summary = {}
+    for outer_name, nested in sorted(groups.items()):
+        summary[outer_name] = summarize_groups(nested)
+    return summary
+
+
+def trade_day(trade: RoundTrip) -> str:
+    return datetime.fromtimestamp(trade.sell_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
+
+
 def trade_summary(trade: RoundTrip) -> dict:
     return {
         "symbol": trade.symbol,
         "strategy": trade.strategy,
+        "trade_day": trade_day(trade),
         "shares": trade.shares,
         "buy_time": format_timestamp(trade.buy_timestamp_ms),
         "sell_time": format_timestamp(trade.sell_timestamp_ms),
@@ -256,7 +277,7 @@ def trade_summary(trade: RoundTrip) -> dict:
 
 
 def format_timestamp(timestamp_ms: int) -> str:
-    return datetime.fromtimestamp(timestamp_ms / 1000).isoformat(timespec="seconds")
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=TRADING_TZ).isoformat(timespec="seconds")
 
 
 def print_text(summary: dict) -> None:
@@ -283,6 +304,16 @@ def print_text(summary: dict) -> None:
         print("\nSymbols")
         for symbol, item in sorted(summary["by_symbol"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True):
             print(f"- {symbol}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+
+    if summary["by_strategy"]:
+        print("\nStrategies")
+        for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True):
+            print(f"- {strategy}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+
+    if summary["by_day"]:
+        print("\nTrading Days")
+        for day, item in sorted(summary["by_day"].items()):
+            print(f"- {day}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
 
     if summary["best_trade"]:
         print(f"\nBest: {summary['best_trade']['symbol']} P/L {summary['best_trade']['pnl']:.2f} via {summary['best_trade']['reason']}")
