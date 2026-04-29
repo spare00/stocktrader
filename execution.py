@@ -457,6 +457,13 @@ class AlpacaPaperExecutor:
                 return self._existing_fill(current_order)
 
             if time.monotonic() >= deadline:
+                LOG.info(
+                    "Canceling unfilled Alpaca order after %.1fs timeout | order=%s status=%s filled_qty=%s",
+                    self.settings.alpaca_fill_timeout_seconds,
+                    getattr(current_order, "id", "unknown"),
+                    status,
+                    filled_shares,
+                )
                 self._cancel_unfilled_order(current_order)
                 current_order = self.clients.trading.get_order_by_id(current_order.id)
                 return self._existing_fill(current_order)

@@ -345,8 +345,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
                     logging.info("AI review %s %s: %s", signal.strategy, signal.symbol, note)
 
                 fill = executor.buy(signal)
+                risk.record_trade(signal.symbol, signal.timestamp_ms)
                 if fill:
-                    risk.record_trade(signal.symbol, signal.timestamp_ms)
                     break
     finally:
         flatten_on_shutdown(settings, executor, states, strategies_by_name)
