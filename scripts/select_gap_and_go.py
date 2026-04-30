@@ -351,8 +351,9 @@ def ai_gap_and_go_selection(settings: Settings, candidates: list[GapAndGoCandida
         (
             "Review the gap_and_go candidates and return only JSON. "
             "Choose only from candidates. Do not invent symbols. "
-            "Include keys: strategy, symbols, ranked, rejected, risk_note. "
-            "symbols must be an array of ticker strings ranked for a conservative long-only gap_and_go shortlist."
+            "Include keys: strategy, adjustments, rejected, risk_note. "
+            "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
+            "Keep ai_score_delta bounded between -2.0 and 2.0, and use 0 when no adjustment is needed."
         ),
         payload,
     )
@@ -364,26 +365,29 @@ def ai_gap_and_go_selection(settings: Settings, candidates: list[GapAndGoCandida
 def validated_gap_and_go_selection(plan: dict[str, Any], candidates: list[GapAndGoCandidate], limit: int) -> dict[str, Any]:
     available = {candidate.symbol: candidate for candidate in candidates}
     fallback_ranked = [asdict(candidate) for candidate in candidates]
-    selected = []
+    raw_adjustments = plan.get("adjustments") if isinstance(plan.get("adjustments"), dict) else {}
+    ranked = []
+    for item in fallback_ranked:
+        symbol = item["symbol"]
+        adjustment = raw_adjustments.get(symbol) or raw_adjustments.get(symbol.lower()) or {}
+        if not isinstance(adjustment, dict):
+            adjustment = {}
+        ai_delta = max(-2.0, min(2.0, float(adjustment.get("ai_score_delta", 0.0))))
+        ai_reason = str(adjustment.get("ai_reason", "")).strip()
+        ranked_item = dict(item)
+        ranked_item["base_score"] = ranked_item["score"]
+        ranked_item["ai_score_delta"] = round(ai_delta, 3)
+        ranked_item["score"] = round(ranked_item["base_score"] + ranked_item["ai_score_delta"], 3)
+        if ai_reason:
+            ranked_item["ai_reason"] = ai_reason
+        ranked.append(ranked_item)
 
-    for raw_symbol in plan.get("symbols") or []:
-        symbol = str(raw_symbol).upper()
-        if symbol and symbol in available and symbol not in selected:
-            selected.append(symbol)
-        if len(selected) >= limit:
-            break
-
-    for candidate in candidates:
-        if len(selected) >= limit:
-            break
-        if candidate.symbol not in selected:
-            selected.append(candidate.symbol)
-
-    ranked_by_symbol = {item["symbol"]: item for item in fallback_ranked}
+    ranked.sort(key=lambda row: row["score"], reverse=True)
+    selected = [item["symbol"] for item in ranked[:limit]]
     return {
         "strategy": "gap_and_go",
         "symbols": selected,
-        "ranked": [ranked_by_symbol[symbol] for symbol in selected if symbol in ranked_by_symbol],
+        "ranked": ranked[:limit],
         "rejected": [item for item in plan.get("rejected", []) if str(item).upper() in available],
         "risk_note": str(plan.get("risk_note") or "Embedded AI ranking over deterministic gap-and-go candidates."),
     }

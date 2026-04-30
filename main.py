@@ -27,7 +27,7 @@ from strategies import available_strategy_names, build_strategies
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "trader.log"
-DIAGNOSTIC_LOGGERS = ("strategies.opening_impulse", "strategies.gap_and_go")
+DIAGNOSTIC_LOGGERS = ("strategies.opening_impulse", "strategies.gap_and_go", "strategies.maha7_pullback_reclaim")
 NOISY_LOGGERS = (
     "alpaca",
     "alpaca.data.live.websocket",
@@ -193,6 +193,23 @@ def runtime_settings_snapshot(settings) -> dict:
             "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
         }
 
+    if "maha7_pullback_reclaim" in settings.strategy_names:
+        snapshot["maha7_pullback_reclaim"] = {
+            "start_minute": settings.maha7_pullback_reclaim_start_minute,
+            "end_minute": settings.maha7_pullback_reclaim_end_minute,
+            "rsi_period": settings.maha7_pullback_reclaim_rsi_period,
+            "rsi_above_min_bars": settings.maha7_pullback_reclaim_rsi_above_min_bars,
+            "flat_slope_pct": settings.maha7_pullback_reclaim_flat_slope_pct,
+            "consolidation_candles": settings.maha7_pullback_reclaim_consolidation_candles,
+            "vwap_min_distance_pct": settings.maha7_pullback_reclaim_vwap_min_distance_pct,
+            "pullback_ma7_distance_pct": settings.maha7_pullback_reclaim_pullback_ma7_distance_pct,
+            "volume_min_ratio": settings.maha7_pullback_reclaim_volume_min_ratio,
+            "min_minutes_after_opening_impulse": settings.maha7_pullback_reclaim_min_minutes_after_opening_impulse,
+            "reentry_cooldown_seconds": settings.maha7_pullback_reclaim_reentry_cooldown_seconds,
+            "partial_r": settings.maha7_pullback_reclaim_partial_r,
+            "target_r": settings.maha7_pullback_reclaim_target_r,
+        }
+
     return snapshot
 
 def strategy_log_file(settings) -> Path:
@@ -345,8 +362,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
                     logging.info("AI review %s %s: %s", signal.strategy, signal.symbol, note)
 
                 fill = executor.buy(signal)
-                risk.record_trade(signal.symbol, signal.timestamp_ms)
                 if fill:
+                    risk.record_trade(signal.symbol, signal.timestamp_ms, signal.strategy)
                     break
     finally:
         flatten_on_shutdown(settings, executor, states, strategies_by_name)

@@ -597,6 +597,10 @@ def deterministic_opening_plan(screen_result: dict[str, Any], limit: int) -> dic
     }
 
 
+def _bounded_ai_delta(raw_value: Any) -> float:
+    return round(max(-2.0, min(2.0, float(raw_value))), 3)
+
+
 def ai_opening_plan(settings: Settings, screen_result: dict[str, Any], universe_symbols: list[str], limit: int) -> dict[str, Any] | None:
     payload = {
         "strategy": "opening_impulse",
@@ -621,8 +625,9 @@ def ai_opening_plan(settings: Settings, screen_result: dict[str, Any], universe_
         (
             "Review the opening_impulse candidates and return only JSON. "
             "Choose only from screen.candidates. Do not invent symbols. "
-            "Include keys: date, strategy, symbols, ranked, rejected, settings, risk_note. "
-            "symbols must be an array of ticker strings, ranked by best fit for the opening_impulse strategy. "
+            "Include keys: date, strategy, adjustments, rejected, settings, risk_note. "
+            "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
+            "Keep ai_score_delta bounded between -2.0 and 2.0, and use 0 when no adjustment is needed. "
             "Use the provided candidate metrics and notes to prefer liquid names with better opening follow-through. "
             "Keep the result conservative and bounded by allowed_settings."
         ),
@@ -636,26 +641,29 @@ def ai_opening_plan(settings: Settings, screen_result: dict[str, Any], universe_
 def validated_opening_plan(plan: dict[str, Any], screen_result: dict[str, Any], limit: int) -> dict[str, Any]:
     candidates = {str(candidate.get("symbol", "")).upper(): candidate for candidate in screen_result.get("candidates") or []}
     fallback_ranked = ranked_opening_candidates(list(screen_result.get("candidates") or []))
-    selected = []
-
-    for raw_symbol in plan.get("symbols") or []:
-        symbol = str(raw_symbol).upper()
-        if symbol and symbol in candidates and symbol not in selected:
-            selected.append(symbol)
-        if len(selected) >= limit:
-            break
-
+    raw_adjustments = plan.get("adjustments") if isinstance(plan.get("adjustments"), dict) else {}
+    ranked = []
     for item in fallback_ranked:
-        if len(selected) >= limit:
-            break
-        if item["symbol"] not in selected:
-            selected.append(item["symbol"])
+        symbol = item["symbol"]
+        adjustment = raw_adjustments.get(symbol) or raw_adjustments.get(symbol.lower()) or {}
+        if not isinstance(adjustment, dict):
+            adjustment = {}
+        ai_delta = _bounded_ai_delta(adjustment.get("ai_score_delta", 0.0))
+        ai_reason = str(adjustment.get("ai_reason", "")).strip()
+        ranked_item = dict(item)
+        ranked_item["base_score"] = ranked_item["score"]
+        ranked_item["ai_score_delta"] = ai_delta
+        ranked_item["score"] = round(ranked_item["base_score"] + ai_delta, 3)
+        if ai_reason:
+            ranked_item["ai_reason"] = ai_reason
+        ranked.append(ranked_item)
 
-    ranked_by_symbol = {item["symbol"]: item for item in fallback_ranked}
+    ranked.sort(key=lambda row: row["score"], reverse=True)
+    selected = [item["symbol"] for item in ranked[:limit]]
     plan["date"] = str(screen_result.get("as_of", date.today().isoformat()))[:10]
     plan["strategy"] = "opening_impulse"
     plan["symbols"] = selected
-    plan["ranked"] = [ranked_by_symbol[symbol] for symbol in selected if symbol in ranked_by_symbol]
+    plan["ranked"] = ranked[:limit]
     plan["rejected"] = [item for item in plan.get("rejected", []) if str(item).upper() in candidates]
     plan["risk_note"] = str(plan.get("risk_note") or "Embedded AI ranking over deterministic opening candidates.")
     if not isinstance(plan.get("settings"), dict):

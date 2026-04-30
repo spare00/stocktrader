@@ -115,6 +115,20 @@ class Settings:
     opening_impulse_stall_buffer_pct: float = 0.001
     opening_impulse_retrace_from_high_pct: float = 0.008
 
+    maha7_pullback_reclaim_start_minute: int = 30
+    maha7_pullback_reclaim_end_minute: int = 300
+    maha7_pullback_reclaim_rsi_period: int = 14
+    maha7_pullback_reclaim_rsi_above_min_bars: int = 2
+    maha7_pullback_reclaim_flat_slope_pct: float = 0.0002
+    maha7_pullback_reclaim_consolidation_candles: int = 10
+    maha7_pullback_reclaim_vwap_min_distance_pct: float = 0.002
+    maha7_pullback_reclaim_pullback_ma7_distance_pct: float = 0.003
+    maha7_pullback_reclaim_volume_min_ratio: float = 0.8
+    maha7_pullback_reclaim_reentry_cooldown_seconds: int = 600
+    maha7_pullback_reclaim_min_minutes_after_opening_impulse: int = 5
+    maha7_pullback_reclaim_partial_r: float = 0.5
+    maha7_pullback_reclaim_target_r: float = 2.0
+
     ai_review: bool = False
 
 
@@ -209,6 +223,21 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", _float_env, 0.0),
         ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", _float_env, 0.001),
         ("opening_impulse_retrace_from_high_pct", "OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", _float_env, 0.008),
+    ),
+    "maha7_pullback_reclaim": (
+        ("maha7_pullback_reclaim_start_minute", "MAHA7_PULLBACK_RECLAIM_START_MINUTE", _int_env, 30),
+        ("maha7_pullback_reclaim_end_minute", "MAHA7_PULLBACK_RECLAIM_END_MINUTE", _int_env, 300),
+        ("maha7_pullback_reclaim_rsi_period", "MAHA7_PULLBACK_RECLAIM_RSI_PERIOD", _int_env, 14),
+        ("maha7_pullback_reclaim_rsi_above_min_bars", "MAHA7_PULLBACK_RECLAIM_RSI_ABOVE_MIN_BARS", _int_env, 2),
+        ("maha7_pullback_reclaim_flat_slope_pct", "MAHA7_PULLBACK_RECLAIM_FLAT_SLOPE_PCT", _float_env, 0.0002),
+        ("maha7_pullback_reclaim_consolidation_candles", "MAHA7_PULLBACK_RECLAIM_CONSOLIDATION_CANDLES", _int_env, 10),
+        ("maha7_pullback_reclaim_vwap_min_distance_pct", "MAHA7_PULLBACK_RECLAIM_VWAP_MIN_DISTANCE_PCT", _float_env, 0.002),
+        ("maha7_pullback_reclaim_pullback_ma7_distance_pct", "MAHA7_PULLBACK_RECLAIM_PULLBACK_MA7_DISTANCE_PCT", _float_env, 0.003),
+        ("maha7_pullback_reclaim_volume_min_ratio", "MAHA7_PULLBACK_RECLAIM_VOLUME_MIN_RATIO", _float_env, 0.8),
+        ("maha7_pullback_reclaim_reentry_cooldown_seconds", "MAHA7_PULLBACK_RECLAIM_REENTRY_COOLDOWN_SECONDS", _int_env, 600),
+        ("maha7_pullback_reclaim_min_minutes_after_opening_impulse", "MAHA7_PULLBACK_RECLAIM_MIN_MINUTES_AFTER_OPENING_IMPULSE", _int_env, 5),
+        ("maha7_pullback_reclaim_partial_r", "MAHA7_PULLBACK_RECLAIM_PARTIAL_R", _float_env, 0.5),
+        ("maha7_pullback_reclaim_target_r", "MAHA7_PULLBACK_RECLAIM_TARGET_R", _float_env, 2.0),
     ),
 }
 

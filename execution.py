@@ -28,6 +28,7 @@ class Position:
     stop_price: float
     max_price: float = 0.0
     last_high_ts: int = 0
+    partial_exit_taken: bool = False
 
 
 @dataclass
@@ -79,7 +80,7 @@ class PositionTracker:
             entry_price=fill_price,
             entry_ms=signal.timestamp_ms,
             target_price=fill_price * (1 + self.settings.target_profit_pct),
-            stop_price=fill_price * (1 - self.settings.stop_loss_pct),
+            stop_price=signal.stop_price or fill_price * (1 - self.settings.stop_loss_pct),
             max_price=fill_price,
             last_high_ts=signal.timestamp_ms,
         )
@@ -101,7 +102,16 @@ class PositionTracker:
             last_high_ts=timestamp_ms,
         )
 
-    def record_exit(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str, order_id: str = "") -> Fill | None:
+    def record_exit(
+        self,
+        symbol: str,
+        shares: int,
+        price: float,
+        timestamp_ms: int,
+        reason: str,
+        order_id: str = "",
+        mark_partial: bool = False,
+    ) -> Fill | None:
         position = self.positions.get(symbol)
         if not position:
             return None
@@ -115,6 +125,8 @@ class PositionTracker:
             self.positions.pop(symbol, None)
         else:
             position.shares -= shares
+            if mark_partial:
+                position.partial_exit_taken = True
 
         trade_type = "winner" if pnl > 0 else "loser"
         fill = Fill(
@@ -237,11 +249,25 @@ class LocalPaperExecutor:
                 decision = strategy.should_exit(state, position)
                 if decision:
                     reason = decision.reason
+                    if decision.shares is not None:
+                        shares_to_sell = min(position.shares, max(1, decision.shares))
+                    else:
+                        shares_to_sell = position.shares
+                    mark_partial = decision.mark_partial
+                else:
+                    shares_to_sell = position.shares
+                    mark_partial = False
+            else:
+                shares_to_sell = position.shares
+                mark_partial = False
+        else:
+            shares_to_sell = position.shares
+            mark_partial = False
 
         if not reason:
             return None
 
-        fill = self.tracker.record_exit(state.symbol, position.shares, exit_price, event_ms, reason)
+        fill = self.tracker.record_exit(state.symbol, shares_to_sell, exit_price, event_ms, reason, mark_partial=mark_partial)
         if fill:
             LOG.info("LOCAL PAPER SELL %s %s @ %.2f | pnl %.2f | %s", fill.shares, fill.symbol, fill.price, fill.pnl, fill.reason)
         return fill
@@ -360,13 +386,27 @@ class AlpacaPaperExecutor:
                 decision = strategy.should_exit(state, position)
                 if decision:
                     reason = decision.reason
+                    if decision.shares is not None:
+                        shares_to_sell = min(position.shares, max(1, decision.shares))
+                    else:
+                        shares_to_sell = position.shares
+                    mark_partial = decision.mark_partial
+                else:
+                    shares_to_sell = position.shares
+                    mark_partial = False
+            else:
+                shares_to_sell = position.shares
+                mark_partial = False
+        else:
+            shares_to_sell = position.shares
+            mark_partial = False
 
         if not reason:
             return None
 
         request = MarketOrderRequest(
             symbol=state.symbol,
-            qty=position.shares,
+            qty=shares_to_sell,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
             client_order_id=self._new_client_order_id(state.symbol, "sell", event_ms),
@@ -389,6 +429,7 @@ class AlpacaPaperExecutor:
             event_ms,
             f"{reason} | alpaca_order_id={order.id}",
             order_id=str(order.id),
+            mark_partial=mark_partial,
         )
         if fill:
             LOG.info("ALPACA PAPER SELL %s %s @ %.2f | order=%s | %s", fill.shares, fill.symbol, fill.price, order.id, reason)

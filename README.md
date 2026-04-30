@@ -62,6 +62,7 @@ Strategies:
 
 - `spike`: short-window price/volume spike detection
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
+- `maha7_pullback_reclaim`: 10:00-14:30 ET MA7/MA20 pullback reclaim with sustained RSI 55 reclaim, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50
 
 Choose one or many with `STRATEGIES=spike,opening_impulse`.
 When running `main.py`, you can also override that directly with `--strategy`.
@@ -73,6 +74,7 @@ minutes. Supported window variables:
 
 - `OPENING_IMPULSE_START_MINUTE` / `OPENING_IMPULSE_END_MINUTE`
 - `GAP_AND_GO_START_MINUTE` / `GAP_AND_GO_END_MINUTE`
+- `MAHA7_PULLBACK_RECLAIM_START_MINUTE` / `MAHA7_PULLBACK_RECLAIM_END_MINUTE` (defaults to `30` / `300`, or `10:00` / `14:30` ET)
 - `SPIKE_START_MINUTE` / `SPIKE_END_MINUTE` (unset by default, so spike has no strategy-specific window)
 
 Recommended baseline for a “reliable first 1%” style:
@@ -113,6 +115,12 @@ Before each market session, run the selector for the strategy you plan to trade.
 
 ```bash
 venv/bin/python scripts/select_opening_impulse.py --top 12
+```
+
+For `maha7_pullback_reclaim`, build the broad universe first, then create a plan from that liquid list:
+
+```bash
+venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12
 ```
 
 Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the strategy-specific plan file that `main.py` uses directly:

@@ -121,7 +121,7 @@ def replay(events: list[Bar | Quote], settings: Settings) -> dict:
 
             fill = executor.buy(signal)
             if fill:
-                risk.record_trade(signal.symbol, signal.timestamp_ms)
+                risk.record_trade(signal.symbol, signal.timestamp_ms, signal.strategy)
                 break
 
     return {

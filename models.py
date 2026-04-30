@@ -40,6 +40,8 @@ class Heartbeat:
 @dataclass(frozen=True)
 class ExitDecision:
     reason: str
+    shares: int | None = None
+    mark_partial: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,3 +55,4 @@ class Signal:
     volume_ratio: float
     spread_bps: float | None
     reason: str
+    stop_price: float | None = None

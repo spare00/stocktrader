@@ -1,11 +1,13 @@
 from strategies.base import Strategy
 from strategies.gap_and_go import GapAndGoStrategy
+from strategies.maha7_pullback_reclaim import Maha7PullbackReclaimStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
 
 STRATEGY_REGISTRY = {
     "gap_and_go": GapAndGoStrategy,
+    "maha7_pullback_reclaim": Maha7PullbackReclaimStrategy,
     "spike": SpikeStrategy,
     "opening_impulse": OpeningImpulseStrategy,
 }
