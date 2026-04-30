@@ -287,11 +287,11 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(default_plan_file_for_strategy("maha7_pullback_reclaim"), Path("data/maha7_pullback_reclaim_plan.json"))
         self.assertEqual(
             selector_command_for_strategy("gap_and_go"),
-            "venv/bin/python scripts/select_gap_and_go.py --top 5",
+            ".venv/bin/python scripts/select_gap_and_go.py --top 5",
         )
         self.assertEqual(
             selector_command_for_strategy("maha7_pullback_reclaim"),
-            "venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
+            ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -2498,7 +2498,7 @@ class CoreTradingTests(unittest.TestCase):
         )
 
         self.assertIn("Strategy plan is not ready", guide)
-        self.assertIn("venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12", guide)
+        self.assertIn(".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12", guide)
         self.assertIn("scripts/run_paper.sh -s maha7_pullback_reclaim", guide)
 
     def test_risk_rejects_entries_outside_regular_market_hours(self):

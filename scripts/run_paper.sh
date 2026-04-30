@@ -29,4 +29,11 @@ if [[ "$EXECUTION_MODE" != "alpaca_paper" ]]; then
   exit 1
 fi
 
-exec venv/bin/python main.py "$@"
+PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Missing Python runtime: $PYTHON_BIN" >&2
+  echo "Create it with: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+  exit 1
+fi
+
+exec "$PYTHON_BIN" main.py "$@"

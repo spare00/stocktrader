@@ -13,9 +13,9 @@ DEFAULT_PLAN_FILES = {
 }
 DEFAULT_OPENING_PLAN_FILE = DEFAULT_PLAN_FILES["opening_impulse"]
 SELECTOR_COMMANDS = {
-    "opening_impulse": "venv/bin/python scripts/select_opening_impulse.py --top 12",
-    "gap_and_go": "venv/bin/python scripts/select_gap_and_go.py --top 5",
-    "maha7_pullback_reclaim": "venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
+    "opening_impulse": ".venv/bin/python scripts/select_opening_impulse.py --top 12",
+    "gap_and_go": ".venv/bin/python scripts/select_gap_and_go.py --top 5",
+    "maha7_pullback_reclaim": ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
 }
 
 
@@ -47,7 +47,7 @@ def default_plan_file_for_settings(settings: Settings) -> Path:
 
 
 def selector_command_for_strategy(strategy_name: str) -> str:
-    return SELECTOR_COMMANDS.get(strategy_name, f"venv/bin/python scripts/select_{strategy_name}.py")
+    return SELECTOR_COMMANDS.get(strategy_name, f".venv/bin/python scripts/select_{strategy_name}.py")
 
 
 def load_opening_plan(path: Path) -> dict[str, Any]:
