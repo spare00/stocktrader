@@ -22,7 +22,6 @@ from opening_plan import default_plan_file_for_strategy
 MARKET_TZ = ZoneInfo("America/New_York")
 OPEN_TIME = time(9, 30)
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
-DEFAULT_SCREEN_FILE = Path("data/opening_screen.json")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("opening_impulse")
 
 
@@ -770,25 +769,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpaca-secret-key", default=None)
     parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
     parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_SCREEN_FILE,
-        help="Write full screen JSON to this file.",
-    )
-    parser.add_argument(
         "--plan-output",
         type=Path,
         default=DEFAULT_PLAN_FILE,
         help="Write the strategy plan that main.py can consume directly.",
     )
     return parser.parse_args()
-
-
-def write_screen_output(result: dict, path: Path | None) -> None:
-    if not path:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
 
 def main() -> None:
@@ -804,7 +790,6 @@ def main() -> None:
         settings = Settings(**{**settings.__dict__, **settings_kwargs})
     universe = load_universe(args.universe_file, args.symbols)
     result = maybe_apply_ai_selection(result, args, settings, universe)
-    write_screen_output(result, args.output)
     print(json.dumps(result, indent=2, sort_keys=True))
     print(result["export"])
 
