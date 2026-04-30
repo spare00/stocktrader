@@ -231,8 +231,7 @@ The first strategy watches each symbol for:
 
 Accepted paper entries use:
 
-- target profit typically set to 1% by `TARGET_PROFIT_PCT`
-- optional opening-impulse-specific target via `OPENING_IMPULSE_TARGET_PROFIT_PCT`, for example `0.02` or `0.03`, to let that strategy run longer without changing other strategies
+- no fixed take-profit ceiling for `opening_impulse`; profitable exits use dynamic trailing after +1% and momentum-stall logic after 60 seconds without a new high
 - stop loss via `STOP_LOSS_PCT`
 - time exit via `MAX_HOLD_SECONDS`
 - max position count, cash sizing, symbol cooldown, and daily loss limit

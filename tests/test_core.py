@@ -179,7 +179,6 @@ class CoreTradingTests(unittest.TestCase):
                 "STRATEGIES": "gap_and_go",
                 "GAP_AND_GO_END_MINUTE": "45",
                 "OPENING_IMPULSE_END_MINUTE": "360",
-                "OPENING_IMPULSE_TARGET_PROFIT_PCT": "0.03",
             },
             clear=True,
         ):
@@ -188,7 +187,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.strategy_names, ["gap_and_go"])
         self.assertEqual(settings.gap_and_go_end_minute, 45)
         self.assertEqual(settings.opening_impulse_end_minute, 30)
-        self.assertIsNone(settings.opening_impulse_target_profit_pct)
 
     def test_load_settings_can_read_common_env_only(self):
         with patch.dict(
@@ -227,13 +225,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.spike_end_minute, 120)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
-    def test_opening_impulse_can_use_strategy_specific_profit_target(self):
+    def test_position_entry_initializes_trailing_state(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
             target_profit_pct=0.01,
-            opening_impulse_target_profit_pct=0.03,
         )
         tracker = PositionTracker(settings)
         signal = Signal(
@@ -250,8 +247,10 @@ class CoreTradingTests(unittest.TestCase):
 
         tracker.record_entry(signal, shares=10, fill_price=100.0, reason="test")
 
-        self.assertEqual(tracker.positions["AAPL"].target_price, 103.0)
+        self.assertEqual(tracker.positions["AAPL"].target_price, 101.0)
         self.assertEqual(tracker.positions["AAPL"].stop_price, 99.5)
+        self.assertEqual(tracker.positions["AAPL"].max_price, 100.0)
+        self.assertEqual(tracker.positions["AAPL"].last_high_ts, 1_000)
 
     def test_opening_plan_accepts_symbol_objects_from_ai(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
@@ -931,7 +930,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.side, "SELL")
         self.assertGreater(fill.pnl, 0)
 
-    def test_opening_impulse_exit_activation_delay_blocks_immediate_target_exit(self):
+    def test_opening_impulse_ignores_fixed_target_exit(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -961,8 +960,37 @@ class CoreTradingTests(unittest.TestCase):
             {"opening_impulse": OpeningImpulseStrategy(settings)},
             now_ms=16_500,
         )
-        self.assertIsNotNone(fill)
-        self.assertEqual(fill.reason, "target profit")
+        self.assertIsNone(fill)
+
+    def test_manage_exit_updates_position_high_watermark(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=3600,
+            opening_impulse_min_hold_seconds=15,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=101.0,
+            stop_price=99.5,
+            max_price=100.0,
+            last_high_ts=1_000,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=100.39, ask=100.41, bid_size=20, ask_size=20, timestamp_ms=20_000))
+
+        fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+
+        self.assertIsNone(fill)
+        self.assertEqual(broker.tracker.positions["AAPL"].max_price, 100.4)
+        self.assertEqual(broker.tracker.positions["AAPL"].last_high_ts, 20_000)
 
     def test_opening_impulse_max_hold_still_applies_with_strategy_exit_logic(self):
         settings = Settings(
@@ -1019,25 +1047,18 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.reason, "cut loss early")
         self.assertEqual(fill.trade_type, "loser")
 
-    def test_opening_impulse_trailing_stop_protects_winner(self):
+    def test_opening_impulse_dynamic_trailing_stop_protects_winner(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
             regular_market_only=False,
             opening_impulse_min_hold_seconds=15,
-            opening_impulse_winner_min_pnl_pct=0.003,
-            opening_impulse_retrace_from_high_pct=0.008,
             opening_impulse_exit_negative_steps=99,
         )
         strategy = OpeningImpulseStrategy(settings)
         state = SymbolState("AAPL")
-        state.add_bar(Bar("AAPL", open=100.0, high=100.4, low=99.9, close=100.3, volume=100, vwap=100.2, start_ms=1_000, end_ms=61_000))
-        state.add_bar(Bar("AAPL", open=100.3, high=100.8, low=100.2, close=100.7, volume=120, vwap=100.5, start_ms=61_000, end_ms=121_000))
-        state.add_bar(Bar("AAPL", open=100.7, high=101.0, low=100.6, close=100.95, volume=130, vwap=100.8, start_ms=121_000, end_ms=181_000))
-        state.add_bar(Bar("AAPL", open=100.95, high=101.2, low=100.8, close=101.05, volume=140, vwap=101.0, start_ms=181_000, end_ms=241_000))
-        state.add_bar(Bar("AAPL", open=101.05, high=101.25, low=100.35, close=100.4, volume=150, vwap=100.7, start_ms=241_000, end_ms=301_000))
-        state.update_quote(Quote("AAPL", bid=100.39, ask=100.41, bid_size=20, ask_size=20, timestamp_ms=301_000))
+        state.update_quote(Quote("AAPL", bid=101.47, ask=101.49, bid_size=20, ask_size=20, timestamp_ms=301_000))
 
         position = Position(
             symbol="AAPL",
@@ -1045,14 +1066,74 @@ class CoreTradingTests(unittest.TestCase):
             shares=10,
             entry_price=100.0,
             entry_ms=1_000,
-            target_price=101.0,
+            target_price=110.0,
             stop_price=99.5,
+            max_price=102.0,
+            last_high_ts=280_000,
         )
 
         decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "trailing stop")
+        self.assertEqual(decision.reason, "trailing stop dynamic")
+
+    def test_opening_impulse_momentum_stall_exits_profitable_trade(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_negative_steps=99,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=100.19, ask=100.21, bid_size=20, ask_size=20, timestamp_ms=200_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=100.3,
+            last_high_ts=100_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "momentum stall")
+
+    def test_opening_impulse_momentum_stall_does_not_exit_loser(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_min_quotes=99,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=99.89, ask=99.91, bid_size=20, ask_size=20, timestamp_ms=200_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=100.0,
+            last_high_ts=1_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "cut loss early")
 
     def test_paper_broker_flattens_before_close(self):
         settings = Settings(
@@ -2119,7 +2200,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
         self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
-        self.assertIsNone(snapshot["opening_impulse"]["target_profit_pct"])
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
         self.assertEqual(snapshot["opening_impulse"]["winner_min_pnl_pct"], 0.003)
         self.assertEqual(snapshot["spike"]["start_minute"], settings.spike_start_minute)

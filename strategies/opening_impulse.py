@@ -147,19 +147,20 @@ class OpeningImpulseStrategy(Strategy):
 
         pnl_pct = (price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
 
+        if pnl_pct >= 0.01:
+            trailing_pct = 0.005 if pnl_pct < 0.02 else 0.003
+            trailing_stop = position.max_price * (1 - trailing_pct)
+            if price <= trailing_stop:
+                return ExitDecision("trailing stop dynamic")
+
+        if pnl_pct > 0 and position.last_high_ts and event_ms - position.last_high_ts > 60_000:
+            return ExitDecision("momentum stall")
+
         bars = list(state.bars)[-max(5, self.settings.opening_impulse_bar_window) :]
         if len(bars) >= 2:
             recent_low = min(bar.low for bar in bars[:-1])
             if pnl_pct <= 0 and price < recent_low:
                 return ExitDecision("break structure")
-
-            recent_high = max(bar.high for bar in bars)
-            if pnl_pct > self.settings.opening_impulse_winner_min_pnl_pct:
-                if price < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
-                    return ExitDecision("trailing stop")
-            elif pnl_pct > 0:
-                if price < recent_high * (1 - self.settings.opening_impulse_retrace_from_high_pct):
-                    return ExitDecision("retrace from high")
 
         quotes = self._recent_quotes(state, self.settings.opening_impulse_exit_window_seconds)
         if len(quotes) < self.settings.opening_impulse_exit_min_quotes:

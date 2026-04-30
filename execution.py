@@ -26,6 +26,8 @@ class Position:
     entry_ms: int
     target_price: float
     stop_price: float
+    max_price: float = 0.0
+    last_high_ts: int = 0
 
 
 @dataclass
@@ -69,7 +71,6 @@ class PositionTracker:
         return self.realized_pnl + unrealized
 
     def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str, order_id: str = "") -> Fill:
-        target_profit_pct = self._target_profit_pct(signal.strategy)
         self.cash -= shares * fill_price
         self.positions[signal.symbol] = Position(
             symbol=signal.symbol,
@@ -77,8 +78,10 @@ class PositionTracker:
             shares=shares,
             entry_price=fill_price,
             entry_ms=signal.timestamp_ms,
-            target_price=fill_price * (1 + target_profit_pct),
+            target_price=fill_price * (1 + self.settings.target_profit_pct),
             stop_price=fill_price * (1 - self.settings.stop_loss_pct),
+            max_price=fill_price,
+            last_high_ts=signal.timestamp_ms,
         )
         fill = Fill(signal.symbol, "BUY", shares, fill_price, signal.timestamp_ms, strategy=signal.strategy, reason=reason, order_id=order_id)
         self.fills.append(fill)
@@ -94,6 +97,8 @@ class PositionTracker:
             entry_ms=timestamp_ms,
             target_price=entry_price * (1 + self.settings.target_profit_pct),
             stop_price=entry_price * (1 - self.settings.stop_loss_pct),
+            max_price=entry_price,
+            last_high_ts=timestamp_ms,
         )
 
     def record_exit(self, symbol: str, shares: int, price: float, timestamp_ms: int, reason: str, order_id: str = "") -> Fill | None:
@@ -152,10 +157,15 @@ class PositionTracker:
         except OSError:
             LOG.exception("Failed to write trade journal entry for %s %s", fill.side, fill.symbol)
 
-    def _target_profit_pct(self, strategy: str) -> float:
-        if strategy == "opening_impulse" and self.settings.opening_impulse_target_profit_pct is not None:
-            return self.settings.opening_impulse_target_profit_pct
-        return self.settings.target_profit_pct
+    @staticmethod
+    def update_position_price(position: Position, price: float, timestamp_ms: int) -> None:
+        if position.max_price <= 0:
+            position.max_price = position.entry_price
+        if position.last_high_ts <= 0:
+            position.last_high_ts = position.entry_ms
+        if price > position.max_price:
+            position.max_price = price
+            position.last_high_ts = timestamp_ms
 
 
 @dataclass
@@ -204,21 +214,23 @@ class LocalPaperExecutor:
         age_seconds = (event_ms - position.entry_ms) / 1000
         strategy = strategies_by_name.get(position.strategy)
         exit_activation_delay = strategy.exit_activation_delay_seconds(position) if strategy else 0
+        use_fixed_target = strategy.use_fixed_target_exit(position) if strategy else True
         reason = ""
         exit_price = current_price
+        self.tracker.update_position_price(position, current_price, event_ms)
 
         if should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
         elif current_price <= position.stop_price:
             reason = "stop loss"
             exit_price = position.stop_price
-        elif age_seconds < exit_activation_delay:
-            return None
-        elif current_price >= position.target_price:
-            reason = "target profit"
-            exit_price = position.target_price
         elif age_seconds >= self.tracker.settings.max_hold_seconds:
             reason = "max hold"
+        elif age_seconds < exit_activation_delay:
+            return None
+        elif use_fixed_target and current_price >= position.target_price:
+            reason = "target profit"
+            exit_price = position.target_price
 
         if not reason:
             if strategy:
@@ -327,18 +339,21 @@ class AlpacaPaperExecutor:
         age_seconds = (event_ms - position.entry_ms) / 1000
         strategy = strategies_by_name.get(position.strategy)
         exit_activation_delay = strategy.exit_activation_delay_seconds(position) if strategy else 0
+        use_fixed_target = strategy.use_fixed_target_exit(position) if strategy else True
         reason = ""
+        if current_price is not None:
+            self.tracker.update_position_price(position, current_price, event_ms)
 
         if flatten:
             reason = "end-of-day flatten"
         elif current_price <= position.stop_price:
             reason = "stop loss"
-        elif age_seconds < exit_activation_delay:
-            return None
-        elif current_price >= position.target_price:
-            reason = "target profit"
         elif age_seconds >= self.settings.max_hold_seconds:
             reason = "max hold"
+        elif age_seconds < exit_activation_delay:
+            return None
+        elif use_fixed_target and current_price >= position.target_price:
+            reason = "target profit"
 
         if not reason:
             if strategy:

@@ -187,7 +187,6 @@ def runtime_settings_snapshot(settings) -> dict:
             "exit_min_quotes": settings.opening_impulse_exit_min_quotes,
             "exit_negative_steps": settings.opening_impulse_exit_negative_steps,
             "min_hold_seconds": settings.opening_impulse_min_hold_seconds,
-            "target_profit_pct": settings.opening_impulse_target_profit_pct,
             "winner_min_pnl_pct": settings.opening_impulse_winner_min_pnl_pct,
             "early_loss_cut_pct": settings.opening_impulse_early_loss_cut_pct,
             "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
