@@ -181,7 +181,7 @@ Runtime logs are written to `logs/trader.log` with rotation. The console shows n
 
 The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not used inside `main.py`, so order handling stays focused on the final `SYMBOLS` list you choose to trade.
 
-The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default and write their own strategy plan files, such as `data/opening_impulse_plan.json` and `data/gap_and_go_plan.json`. The `opening_impulse` selector also writes `data/opening_screen.json` for detailed screening output.
+The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default and write their own strategy plan files, such as `data/opening_impulse_plan.json` and `data/gap_and_go_plan.json`.
 
 `main.py` now expects the active strategy's plan file to exist. If the file is missing or empty, it stops and tells you which selector command to run first.
 

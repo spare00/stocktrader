@@ -78,6 +78,7 @@ class Settings:
     max_position_value: float = 2_500.0
     max_open_positions: int = 2
     trade_cooldown_seconds: int = 60
+    failed_entry_cooldown_seconds: int = 30
     daily_max_loss: float = 250.0
     regular_market_only: bool = True
     flatten_before_close_minutes: int = 15
@@ -165,6 +166,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("max_position_value", "MAX_POSITION_VALUE", _float_env, 2_500.0),
     ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 2),
     ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
+    ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
     ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
     ("regular_market_only", "REGULAR_MARKET_ONLY", _bool_env, True),
     ("flatten_before_close_minutes", "FLATTEN_BEFORE_CLOSE_MINUTES", _int_env, 15),

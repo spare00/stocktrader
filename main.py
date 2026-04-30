@@ -416,6 +416,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 if fill:
                     risk.record_trade(signal.symbol, signal.timestamp_ms, signal.strategy)
                     break
+                if executor.consume_failed_entry(signal.symbol):
+                    risk.record_failed_entry(signal.symbol, signal.timestamp_ms)
     finally:
         flatten_on_shutdown(settings, executor, states, strategies_by_name)
 

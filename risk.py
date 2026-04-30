@@ -16,6 +16,7 @@ class RiskManager:
     settings: Settings
     last_trade_ms: dict[str, int] = field(default_factory=dict)
     last_trade_by_strategy_ms: dict[tuple[str, str], int] = field(default_factory=dict)
+    last_failed_entry_ms: dict[str, int] = field(default_factory=dict)
 
     def check_entry(self, signal: Signal, open_symbols: set[str], total_pnl: float) -> RiskDecision:
         if self.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
@@ -53,9 +54,19 @@ class RiskManager:
             if elapsed < cooldown_seconds:
                 return RiskDecision(False, "symbol cooldown active")
 
+        failed_entry_ms = self.last_failed_entry_ms.get(signal.symbol)
+        if failed_entry_ms is not None and self.settings.failed_entry_cooldown_seconds > 0:
+            elapsed = (signal.timestamp_ms - failed_entry_ms) / 1000
+            if elapsed < self.settings.failed_entry_cooldown_seconds:
+                return RiskDecision(False, "failed entry cooldown active")
+
         return RiskDecision(True, "accepted")
 
     def record_trade(self, symbol: str, timestamp_ms: int, strategy: str = "") -> None:
         self.last_trade_ms[symbol] = timestamp_ms
+        self.last_failed_entry_ms.pop(symbol, None)
         if strategy:
             self.last_trade_by_strategy_ms[(symbol, strategy)] = timestamp_ms
+
+    def record_failed_entry(self, symbol: str, timestamp_ms: int) -> None:
+        self.last_failed_entry_ms[symbol] = timestamp_ms

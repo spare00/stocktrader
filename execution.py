@@ -194,6 +194,9 @@ class LocalPaperExecutor:
     def total_pnl(self, mark_prices: dict[str, float]) -> float:
         return self.tracker.total_pnl(mark_prices)
 
+    def consume_failed_entry(self, symbol: str) -> bool:
+        return False
+
     def buy(self, signal: Signal) -> Fill | None:
         if self.tracker.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
             LOG.info("Skipping %s: outside regular market hours", signal.symbol)
@@ -278,6 +281,8 @@ class AlpacaPaperExecutor:
     settings: Settings
     tracker: PositionTracker
     clients: object = field(init=False)
+    _failed_entry_symbol: str | None = field(init=False, default=None)
+    _failed_entry_reason: str = field(init=False, default="")
 
     def __post_init__(self) -> None:
         from alpaca_client import make_clients
@@ -297,10 +302,21 @@ class AlpacaPaperExecutor:
     def total_pnl(self, mark_prices: dict[str, float]) -> float:
         return self.tracker.total_pnl(mark_prices)
 
+    def consume_failed_entry(self, symbol: str) -> bool:
+        failed_symbol = getattr(self, "_failed_entry_symbol", None)
+        if failed_symbol != symbol:
+            return False
+        self._failed_entry_symbol = None
+        self._failed_entry_reason = ""
+        return True
+
     def buy(self, signal: Signal) -> Fill | None:
         from alpaca.common.exceptions import APIError
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
+
+        self._failed_entry_symbol = None
+        self._failed_entry_reason = ""
 
         if self.settings.regular_market_only and not self._market_is_open():
             LOG.info("Skipping %s: Alpaca market clock is closed", signal.symbol)
@@ -328,6 +344,8 @@ class AlpacaPaperExecutor:
             return None
         settled = self._settled_fill(order)
         if settled is None:
+            self._failed_entry_symbol = signal.symbol
+            self._failed_entry_reason = "unfilled buy timeout"
             LOG.info("Skipping %s: Alpaca buy order was not confirmed filled | order=%s", signal.symbol, order.id)
             return None
 

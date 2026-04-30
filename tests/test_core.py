@@ -39,7 +39,7 @@ import scripts.select_gap_and_go as select_gap_and_go
 import scripts.select_maha7_pullback_reclaim as select_maha7_pullback_reclaim
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
-from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote, write_screen_output
+from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.maha7_pullback_reclaim import Maha7PullbackReclaimStrategy
@@ -524,14 +524,6 @@ class CoreTradingTests(unittest.TestCase):
             missing = Path(tmpdir) / "missing.txt"
 
             self.assertEqual(load_universe(missing, ""), DEFAULT_UNIVERSE)
-
-    def test_opening_impulse_screener_writes_output_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "opening_screen.json"
-
-            write_screen_output({"selected_symbols": ["AAPL"], "export": "export SYMBOLS=AAPL"}, output)
-
-            self.assertEqual(json.loads(output.read_text())["selected_symbols"], ["AAPL"])
 
     def test_opening_impulse_screener_ignores_invalid_quote_snapshot(self):
         self.assertIsNone(usable_quote(Quote("AAPL", bid=102.0, ask=0.0, bid_size=0, ask_size=0, timestamp_ms=0)))
@@ -1656,6 +1648,45 @@ class CoreTradingTests(unittest.TestCase):
         finally:
             remove_fake_alpaca_modules()
 
+    def test_alpaca_buy_timeout_records_failed_entry_cooldown_marker(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["AAPL"],
+                regular_market_only=False,
+                alpaca_fill_timeout_seconds=0.0,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.clients = FakeClients(
+                [
+                    FakeOrder("buy-1", status="new"),
+                    FakeOrder("buy-1", status="canceled"),
+                ]
+            )
+            signal = Signal(
+                symbol="AAPL",
+                side="BUY",
+                price=100.0,
+                change_pct=0.01,
+                volume_ratio=2.5,
+                spread_bps=4.0,
+                reason="test",
+                timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+                strategy="opening_impulse",
+            )
+
+            fill = executor.buy(signal)
+
+            self.assertIsNone(fill)
+            self.assertTrue(executor.consume_failed_entry("AAPL"))
+            self.assertFalse(executor.consume_failed_entry("AAPL"))
+        finally:
+            remove_fake_alpaca_modules()
+
     def test_shutdown_flatten_only_runs_inside_close_window(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], flatten_before_close_minutes=5)
         executor = FakeExecutor()
@@ -2770,6 +2801,33 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "opening impulse cooldown active")
+
+    def test_risk_rejects_symbol_during_failed_entry_cooldown(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            failed_entry_cooldown_seconds=120,
+        )
+        risk = RiskManager(settings)
+        risk.record_failed_entry("AAPL", market_ms(2026, 4, 24, 10, 0))
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 1),
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "failed entry cooldown active")
 
     @staticmethod
     def _maha7_reclaim_state() -> SymbolState:
