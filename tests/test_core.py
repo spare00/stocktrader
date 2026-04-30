@@ -179,6 +179,7 @@ class CoreTradingTests(unittest.TestCase):
                 "STRATEGIES": "gap_and_go",
                 "GAP_AND_GO_END_MINUTE": "45",
                 "OPENING_IMPULSE_END_MINUTE": "360",
+                "OPENING_IMPULSE_TARGET_PROFIT_PCT": "0.03",
             },
             clear=True,
         ):
@@ -187,6 +188,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.strategy_names, ["gap_and_go"])
         self.assertEqual(settings.gap_and_go_end_minute, 45)
         self.assertEqual(settings.opening_impulse_end_minute, 30)
+        self.assertIsNone(settings.opening_impulse_target_profit_pct)
 
     def test_load_settings_can_read_common_env_only(self):
         with patch.dict(
@@ -224,6 +226,32 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.spike_start_minute, 15)
         self.assertEqual(settings.spike_end_minute, 120)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
+
+    def test_opening_impulse_can_use_strategy_specific_profit_target(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            target_profit_pct=0.01,
+            opening_impulse_target_profit_pct=0.03,
+        )
+        tracker = PositionTracker(settings)
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=1_000,
+            change_pct=0.01,
+            volume_ratio=1.0,
+            spread_bps=1.0,
+            reason="test",
+        )
+
+        tracker.record_entry(signal, shares=10, fill_price=100.0, reason="test")
+
+        self.assertEqual(tracker.positions["AAPL"].target_price, 103.0)
+        self.assertEqual(tracker.positions["AAPL"].stop_price, 99.5)
 
     def test_opening_plan_accepts_symbol_objects_from_ai(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
@@ -2091,6 +2119,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
         self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
+        self.assertIsNone(snapshot["opening_impulse"]["target_profit_pct"])
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
         self.assertEqual(snapshot["opening_impulse"]["winner_min_pnl_pct"], 0.003)
         self.assertEqual(snapshot["spike"]["start_minute"], settings.spike_start_minute)

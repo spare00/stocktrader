@@ -69,6 +69,7 @@ class PositionTracker:
         return self.realized_pnl + unrealized
 
     def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str, order_id: str = "") -> Fill:
+        target_profit_pct = self._target_profit_pct(signal.strategy)
         self.cash -= shares * fill_price
         self.positions[signal.symbol] = Position(
             symbol=signal.symbol,
@@ -76,7 +77,7 @@ class PositionTracker:
             shares=shares,
             entry_price=fill_price,
             entry_ms=signal.timestamp_ms,
-            target_price=fill_price * (1 + self.settings.target_profit_pct),
+            target_price=fill_price * (1 + target_profit_pct),
             stop_price=fill_price * (1 - self.settings.stop_loss_pct),
         )
         fill = Fill(signal.symbol, "BUY", shares, fill_price, signal.timestamp_ms, strategy=signal.strategy, reason=reason, order_id=order_id)
@@ -150,6 +151,11 @@ class PositionTracker:
                 journal.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
         except OSError:
             LOG.exception("Failed to write trade journal entry for %s %s", fill.side, fill.symbol)
+
+    def _target_profit_pct(self, strategy: str) -> float:
+        if strategy == "opening_impulse" and self.settings.opening_impulse_target_profit_pct is not None:
+            return self.settings.opening_impulse_target_profit_pct
+        return self.settings.target_profit_pct
 
 
 @dataclass

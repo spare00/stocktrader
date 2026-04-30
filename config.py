@@ -13,6 +13,11 @@ def _float_env(name: str, default: float) -> float:
     return default if value is None else float(value)
 
 
+def _optional_float_env(name: str, default: float | None = None) -> float | None:
+    value = os.getenv(name)
+    return default if value is None or value == "" else float(value)
+
+
 def _int_env(name: str, default: int) -> int:
     value = os.getenv(name)
     return default if value is None else int(value)
@@ -110,6 +115,7 @@ class Settings:
     opening_impulse_exit_min_quotes: int = 4
     opening_impulse_exit_negative_steps: int = 4
     opening_impulse_min_hold_seconds: int = 15
+    opening_impulse_target_profit_pct: float | None = None
     opening_impulse_winner_min_pnl_pct: float = 0.003
     opening_impulse_early_loss_cut_pct: float = 0.0
     opening_impulse_stall_buffer_pct: float = 0.001
@@ -205,6 +211,7 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("opening_impulse_exit_min_quotes", "OPENING_IMPULSE_EXIT_MIN_QUOTES", _int_env, 4),
         ("opening_impulse_exit_negative_steps", "OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", _int_env, 4),
         ("opening_impulse_min_hold_seconds", "OPENING_IMPULSE_MIN_HOLD_SECONDS", _int_env, 15),
+        ("opening_impulse_target_profit_pct", "OPENING_IMPULSE_TARGET_PROFIT_PCT", _optional_float_env, None),
         ("opening_impulse_winner_min_pnl_pct", "OPENING_IMPULSE_WINNER_MIN_PNL_PCT", _float_env, 0.003),
         ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", _float_env, 0.0),
         ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", _float_env, 0.001),
