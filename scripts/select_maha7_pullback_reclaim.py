@@ -144,23 +144,18 @@ def score_maha7_candidate(
     stage: str,
 ) -> Maha7Candidate | None:
     ordered = sorted(bars, key=lambda item: item.start_ms)
-    if len(ordered) < 21:
-        return None
-
     closes = [bar.close for bar in ordered]
-    ma7 = _sma(closes, 7)
-    ma20 = _sma(closes, 20)
-    prev_ma7 = _sma(closes[:-1], 7)
-    if ma7 is None or ma20 is None or prev_ma7 is None or prev_ma7 <= 0:
-        return None
-
     price = _latest_price(ordered, quote)
     if price <= 0:
         return None
 
+    ma7 = _sma(closes, 7) or price
+    ma20 = _sma(closes, 20) or ma7
+    prev_ma7 = _sma(closes[:-1], 7) or ma7
+
     valid_quote = usable_quote(quote)
     spread_bps = valid_quote.spread_bps if valid_quote else None
-    ma7_slope_pct = (ma7 - prev_ma7) / prev_ma7
+    ma7_slope_pct = (ma7 - prev_ma7) / prev_ma7 if prev_ma7 else 0.0
     distance_to_ma7_pct = abs(price - ma7) / ma7 if ma7 else float("inf")
     extension_from_ma7_pct = max(0.0, (price - ma7) / ma7) if ma7 else 0.0
     dollar_volume = sum(bar.close * bar.volume for bar in ordered[-20:] if bar.close > 0 and bar.volume > 0)
@@ -172,6 +167,8 @@ def score_maha7_candidate(
     pullback_reaction = _recent_pullback_reaction(ordered)
     quality_flags: list[str] = []
 
+    if len(ordered) < 21:
+        quality_flags.append(f"bar_history {len(ordered)} < 21")
     if price < min_price or price > max_price:
         quality_flags.append(f"price {price:.2f} outside {min_price:.2f}-{max_price:.2f}")
     if spread_bps is None:
@@ -227,7 +224,8 @@ def score_maha7_candidate(
         vwap_score = min(vwap_distance_pct * 500.0, 2.0)
     reaction_score = 1.0 if pullback_reaction else 0.0
 
-    penalty = 0.4 * len(quality_flags)
+    history_penalty = 4.0 if len(ordered) < 21 else 0.0
+    penalty = 0.4 * len(quality_flags) + history_penalty
     score = (
         trend_score
         + slope_score
@@ -296,8 +294,28 @@ def rank_candidates(
             max_extension_pct=max_extension_pct,
             stage=stage,
         )
-        if candidate is not None:
-            candidates.append(candidate)
+        if candidate is None:
+            candidate = Maha7Candidate(
+                symbol=symbol,
+                score=-999.0,
+                selection_stage=stage,
+                price=0.0,
+                spread_bps=None,
+                ma7=0.0,
+                ma20=0.0,
+                ma7_slope_pct=0.0,
+                distance_to_ma7_pct=0.0,
+                extension_from_ma7_pct=0.0,
+                volume_ratio=0.0,
+                dollar_volume=0.0,
+                rsi=None,
+                prev_rsi=None,
+                vwap_distance_pct=None,
+                reclaim_score=0.0,
+                pullback_reaction=False,
+                quality_flags=("insufficient quote or market data",),
+            )
+        candidates.append(candidate)
     candidates.sort(key=lambda item: item.score, reverse=True)
     return candidates[:top]
 

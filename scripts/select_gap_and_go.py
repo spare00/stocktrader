@@ -248,9 +248,15 @@ def score_gap_and_go_candidate(
         return None
 
     previous_close = previous_close or infer_previous_close(state)
+    quality_flags: list[str] = []
+    if not previous_close or previous_close <= 0:
+        previous_close = quote.ask
+        quality_flags.append("missing previous close")
+
     high = premarket_high_price(state)
-    if not previous_close or not high:
-        return None
+    if not high or high <= 0:
+        high = quote.ask
+        quality_flags.append("missing premarket high")
 
     # This selector runs before the bell, so we rank names using the current
     # premarket quote as a projected open rather than any post-open price.
@@ -260,7 +266,7 @@ def score_gap_and_go_candidate(
     breakout_pct = ((quote.ask - high) / high) if high > 0 else 0.0
     spread_penalty = max(0.0, (quote.spread_bps / max(settings.gap_and_go_max_spread_bps, 0.1)) - 1.0)
     price_penalty = 0.0
-    quality_flags: list[str] = []
+    missing_data_penalty = 0.0
 
     if quote.ask < settings.gap_and_go_min_price:
         quality_flags.append(f"price {quote.ask:.2f} < {settings.gap_and_go_min_price:.2f}")
@@ -282,6 +288,11 @@ def score_gap_and_go_candidate(
     if breakout_pct <= 0:
         quality_flags.append(f"price {quote.ask:.2f} below premarket high {high:.2f}")
 
+    if "missing previous close" in quality_flags:
+        missing_data_penalty += 3.0
+    if "missing premarket high" in quality_flags:
+        missing_data_penalty += 2.0
+
     score = (
         min(max(gap_pct, -0.05) * 100.0, 8.0)
         + min(volume_ratio, 6.0)
@@ -289,6 +300,7 @@ def score_gap_and_go_candidate(
         + (1.0 if has_news else 0.0)
         - min(spread_penalty, 4.0)
         - price_penalty
+        - missing_data_penalty
     )
 
     return GapAndGoCandidate(
@@ -303,6 +315,27 @@ def score_gap_and_go_candidate(
         premarket_high=high,
         has_news=has_news,
         quality_flags=tuple(quality_flags),
+    )
+
+
+def penalty_gap_and_go_candidate(
+    symbol: str,
+    reason: str,
+    previous_close: float = 0.0,
+    has_news: bool = False,
+) -> GapAndGoCandidate:
+    return GapAndGoCandidate(
+        symbol=symbol,
+        score=-999.0,
+        gap_pct=0.0,
+        premarket_volume_ratio=0.0,
+        spread_bps=0.0,
+        last_price=0.0,
+        prev_close=previous_close,
+        open_price=0.0,
+        premarket_high=0.0,
+        has_news=has_news,
+        quality_flags=(reason,),
     )
 
 
@@ -323,8 +356,14 @@ def rank_gap_and_go_candidates(
             previous_close=previous_closes.get(symbol),
             has_news=news_flags.get(symbol, False),
         )
-        if candidate is not None:
-            ranked.append(candidate)
+        if candidate is None:
+            candidate = penalty_gap_and_go_candidate(
+                symbol,
+                "insufficient quote or market data",
+                previous_close=previous_closes.get(symbol, 0.0),
+                has_news=news_flags.get(symbol, False),
+            )
+        ranked.append(candidate)
     ranked.sort(key=lambda item: item.score, reverse=True)
     return ranked[:top_n]
 
@@ -468,6 +507,11 @@ def main() -> None:
     settings = load_settings(strategy_names=["gap_and_go"], validate=False)
     states, previous_closes = load_states(settings, symbols)
     candidates = rank_gap_and_go_candidates(states, settings, previous_closes=previous_closes, top_n=args.top)
+    if not candidates:
+        candidates = [
+            penalty_gap_and_go_candidate(symbol, "universe symbol could not be ranked")
+            for symbol in symbols[: args.top]
+        ]
     deterministic_plan = deterministic_gap_and_go_plan(candidates, args.top)
     result: dict[str, Any] = {
         "strategy": "gap_and_go",

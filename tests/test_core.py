@@ -930,6 +930,26 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreaterEqual(candidate.vwap_distance_pct, 0.002)
         self.assertTrue(candidate.pullback_reaction)
 
+    def test_maha7_selector_keeps_symbols_with_short_history_as_penalty_rows(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        ranked = select_maha7_pullback_reclaim.rank_candidates(
+            ["AAPL"],
+            {"AAPL": []},
+            {"AAPL": Quote("AAPL", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0)},
+            settings,
+            top=5,
+            min_price=5.0,
+            max_price=500.0,
+            max_spread_bps=12.0,
+            min_dollar_volume=1_000_000,
+            pullback_max_distance_pct=0.03,
+            max_extension_pct=0.08,
+            stage="daily",
+        )
+
+        self.assertEqual([item.symbol for item in ranked], ["AAPL"])
+        self.assertIn("bar_history 0 < 21", ranked[0].quality_flags)
+
     def test_alpaca_bar_helper_skips_invalid_time_window(self):
         class FakeHistorical:
             def get_stock_bars(self, request):
@@ -1919,6 +1939,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertAlmostEqual(candidate.gap_pct, 0.0357, places=4)
         self.assertAlmostEqual(candidate.open_price, 103.57, places=2)
 
+    def test_gap_and_go_penalty_candidate_keeps_unrankable_symbols(self):
+        candidate = select_gap_and_go.penalty_gap_and_go_candidate("AAPL", "universe symbol could not be ranked")
+
+        self.assertEqual(candidate.symbol, "AAPL")
+        self.assertEqual(candidate.score, -999.0)
+        self.assertIn("universe symbol could not be ranked", candidate.quality_flags)
+
     def test_gap_and_go_ai_selection_is_bounded_to_ranked_candidates(self):
         candidates = [
             select_gap_and_go.GapAndGoCandidate("AAPL", 7.2, 0.03, 3.4, 4.2, 103.5, 100.0, 102.0, 103.2, False),
@@ -1974,6 +2001,38 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertIn("gap 0.940% < 2.000%", candidate.quality_flags)
         self.assertIn("premarket volume 1.10x < 2.00x", candidate.quality_flags)
+
+    def test_gap_and_go_selector_scores_candidates_without_premarket_bars(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            gap_and_go_min_gap_pct=0.02,
+            gap_and_go_premarket_volume_ratio=2.0,
+            gap_and_go_max_spread_bps=10.0,
+            gap_and_go_min_price=5.0,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=101.0, ask=101.02, bid_size=100, ask_size=100, timestamp_ms=market_ms(2026, 4, 24, 3, 30)))
+
+        candidate = select_gap_and_go.score_gap_and_go_candidate(state, settings, previous_close=100.0)
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.symbol, "AAPL")
+        self.assertIn("missing premarket high", candidate.quality_flags)
+        self.assertIn("premarket volume 0.00x < 2.00x", candidate.quality_flags)
+
+    def test_gap_and_go_selector_keeps_symbols_without_quotes_as_penalty_rows(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test")
+        ranked = select_gap_and_go.rank_gap_and_go_candidates(
+            {"AAPL": SymbolState("AAPL")},
+            settings,
+            previous_closes={},
+            top_n=5,
+        )
+
+        self.assertEqual([item.symbol for item in ranked], ["AAPL"])
+        self.assertEqual(ranked[0].score, -999.0)
+        self.assertIn("insufficient quote or market data", ranked[0].quality_flags)
 
     def test_gap_and_go_skips_entries_outside_window_without_log_noise(self):
         settings = Settings(
