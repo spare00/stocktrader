@@ -7,9 +7,13 @@ import os
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from alpaca_client import AlpacaConfigError, make_clients, to_bar, to_quote
+from alpaca.data.requests import StockLatestQuoteRequest
+from alpaca.data.timeframe import TimeFrame
+
+from alpaca_client import AlpacaConfigError, get_bars_between, make_clients, to_bar, to_quote
 from config import Settings
 from models import Bar, Heartbeat, Quote
 
@@ -51,6 +55,34 @@ class AlpacaStreamLock:
         finally:
             self._handle.close()
             self._handle = None
+
+
+class AlpacaRestPollingStream:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self._last_bar_start_ms: dict[str, int] = {}
+
+    async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote]:
+        clients = make_clients(self.settings)
+        symbols = list(self.settings.symbols)
+        while True:
+            now = datetime.now(tz=timezone.utc)
+            quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbols, feed=clients.feed)
+            quote_response = await asyncio.to_thread(clients.historical.get_stock_latest_quote, quote_request)
+            for quote in quote_response.values():
+                yield to_quote(quote)
+
+            start = now - timedelta(minutes=3)
+            bars_by_symbol = await asyncio.to_thread(get_bars_between, clients, symbols, TimeFrame.Minute, start, now)
+            for symbol in symbols:
+                last_seen_start_ms = self._last_bar_start_ms.get(symbol, 0)
+                new_bars = [bar for bar in bars_by_symbol.get(symbol, []) if bar.start_ms > last_seen_start_ms]
+                for bar in new_bars:
+                    self._last_bar_start_ms[symbol] = max(self._last_bar_start_ms.get(symbol, 0), bar.start_ms)
+                    yield bar
+
+            yield Heartbeat(timestamp_ms=int(now.timestamp() * 1000))
+            await asyncio.sleep(self.settings.alpaca_market_data_poll_seconds)
 
 
 class AlpacaStockStream:
@@ -111,3 +143,9 @@ class AlpacaStockStream:
             await clients.stream.stop_ws()
             await asyncio.gather(stream_task, heartbeat_task, return_exceptions=True)
             stream_lock.release()
+
+
+def build_market_data_stream(settings: Settings) -> AlpacaStockStream | AlpacaRestPollingStream:
+    if settings.alpaca_market_data_mode == "rest":
+        return AlpacaRestPollingStream(settings)
+    return AlpacaStockStream(settings)

@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from ai_agent import SignalReviewer
-from alpaca_stream import AlpacaStockStream, AlpacaStreamAuthError, AlpacaStreamConnectionLimitError
+from alpaca_stream import AlpacaStreamAuthError, AlpacaStreamConnectionLimitError, build_market_data_stream
 from candle import SymbolState
 from config import load_settings
 from execution import build_executor
@@ -98,7 +98,8 @@ class FatalAlpacaStreamErrorFilter(logging.Filter):
         if "connection limit exceeded" in detail.lower():
             raise AlpacaStreamConnectionLimitError(
                 "Alpaca data stream connection limit exceeded for this API key/feed. "
-                "Confirm this runner is using the intended .env key, then stop other streams using that same key/feed and restart."
+                "Confirm this runner is using the intended .env key, stop other streams using that same key/feed, "
+                "or set ALPACA_MARKET_DATA_MODE=rest for a polling runner."
             )
         return True
 
@@ -138,6 +139,7 @@ def runtime_settings_snapshot(settings) -> dict:
         "alpaca_paper": settings.alpaca_paper,
         "alpaca_data_feed": settings.alpaca_data_feed,
         "alpaca_api_key_fingerprint": credential_fingerprint(settings.alpaca_api_key),
+        "alpaca_market_data_mode": settings.alpaca_market_data_mode,
         "regular_market_only": settings.regular_market_only,
         "ai_review": settings.ai_review,
         "openai_model": settings.openai_model if settings.ai_review else None,
@@ -153,6 +155,7 @@ def runtime_settings_snapshot(settings) -> dict:
         },
         "stream": {
             "heartbeat_seconds": settings.heartbeat_seconds,
+            "alpaca_market_data_poll_seconds": settings.alpaca_market_data_poll_seconds,
             "alpaca_fill_timeout_seconds": settings.alpaca_fill_timeout_seconds,
             "alpaca_fill_poll_seconds": settings.alpaca_fill_poll_seconds,
         },
@@ -350,7 +353,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
     settings_snapshot = runtime_settings_snapshot(settings)
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
-    stream = AlpacaStockStream(settings)
+    stream = build_market_data_stream(settings)
     strategies = build_strategies(settings)
     for strategy in strategies:
         strategy.bootstrap_states(states)

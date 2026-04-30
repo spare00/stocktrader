@@ -42,6 +42,8 @@ class Settings:
     alpaca_paper: bool = True
     alpaca_data_feed: str = "iex"
     alpaca_stream_url: str | None = None
+    alpaca_market_data_mode: str = "stream"
+    alpaca_market_data_poll_seconds: float = 5.0
     execution_mode: str = "local"
     strategy_names: list[str] = field(default_factory=lambda: ["opening_impulse"])
 
@@ -150,6 +152,8 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_paper", "ALPACA_PAPER", _bool_env, True),
     ("alpaca_data_feed", "ALPACA_DATA_FEED", _lower_env, "iex"),
     ("alpaca_stream_url", "ALPACA_STREAM_URL", _str_env, None),
+    ("alpaca_market_data_mode", "ALPACA_MARKET_DATA_MODE", _lower_env, "stream"),
+    ("alpaca_market_data_poll_seconds", "ALPACA_MARKET_DATA_POLL_SECONDS", _float_env, 5.0),
     ("execution_mode", "EXECUTION_MODE", _lower_env, "local"),
     ("openai_api_key", "OPENAI_API_KEY", _str_env, None),
     ("openai_model", "OPENAI_MODEL", _str_env, "gpt-5.4-mini"),
@@ -269,5 +273,9 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
         raise ValueError("EXECUTION_MODE must be 'local' or 'alpaca_paper'.")
     if settings.execution_mode == "alpaca_paper" and not settings.alpaca_paper:
         raise ValueError("EXECUTION_MODE=alpaca_paper requires ALPACA_PAPER=true.")
+    if settings.alpaca_market_data_mode not in {"stream", "rest"}:
+        raise ValueError("ALPACA_MARKET_DATA_MODE must be 'stream' or 'rest'.")
+    if settings.alpaca_market_data_poll_seconds <= 0:
+        raise ValueError("ALPACA_MARKET_DATA_POLL_SECONDS must be greater than 0.")
 
     return settings

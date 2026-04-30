@@ -13,7 +13,13 @@ from zoneinfo import ZoneInfo
 from candle import SymbolState
 from config import Settings, load_settings
 import alpaca_client
-from alpaca_stream import AlpacaStreamConnectionLimitError, AlpacaStreamLock
+from alpaca_stream import (
+    AlpacaRestPollingStream,
+    AlpacaStockStream,
+    AlpacaStreamConnectionLimitError,
+    AlpacaStreamLock,
+    build_market_data_stream,
+)
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
@@ -199,6 +205,8 @@ class CoreTradingTests(unittest.TestCase):
                 "ALPACA_API_KEY": "key",
                 "ALPACA_SECRET_KEY": "secret",
                 "SYMBOLS": "AAPL,MSFT",
+                "ALPACA_MARKET_DATA_MODE": "rest",
+                "ALPACA_MARKET_DATA_POLL_SECONDS": "7.5",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
             clear=True,
@@ -207,6 +215,8 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(settings.strategy_names, [])
         self.assertEqual(settings.symbols, ["AAPL", "MSFT"])
+        self.assertEqual(settings.alpaca_market_data_mode, "rest")
+        self.assertEqual(settings.alpaca_market_data_poll_seconds, 7.5)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
@@ -2514,6 +2524,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["execution_mode"], "alpaca_paper")
         self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
         self.assertEqual(snapshot["alpaca_api_key_fingerprint"], trading_main.credential_fingerprint("test"))
+        self.assertEqual(snapshot["alpaca_market_data_mode"], "stream")
+        self.assertEqual(snapshot["stream"]["alpaca_market_data_poll_seconds"], 5.0)
         self.assertNotIn("alpaca_secret_key", snapshot)
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
@@ -2587,6 +2599,21 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fingerprint, trading_main.credential_fingerprint("paper-key-abc123"))
         self.assertNotEqual(fingerprint, trading_main.credential_fingerprint("paper-key-def456"))
         self.assertIsNone(trading_main.credential_fingerprint(None))
+
+    def test_market_data_stream_factory_uses_configured_mode(self):
+        stream_settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            alpaca_market_data_mode="stream",
+        )
+        rest_settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            alpaca_market_data_mode="rest",
+        )
+
+        self.assertIsInstance(build_market_data_stream(stream_settings), AlpacaStockStream)
+        self.assertIsInstance(build_market_data_stream(rest_settings), AlpacaRestPollingStream)
 
     def test_alpaca_stream_lock_rejects_duplicate_local_stream(self):
         settings = Settings(

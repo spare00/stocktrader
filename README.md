@@ -58,6 +58,11 @@ Execution modes:
 - `EXECUTION_MODE=local`: simulate fills only inside the app
 - `EXECUTION_MODE=alpaca_paper`: submit market orders to Alpaca paper trading
 
+Market-data modes:
+
+- `ALPACA_MARKET_DATA_MODE=stream`: use Alpaca's websocket feed. This is fastest and remains the default.
+- `ALPACA_MARKET_DATA_MODE=rest`: poll latest quotes and minute bars over REST every `ALPACA_MARKET_DATA_POLL_SECONDS`. Use this for secondary paper runners when Alpaca rejects another websocket with `connection limit exceeded`.
+
 Strategies:
 
 - `spike`: short-window price/volume spike detection
