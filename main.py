@@ -1,5 +1,6 @@
 import asyncio
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -8,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from ai_agent import SignalReviewer
-from alpaca_stream import AlpacaStockStream, AlpacaStreamAuthError
+from alpaca_stream import AlpacaStockStream, AlpacaStreamAuthError, AlpacaStreamConnectionLimitError
 from candle import SymbolState
 from config import load_settings
 from execution import build_executor
@@ -89,6 +90,19 @@ class FriendlyAlpacaStreamErrorFilter(logging.Filter):
         )
 
 
+class FatalAlpacaStreamErrorFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != ALPACA_STREAM_LOGGER or "error during websocket communication" not in record.getMessage():
+            return True
+        detail = FriendlyAlpacaStreamErrorFilter._error_detail(record)
+        if "connection limit exceeded" in detail.lower():
+            raise AlpacaStreamConnectionLimitError(
+                "Alpaca data stream connection limit exceeded for this API key/feed. "
+                "Confirm this runner is using the intended .env key, then stop other streams using that same key/feed and restart."
+            )
+        return True
+
+
 class RejectionLogThrottler:
     def __init__(self, min_interval_seconds: float = 30.0):
         self.min_interval_seconds = min_interval_seconds
@@ -108,6 +122,14 @@ def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
 
 
+def credential_fingerprint(value: str | None) -> str | None:
+    if not value:
+        return None
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    suffix = value[-4:] if len(value) >= 4 else value
+    return f"{digest}:{suffix}"
+
+
 def runtime_settings_snapshot(settings) -> dict:
     snapshot = {
         "execution_mode": settings.execution_mode,
@@ -115,6 +137,7 @@ def runtime_settings_snapshot(settings) -> dict:
         "symbols": settings.symbols,
         "alpaca_paper": settings.alpaca_paper,
         "alpaca_data_feed": settings.alpaca_data_feed,
+        "alpaca_api_key_fingerprint": credential_fingerprint(settings.alpaca_api_key),
         "regular_market_only": settings.regular_market_only,
         "ai_review": settings.ai_review,
         "openai_model": settings.openai_model if settings.ai_review else None,
@@ -227,11 +250,13 @@ def setup_logging(log_file: Path | None = None) -> None:
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(formatter)
+    console.addFilter(FatalAlpacaStreamErrorFilter())
     console.addFilter(FriendlyAlpacaStreamErrorFilter())
     target_log_file = log_file or LOG_FILE
     file_handler = RotatingFileHandler(target_log_file, maxBytes=5_000_000, backupCount=10)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(FatalAlpacaStreamErrorFilter())
     file_handler.addFilter(FriendlyAlpacaStreamErrorFilter())
 
     root = logging.getLogger()
@@ -397,5 +422,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except AlpacaStreamAuthError as exc:
         logging.error("Alpaca stream authentication failed: %s", exc)
+    except AlpacaStreamConnectionLimitError as exc:
+        logging.error("%s", exc)
     except KeyboardInterrupt:
         logging.info("Stopped")

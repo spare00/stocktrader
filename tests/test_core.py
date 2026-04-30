@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from candle import SymbolState
 from config import Settings, load_settings
 import alpaca_client
+from alpaca_stream import AlpacaStreamConnectionLimitError, AlpacaStreamLock
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
@@ -2512,6 +2513,8 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(snapshot["execution_mode"], "alpaca_paper")
         self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(snapshot["alpaca_api_key_fingerprint"], trading_main.credential_fingerprint("test"))
+        self.assertNotIn("alpaca_secret_key", snapshot)
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
         self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
@@ -2559,6 +2562,70 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertTrue(log_filter.filter(make_record()))
         self.assertFalse(log_filter.filter(make_record()))
+
+    def test_alpaca_stream_connection_limit_is_fatal(self):
+        log_filter = trading_main.FatalAlpacaStreamErrorFilter()
+        exc = ValueError('{"message":"connection limit exceeded"}')
+        record = logging.LogRecord(
+            "alpaca.data.live.websocket",
+            logging.ERROR,
+            "stream.py",
+            10,
+            "error during websocket communication: %s",
+            (exc,),
+            (type(exc), exc, None),
+        )
+
+        with self.assertRaises(AlpacaStreamConnectionLimitError):
+            log_filter.filter(record)
+
+    def test_credential_fingerprint_is_stable_without_exposing_full_key(self):
+        fingerprint = trading_main.credential_fingerprint("paper-key-abc123")
+
+        self.assertTrue(fingerprint.endswith(":c123"))
+        self.assertNotIn("paper-key-abc123", fingerprint)
+        self.assertEqual(fingerprint, trading_main.credential_fingerprint("paper-key-abc123"))
+        self.assertNotEqual(fingerprint, trading_main.credential_fingerprint("paper-key-def456"))
+        self.assertIsNone(trading_main.credential_fingerprint(None))
+
+    def test_alpaca_stream_lock_rejects_duplicate_local_stream(self):
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            alpaca_data_feed="iex",
+            alpaca_paper=True,
+        )
+        first = AlpacaStreamLock(settings)
+        second = AlpacaStreamLock(settings)
+        try:
+            first.acquire()
+            with self.assertRaises(AlpacaStreamConnectionLimitError):
+                second.acquire()
+        finally:
+            first.release()
+            second.release()
+
+    def test_alpaca_stream_lock_allows_different_api_keys(self):
+        first_settings = Settings(
+            alpaca_api_key="test-key-one",
+            alpaca_secret_key="test",
+            alpaca_data_feed="iex",
+            alpaca_paper=True,
+        )
+        second_settings = Settings(
+            alpaca_api_key="test-key-two",
+            alpaca_secret_key="test",
+            alpaca_data_feed="iex",
+            alpaca_paper=True,
+        )
+        first = AlpacaStreamLock(first_settings)
+        second = AlpacaStreamLock(second_settings)
+        try:
+            first.acquire()
+            second.acquire()
+        finally:
+            first.release()
+            second.release()
 
     def test_rejection_log_throttler_suppresses_repeated_rejections(self):
         throttler = trading_main.RejectionLogThrottler(min_interval_seconds=60)
