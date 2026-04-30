@@ -2533,6 +2533,45 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(log_file, trading_main.LOG_DIR / "trader_opening_impulse__gap_and_go.log")
 
+    def test_heartbeat_reporter_emits_strategy_summary(self):
+        reporter = trading_main.HeartbeatReporter(min_interval_seconds=0.0)
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["gap_and_go", "maha7_pullback_reclaim"],
+            symbols=["AAPL", "MSFT"],
+        )
+        states = {
+            "AAPL": SymbolState("AAPL"),
+            "MSFT": SymbolState("MSFT"),
+        }
+        states["AAPL"].last_event_ms = market_ms(2026, 4, 24, 10, 0)
+        states["MSFT"].last_event_ms = market_ms(2026, 4, 24, 10, 0)
+        executor = LocalPaperExecutor(PositionTracker(settings))
+        executor.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="gap_and_go",
+            shares=5,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 9, 45),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        reporter.record_quote()
+        reporter.record_bar()
+        reporter.record_heartbeat()
+        reporter.record_signal("gap_and_go")
+        reporter.record_entry("gap_and_go")
+        reporter.record_rejection("maha7_pullback_reclaim", "outside 10:00-14:30 ET entry window")
+
+        with self.assertLogs(level="INFO") as captured:
+            reporter.emit(settings, states, executor)
+
+        self.assertIn("Heartbeat", captured.output[0])
+        self.assertIn('"gap_and_go"', captured.output[0])
+        self.assertIn('"maha7_pullback_reclaim"', captured.output[0])
+        self.assertIn('"open_positions": ["AAPL"]', captured.output[0])
+
     def test_runtime_settings_snapshot_includes_tuning_parameters(self):
         settings = Settings(
             alpaca_api_key="test",

@@ -119,6 +119,78 @@ class RejectionLogThrottler:
         return True
 
 
+class HeartbeatReporter:
+    def __init__(self, min_interval_seconds: float = 300.0):
+        self.min_interval_seconds = min_interval_seconds
+        self._last_logged = 0.0
+        self._events = {"quotes": 0, "bars": 0, "heartbeats": 0}
+        self._signals: dict[str, int] = {}
+        self._entries: dict[str, int] = {}
+        self._rejections: dict[str, int] = {}
+        self._rejection_reasons: dict[str, dict[str, int]] = {}
+
+    def record_quote(self) -> None:
+        self._events["quotes"] += 1
+
+    def record_bar(self) -> None:
+        self._events["bars"] += 1
+
+    def record_heartbeat(self) -> None:
+        self._events["heartbeats"] += 1
+
+    def record_signal(self, strategy: str) -> None:
+        self._signals[strategy] = self._signals.get(strategy, 0) + 1
+
+    def record_entry(self, strategy: str) -> None:
+        self._entries[strategy] = self._entries.get(strategy, 0) + 1
+
+    def record_rejection(self, strategy: str, reason: str) -> None:
+        self._rejections[strategy] = self._rejections.get(strategy, 0) + 1
+        reasons = self._rejection_reasons.setdefault(strategy, {})
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def should_log(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_logged < self.min_interval_seconds:
+            return False
+        self._last_logged = now
+        return True
+
+    def emit(self, settings, states: dict[str, SymbolState], executor) -> None:
+        if not self.should_log():
+            return
+
+        latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
+        active_symbols = sum(1 for state in states.values() if state.last_event_ms is not None)
+        payload = {
+            "market_data_mode": settings.alpaca_market_data_mode,
+            "watched_symbols": len(states),
+            "active_symbols": active_symbols,
+            "open_positions": sorted(executor.open_symbols()),
+            "events": dict(self._events),
+            "strategies": {},
+        }
+        if latest_event_ms:
+            payload["latest_event_age_seconds"] = round((time.time() * 1000 - latest_event_ms) / 1000, 1)
+
+        for strategy_name in settings.strategy_names:
+            reasons = self._rejection_reasons.get(strategy_name, {})
+            top_reasons = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[:3]
+            payload["strategies"][strategy_name] = {
+                "signals": self._signals.get(strategy_name, 0),
+                "entries": self._entries.get(strategy_name, 0),
+                "rejections": self._rejections.get(strategy_name, 0),
+                "top_rejections": top_reasons,
+            }
+
+        logging.info("Heartbeat %s", json.dumps(payload, sort_keys=True))
+        self._events = {"quotes": 0, "bars": 0, "heartbeats": 0}
+        self._signals.clear()
+        self._entries.clear()
+        self._rejections.clear()
+        self._rejection_reasons.clear()
+
+
 def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
 
@@ -362,6 +434,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
     rejection_logs = RejectionLogThrottler()
+    heartbeat = HeartbeatReporter()
 
     logging.info(
         "Monitoring %s with execution mode %s and strategies %s",
@@ -374,7 +447,9 @@ async def main(args: argparse.Namespace | None = None) -> None:
     try:
         async for event in stream.events():
             if isinstance(event, Heartbeat):
+                heartbeat.record_heartbeat()
                 manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms)
+                heartbeat.emit(settings, states, executor)
                 continue
 
             state = states.get(event.symbol)
@@ -382,8 +457,10 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 continue
 
             if isinstance(event, Quote):
+                heartbeat.record_quote()
                 state.update_quote(event)
             elif isinstance(event, Bar):
+                heartbeat.record_bar()
                 state.add_bar(event)
             else:
                 continue
@@ -396,8 +473,10 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 if not signal:
                     continue
 
+                heartbeat.record_signal(signal.strategy)
                 decision = risk.check_entry(signal, executor.open_symbols(), executor.total_pnl(mark_prices(states)))
                 if not decision.allowed:
+                    heartbeat.record_rejection(signal.strategy, decision.reason)
                     if rejection_logs.should_log(signal.symbol, signal.side, signal.strategy, decision.reason):
                         logging.info(
                             "Signal rejected %s %s from %s: %s",
@@ -414,6 +493,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
                 fill = executor.buy(signal)
                 if fill:
+                    heartbeat.record_entry(signal.strategy)
                     risk.record_trade(signal.symbol, signal.timestamp_ms, signal.strategy)
                     break
                 if executor.consume_failed_entry(signal.symbol):
