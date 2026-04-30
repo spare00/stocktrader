@@ -873,13 +873,69 @@ class CoreTradingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             universe = Path(tmpdir) / "universe.txt"
             output = Path(tmpdir) / "maha7_plan.json"
-            universe.write_text("AAPL\nMSFT\nAAPL\nNVDA\n")
+            universe.write_text("AAPL,MSFT,AAPL\nNVDA # comment\nTSLA\n")
+            settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+            start_ms = market_ms(2026, 4, 1, 9, 30)
+            bars_by_symbol = {
+                "AAPL": self._maha7_selector_bars("AAPL", 100.0, start_ms, final_pullback=True, volume=200_000),
+                "MSFT": self._maha7_selector_bars("MSFT", 100.0, start_ms, final_pullback=False, volume=200_000),
+                "NVDA": self._maha7_selector_bars("NVDA", 100.0, start_ms, final_pullback=True, volume=100_000),
+            }
+            quotes = {
+                "AAPL": Quote("AAPL", bid=107.9, ask=108.0, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+                "MSFT": Quote("MSFT", bid=120.0, ask=120.2, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+                "NVDA": Quote("NVDA", bid=107.8, ask=108.0, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+            }
 
-            plan = select_maha7_pullback_reclaim.main(["--universe", str(universe), "--output", str(output), "--top", "2"])
+            plan = select_maha7_pullback_reclaim.build_plan(
+                select_maha7_pullback_reclaim.load_universe(universe),
+                2,
+                bars_by_symbol=bars_by_symbol,
+                quotes=quotes,
+                settings=settings,
+                min_dollar_volume=1_000_000,
+            )
+            select_maha7_pullback_reclaim.write_plan(plan, output)
 
             self.assertEqual(plan["strategy"], "maha7_pullback_reclaim")
-            self.assertEqual(plan["symbols"], ["AAPL", "MSFT"])
-            self.assertEqual(json.loads(output.read_text())["symbols"], ["AAPL", "MSFT"])
+            self.assertEqual(plan["symbols"][0], "AAPL")
+            self.assertEqual(len(plan["ranked"]), 2)
+            self.assertEqual(json.loads(output.read_text())["symbols"][0], "AAPL")
+
+    def test_maha7_selector_scores_rsi_reclaim_and_vwap_distance(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        start_ms = market_ms(2026, 4, 1, 9, 30)
+        bars = self._maha7_reclaim_selector_bars("AAPL", start_ms)
+
+        candidate = select_maha7_pullback_reclaim.score_maha7_candidate(
+            "AAPL",
+            bars,
+            Quote("AAPL", bid=103.45, ask=103.55, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+            settings,
+            min_price=5.0,
+            max_price=500.0,
+            max_spread_bps=12.0,
+            min_dollar_volume=1_000_000,
+            pullback_max_distance_pct=0.03,
+            max_extension_pct=0.08,
+            stage="intraday",
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertGreater(candidate.prev_rsi, 50)
+        self.assertLess(candidate.prev_rsi, 55)
+        self.assertGreater(candidate.rsi, 55)
+        self.assertEqual(candidate.reclaim_score, 2.0)
+        self.assertGreaterEqual(candidate.vwap_distance_pct, 0.002)
+        self.assertTrue(candidate.pullback_reaction)
+
+    def test_maha7_selector_skips_intraday_before_market_open(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        premarket = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
+
+        bars = select_maha7_pullback_reclaim.get_today_minute_bars(settings, ["AAPL"], now=premarket)
+
+        self.assertEqual(bars, {})
 
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
@@ -2428,6 +2484,23 @@ class CoreTradingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Regenerate it first"):
                 trading_main.validate_strategy_plan(plan_path, settings)
 
+    def test_strategy_plan_guide_includes_selector_and_rerun_command(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["maha7_pullback_reclaim"],
+        )
+
+        guide = trading_main.strategy_plan_guide(
+            Path("data/maha7_pullback_reclaim_plan.json"),
+            settings,
+            FileNotFoundError("missing plan"),
+        )
+
+        self.assertIn("Strategy plan is not ready", guide)
+        self.assertIn("venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12", guide)
+        self.assertIn("scripts/run_paper.sh -s maha7_pullback_reclaim", guide)
+
     def test_risk_rejects_entries_outside_regular_market_hours(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 16, 1)))
@@ -2521,6 +2594,49 @@ class CoreTradingTests(unittest.TestCase):
                 )
             )
         return state
+
+    @staticmethod
+    def _maha7_selector_bars(symbol: str, base: float, start_ms: int, final_pullback: bool, volume: float) -> list[Bar]:
+        closes = [base + index * 0.35 for index in range(24)]
+        closes.extend([108.0, 107.7, 107.4, 107.2, 107.6, 108.0] if final_pullback else [110.0, 112.0, 114.0, 116.0, 118.0, 120.0])
+        bars = []
+        for index, close in enumerate(closes):
+            open_price = closes[index - 1] if index else close - 0.1
+            bars.append(
+                Bar(
+                    symbol,
+                    open=open_price,
+                    high=max(open_price, close) + 0.2,
+                    low=min(open_price, close) - 0.2,
+                    close=close,
+                    volume=volume,
+                    vwap=close,
+                    start_ms=start_ms + index * 86_400_000,
+                    end_ms=start_ms + (index + 1) * 86_400_000,
+                )
+            )
+        return bars
+
+    @staticmethod
+    def _maha7_reclaim_selector_bars(symbol: str, start_ms: int) -> list[Bar]:
+        closes = [100 + index * 0.1 for index in range(24)] + [104.0, 103.0, 102.0, 101.0, 101.5, 102.0, 103.5]
+        bars = []
+        for index, close in enumerate(closes):
+            open_price = closes[index - 1] if index else close - 0.1
+            bars.append(
+                Bar(
+                    symbol,
+                    open=open_price,
+                    high=max(open_price, close) + 0.2,
+                    low=min(open_price, close) - 0.2,
+                    close=close,
+                    volume=200_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        return bars
 
     @staticmethod
     def _spike_state(base_ms: int) -> SymbolState:

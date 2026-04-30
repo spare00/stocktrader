@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import json
 import logging
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -286,6 +287,24 @@ def validate_strategy_plan(path: Path, settings) -> list[str]:
     return symbols
 
 
+def strategy_plan_guide(path: Path, settings, error: Exception) -> str:
+    strategy_name = settings.strategy_names[0] if settings.strategy_names else "opening_impulse"
+    selector_command = selector_command_for_strategy(strategy_name)
+    run_command = f"scripts/run_paper.sh -s {strategy_name}"
+    return "\n".join(
+        [
+            f"Strategy plan is not ready for `{strategy_name}`.",
+            f"Problem: {error}",
+            "",
+            "Create or refresh the strategy plan first:",
+            f"  {selector_command}",
+            "",
+            "Then start paper trading again:",
+            f"  {run_command}",
+        ]
+    )
+
+
 async def main(args: argparse.Namespace | None = None) -> None:
     args = args or parse_args()
     if args.list_strategies:
@@ -294,7 +313,11 @@ async def main(args: argparse.Namespace | None = None) -> None:
     requested_strategies = [args.strategy] if args.strategy else None
     settings = load_settings(strategy_names=requested_strategies)
     opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan)
-    validate_strategy_plan(opening_plan_path, settings)
+    try:
+        validate_strategy_plan(opening_plan_path, settings)
+    except (FileNotFoundError, ValueError) as exc:
+        print(strategy_plan_guide(opening_plan_path, settings, exc), file=sys.stderr)
+        raise SystemExit(2) from None
     settings = apply_opening_plan(settings, opening_plan_path)
     log_file = strategy_log_file(settings)
     setup_logging(log_file)
