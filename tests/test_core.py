@@ -1836,7 +1836,7 @@ class CoreTradingTests(unittest.TestCase):
         for index in range(6):
             start_ms = today_pre + (index * 60_000)
             price = 102.0 + (index * 0.1)
-            state.add_bar(Bar("AAPL", open=price, high=price + 0.2, low=price - 0.1, close=price + 0.05, volume=350, vwap=price, start_ms=start_ms, end_ms=start_ms + 60_000))
+            state.add_bar(Bar("AAPL", open=price, high=price + 0.2, low=price - 0.1, close=price + 0.05, volume=4_000, vwap=price, start_ms=start_ms, end_ms=start_ms + 60_000))
         state.add_bar(Bar("AAPL", open=102.5, high=102.8, low=102.4, close=102.7, volume=400, vwap=102.6, start_ms=today_open, end_ms=today_open + 60_000))
         state.update_quote(Quote("AAPL", bid=102.81, ask=102.83, bid_size=100, ask_size=100, timestamp_ms=today_open + 65_000))
 
@@ -2000,7 +2000,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(candidate)
         self.assertIn("gap 0.940% < 2.000%", candidate.quality_flags)
-        self.assertIn("premarket volume 1.10x < 2.00x", candidate.quality_flags)
+        self.assertIn("premarket volume 0.11x < 2.00x", candidate.quality_flags)
 
     def test_gap_and_go_selector_scores_candidates_without_premarket_bars(self):
         settings = Settings(
@@ -2020,6 +2020,62 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(candidate.symbol, "AAPL")
         self.assertIn("missing premarket high", candidate.quality_flags)
         self.assertIn("premarket volume 0.00x < 2.00x", candidate.quality_flags)
+
+    def test_gap_and_go_selector_flags_vwap_exhaustion_and_prior_range(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            gap_and_go_min_gap_pct=0.02,
+            gap_and_go_premarket_volume_ratio=2.0,
+            gap_and_go_max_spread_bps=10.0,
+            gap_and_go_min_price=5.0,
+        )
+        state = SymbolState("AAPL")
+        prev_day = market_ms(2026, 4, 23, 15, 0)
+        today_pre = market_ms(2026, 4, 24, 8, 0)
+
+        for index in range(30):
+            start_ms = prev_day + (index * 60_000)
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=100.0,
+                    high=106.0,
+                    low=96.0,
+                    close=100.0,
+                    volume=100,
+                    vwap=100.0,
+                    start_ms=start_ms,
+                    end_ms=start_ms + 60_000,
+                )
+            )
+        for index in range(6):
+            start_ms = today_pre + (index * 60_000)
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=109.0,
+                    high=111.0,
+                    low=108.0,
+                    close=109.5,
+                    volume=4_000,
+                    vwap=110.0,
+                    start_ms=start_ms,
+                    end_ms=start_ms + 60_000,
+                )
+            )
+        state.update_quote(Quote("AAPL", bid=108.98, ask=109.0, bid_size=100, ask_size=100, timestamp_ms=today_pre + 6 * 60_000))
+
+        candidate = select_gap_and_go.score_gap_and_go_candidate(state, settings, previous_close=100.0)
+
+        self.assertIsNotNone(candidate)
+        self.assertTrue(candidate.exhaustion_flag)
+        self.assertTrue(candidate.hard_reject)
+        self.assertLess(candidate.vwap_distance_pct, 0)
+        self.assertGreater(candidate.prev_range_pct, 0.08)
+        self.assertIn("overextended gap", candidate.quality_flags)
+        self.assertIn("price below VWAP", candidate.quality_flags)
+        self.assertIn("weak gap vs prior range", candidate.quality_flags)
 
     def test_gap_and_go_selector_keeps_symbols_without_quotes_as_penalty_rows(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test")

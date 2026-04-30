@@ -23,6 +23,9 @@ from opening_plan import default_plan_file_for_strategy
 
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
+PREMARKET_VOLUME_FIXED_WINDOW_MINUTES = 60
+VWAP_MIN_DISTANCE_PCT = 0.002
+GAP_EXHAUSTION_PCT = 0.08
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("gap_and_go")
 DEFAULT_UNIVERSE = [
@@ -62,6 +65,12 @@ class GapAndGoCandidate:
     premarket_high: float
     has_news: bool
     quality_flags: tuple[str, ...] = ()
+    vwap: float | None = None
+    vwap_distance_pct: float | None = None
+    prev_range_pct: float | None = None
+    breakout_pct: float | None = None
+    exhaustion_flag: bool = False
+    hard_reject: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +172,25 @@ def premarket_high_price(state: SymbolState) -> float | None:
     return max((bar.high for bar in bars), default=None)
 
 
+def premarket_vwap(state: SymbolState) -> float | None:
+    bars = premarket_bars(state)
+    total_volume = sum(bar.volume for bar in bars if bar.volume > 0)
+    if total_volume <= 0:
+        return None
+    total_value = sum(bar.vwap * bar.volume for bar in bars if bar.volume > 0)
+    return total_value / total_volume if total_value > 0 else None
+
+
+def previous_day_range_pct(state: SymbolState, previous_close: float | None = None) -> float | None:
+    bars = previous_regular_bars(state)
+    if not bars:
+        return None
+    close = previous_close or bars[-1].close
+    if close <= 0:
+        return None
+    return (max(bar.high for bar in bars) - min(bar.low for bar in bars)) / close
+
+
 def premarket_volume_ratio(state: SymbolState) -> float:
     premarket = premarket_bars(state)
     if not premarket:
@@ -171,7 +199,7 @@ def premarket_volume_ratio(state: SymbolState) -> float:
     baseline = [bar.volume for bar in previous_regular_bars(state)[-30:] if bar.volume > 0]
     if not baseline:
         return 0.0
-    expected = median(baseline) * len(premarket)
+    expected = median(baseline) * PREMARKET_VOLUME_FIXED_WINDOW_MINUTES
     if expected <= 0:
         return 0.0
     return total / expected
@@ -221,6 +249,17 @@ def inspect_gap_and_go_candidate(
             f"premarket volume {volume_ratio:.2f}x < {settings.gap_and_go_premarket_volume_ratio:.2f}x",
         )
 
+    vwap = premarket_vwap(state)
+    if not vwap:
+        return GapAndGoDecision(None, "vwap", "missing premarket VWAP")
+    vwap_distance_pct = (quote.ask - vwap) / vwap if vwap > 0 else 0.0
+    if quote.ask <= vwap or vwap_distance_pct < VWAP_MIN_DISTANCE_PCT:
+        return GapAndGoDecision(None, "vwap", f"price {quote.ask:.2f} too close to or below VWAP {vwap:.2f}")
+
+    breakout_pct = (quote.ask - high) / high if high > 0 else 0.0
+    if breakout_pct <= 0:
+        return GapAndGoDecision(None, "breakout", f"price {quote.ask:.2f} below premarket high {high:.2f}")
+
     score = (gap_pct * 100.0) + volume_ratio + (1.0 if has_news else 0.0)
     candidate = GapAndGoCandidate(
         symbol=state.symbol,
@@ -233,6 +272,11 @@ def inspect_gap_and_go_candidate(
         open_price=open_price,
         premarket_high=high,
         has_news=has_news,
+        vwap=vwap,
+        vwap_distance_pct=vwap_distance_pct,
+        prev_range_pct=previous_day_range_pct(state, previous_close),
+        breakout_pct=breakout_pct,
+        exhaustion_flag=gap_pct > GAP_EXHAUSTION_PCT,
     )
     return GapAndGoDecision(candidate, "accepted", "accepted")
 
@@ -263,10 +307,14 @@ def score_gap_and_go_candidate(
     projected_open_price = quote.ask
     gap_pct = (projected_open_price - previous_close) / previous_close if previous_close > 0 else 0.0
     volume_ratio = premarket_volume_ratio(state)
+    vwap = premarket_vwap(state)
+    vwap_distance_pct = (quote.ask - vwap) / vwap if vwap else None
+    prev_range_pct = previous_day_range_pct(state, previous_close)
     breakout_pct = ((quote.ask - high) / high) if high > 0 else 0.0
     spread_penalty = max(0.0, (quote.spread_bps / max(settings.gap_and_go_max_spread_bps, 0.1)) - 1.0)
     price_penalty = 0.0
     missing_data_penalty = 0.0
+    hard_reject = False
 
     if quote.ask < settings.gap_and_go_min_price:
         quality_flags.append(f"price {quote.ask:.2f} < {settings.gap_and_go_min_price:.2f}")
@@ -276,31 +324,74 @@ def score_gap_and_go_candidate(
         quality_flags.append(
             f"spread {quote.spread_bps:.2f}bps > {settings.gap_and_go_max_spread_bps:.2f}bps"
         )
+        hard_reject = True
 
     if gap_pct < settings.gap_and_go_min_gap_pct:
         quality_flags.append(f"gap {gap_pct:.3%} < {settings.gap_and_go_min_gap_pct:.3%}")
+        hard_reject = True
+
+    exhaustion_flag = gap_pct > GAP_EXHAUSTION_PCT
+    exhaustion_penalty = 0.0
+    if exhaustion_flag:
+        quality_flags.append("overextended gap")
+        exhaustion_penalty = 2.0
+
+    if prev_range_pct is not None and gap_pct < prev_range_pct:
+        quality_flags.append("weak gap vs prior range")
 
     if volume_ratio < settings.gap_and_go_premarket_volume_ratio:
         quality_flags.append(
             f"premarket volume {volume_ratio:.2f}x < {settings.gap_and_go_premarket_volume_ratio:.2f}x"
         )
+        hard_reject = True
 
     if breakout_pct <= 0:
         quality_flags.append(f"price {quote.ask:.2f} below premarket high {high:.2f}")
+        hard_reject = True
+        if gap_pct < settings.gap_and_go_min_gap_pct:
+            quality_flags.append("failed breakout with small gap")
+
+    if vwap is None:
+        quality_flags.append("missing premarket VWAP")
+        hard_reject = True
+    elif quote.ask <= vwap:
+        quality_flags.append("price below VWAP")
+        hard_reject = True
+    elif vwap_distance_pct is not None and vwap_distance_pct < VWAP_MIN_DISTANCE_PCT:
+        quality_flags.append("too close to VWAP")
+        hard_reject = True
 
     if "missing previous close" in quality_flags:
         missing_data_penalty += 3.0
     if "missing premarket high" in quality_flags:
         missing_data_penalty += 2.0
 
+    gap_score = min(gap_pct * 100.0, 5.0)
+    volume_score = min(volume_ratio, 6.0)
+    breakout_score = min(max(breakout_pct, 0.0) * 200.0, 4.0)
+    vwap_score = 0.0
+    if vwap_distance_pct is not None and vwap_distance_pct >= VWAP_MIN_DISTANCE_PCT:
+        vwap_score = min(vwap_distance_pct * 500.0, 2.0)
+    vwap_hold_bonus = 0.0
+    if vwap is not None:
+        recent_closes = [bar.close for bar in premarket_bars(state)[-5:]]
+        if len(recent_closes) >= 3 and all(close > vwap for close in recent_closes[-3:]):
+            vwap_hold_bonus = 1.5
+    quality_flag_penalty = len(quality_flags) * 0.4
+    hard_reject_penalty = 5.0 if hard_reject else 0.0
     score = (
-        min(max(gap_pct, -0.05) * 100.0, 8.0)
-        + min(volume_ratio, 6.0)
-        + min(max(breakout_pct, -0.03) * 200.0, 4.0)
+        gap_score
+        + volume_score
+        + breakout_score
+        + vwap_score
+        + vwap_hold_bonus
         + (1.0 if has_news else 0.0)
         - min(spread_penalty, 4.0)
+        - exhaustion_penalty
+        - quality_flag_penalty
         - price_penalty
         - missing_data_penalty
+        - hard_reject_penalty
     )
 
     return GapAndGoCandidate(
@@ -315,6 +406,12 @@ def score_gap_and_go_candidate(
         premarket_high=high,
         has_news=has_news,
         quality_flags=tuple(quality_flags),
+        vwap=round(vwap, 4) if vwap is not None else None,
+        vwap_distance_pct=round(vwap_distance_pct, 5) if vwap_distance_pct is not None else None,
+        prev_range_pct=round(prev_range_pct, 5) if prev_range_pct is not None else None,
+        breakout_pct=round(breakout_pct, 5),
+        exhaustion_flag=exhaustion_flag,
+        hard_reject=hard_reject,
     )
 
 
@@ -336,6 +433,7 @@ def penalty_gap_and_go_candidate(
         premarket_high=0.0,
         has_news=has_news,
         quality_flags=(reason,),
+        hard_reject=True,
     )
 
 
