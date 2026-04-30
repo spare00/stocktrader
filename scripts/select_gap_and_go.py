@@ -12,10 +12,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ai_client import request_json_response
-from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from alpaca_client import get_latest_quotes, make_clients, to_bar
+from alpaca_client import get_bars_between, get_latest_quotes, make_clients
 from candle import SymbolState
 from config import Settings, load_settings
 from market_hours import MARKET_TZ
@@ -406,45 +405,35 @@ def deterministic_gap_and_go_plan(candidates: list[GapAndGoCandidate], limit: in
     }
 
 
-def load_states(settings: Settings, symbols: list[str]) -> tuple[dict[str, SymbolState], dict[str, float]]:
+def load_states(
+    settings: Settings,
+    symbols: list[str],
+    now: datetime | None = None,
+) -> tuple[dict[str, SymbolState], dict[str, float]]:
     clients = make_clients(settings)
-    now = datetime.now(tz=MARKET_TZ)
-    start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=MARKET_TZ)
+    now = now.astimezone(MARKET_TZ) if now else datetime.now(tz=MARKET_TZ)
     previous_start = datetime.combine((now - timedelta(days=5)).date(), time.min, tzinfo=MARKET_TZ)
 
-    intraday_request = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Minute,
-        start=start_of_day,
-        end=now,
-        feed=clients.feed,
-    )
-    daily_request = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Day,
-        start=previous_start,
-        end=now + timedelta(days=1),
-        feed=clients.feed,
-    )
-    intraday_response = clients.historical.get_stock_bars(intraday_request)
-    daily_response = clients.historical.get_stock_bars(daily_request)
+    start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=MARKET_TZ)
+    intraday_bars = get_bars_between(clients, symbols, TimeFrame.Minute, start_of_day, now)
+    daily_bars = get_bars_between(clients, symbols, TimeFrame.Day, previous_start, now + timedelta(days=1))
     quotes = get_latest_quotes(settings, symbols)
 
     states = {symbol: SymbolState(symbol) for symbol in symbols}
     previous_closes = {}
     for symbol in symbols:
         state = states[symbol]
-        for raw_bar in intraday_response.data.get(symbol, []):
-            state.add_bar(to_bar(raw_bar))
+        for bar in intraday_bars.get(symbol, []):
+            state.add_bar(bar)
         quote = quotes.get(symbol)
         if quote is not None:
             state.update_quote(quote)
 
         previous_close = None
-        for raw_bar in daily_response.data.get(symbol, []):
-            bar_date = raw_bar.timestamp.astimezone(MARKET_TZ).date()
+        for bar in daily_bars.get(symbol, []):
+            bar_date = datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).date()
             if bar_date < now.date():
-                previous_close = float(raw_bar.close)
+                previous_close = float(bar.close)
         if previous_close and previous_close > 0:
             previous_closes[symbol] = previous_close
 

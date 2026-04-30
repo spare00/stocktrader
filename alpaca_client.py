@@ -97,6 +97,28 @@ def get_latest_quotes(settings: Settings, symbols: Iterable[str]) -> dict[str, Q
     return {symbol: to_quote(quote) for symbol, quote in response.items()}
 
 
+def get_bars_between(
+    clients: AlpacaClients,
+    symbols: Iterable[str],
+    timeframe,
+    start: datetime,
+    end: datetime,
+) -> dict[str, list[Bar]]:
+    symbol_list = list(symbols)
+    if end <= start:
+        return {symbol: [] for symbol in symbol_list}
+
+    request = StockBarsRequest(
+        symbol_or_symbols=symbol_list,
+        timeframe=timeframe,
+        start=start,
+        end=end,
+        feed=clients.feed,
+    )
+    response = clients.historical.get_stock_bars(request)
+    return {symbol: [to_bar(item) for item in response.data.get(symbol, [])] for symbol in symbol_list}
+
+
 def get_recent_bars(settings: Settings, symbols: Iterable[str], limit: int = 5) -> dict[str, list[Bar]]:
     clients = make_clients(settings)
     results: dict[str, list[Bar]] = {}

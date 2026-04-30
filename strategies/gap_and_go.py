@@ -36,10 +36,9 @@ class GapAndGoStrategy(Strategy):
 
     def bootstrap_states(self, states: dict[str, SymbolState]) -> None:
         try:
-            from alpaca.data.requests import StockBarsRequest
             from alpaca.data.timeframe import TimeFrame
 
-            from alpaca_client import make_clients, to_bar
+            from alpaca_client import get_bars_between, make_clients
         except Exception:
             LOG.exception("Gap-and-go bootstrap imports failed")
             return
@@ -54,22 +53,8 @@ class GapAndGoStrategy(Strategy):
 
         try:
             clients = make_clients(self.settings)
-            intraday_request = StockBarsRequest(
-                symbol_or_symbols=symbols,
-                timeframe=TimeFrame.Minute,
-                start=start_of_day,
-                end=now,
-                feed=clients.feed,
-            )
-            daily_request = StockBarsRequest(
-                symbol_or_symbols=symbols,
-                timeframe=TimeFrame.Day,
-                start=previous_start,
-                end=now + timedelta(days=1),
-                feed=clients.feed,
-            )
-            intraday_response = clients.historical.get_stock_bars(intraday_request)
-            daily_response = clients.historical.get_stock_bars(daily_request)
+            intraday_bars = get_bars_between(clients, symbols, TimeFrame.Minute, start_of_day, now)
+            daily_bars = get_bars_between(clients, symbols, TimeFrame.Day, previous_start, now + timedelta(days=1))
         except Exception:
             LOG.exception("Gap-and-go bootstrap failed to load historical context")
             return
@@ -77,16 +62,16 @@ class GapAndGoStrategy(Strategy):
         seeded_bars = 0
         for symbol, state in states.items():
             if not state.bars:
-                for raw_bar in intraday_response.data.get(symbol, []):
-                    state.add_bar(to_bar(raw_bar))
+                for bar in intraday_bars.get(symbol, []):
+                    state.add_bar(bar)
                     seeded_bars += 1
 
-            daily_items = daily_response.data.get(symbol, [])
+            daily_items = daily_bars.get(symbol, [])
             previous_close = None
-            for raw_bar in daily_items:
-                bar_date = raw_bar.timestamp.astimezone(self.market_tz).date()
+            for bar in daily_items:
+                bar_date = datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz).date()
                 if bar_date < now.date():
-                    previous_close = float(raw_bar.close)
+                    previous_close = float(bar.close)
             if previous_close and previous_close > 0:
                 self._previous_close[symbol] = previous_close
 

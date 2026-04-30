@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from candle import SymbolState
 from config import Settings, load_settings
+import alpaca_client
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
@@ -929,13 +930,26 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreaterEqual(candidate.vwap_distance_pct, 0.002)
         self.assertTrue(candidate.pullback_reaction)
 
+    def test_alpaca_bar_helper_skips_invalid_time_window(self):
+        class FakeHistorical:
+            def get_stock_bars(self, request):
+                raise AssertionError("invalid time windows should not call Alpaca")
+
+        clients = types.SimpleNamespace(historical=FakeHistorical(), feed="iex")
+        start = datetime(2026, 4, 24, 9, 30, tzinfo=MARKET_TZ)
+        end = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
+
+        bars = alpaca_client.get_bars_between(clients, ["AAPL"], object(), start, end)
+
+        self.assertEqual(bars, {"AAPL": []})
+
     def test_maha7_selector_skips_intraday_before_market_open(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         premarket = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
 
         bars = select_maha7_pullback_reclaim.get_today_minute_bars(settings, ["AAPL"], now=premarket)
 
-        self.assertEqual(bars, {})
+        self.assertEqual(bars, {"AAPL": []})
 
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)

@@ -319,21 +319,13 @@ def deterministic_plan(candidates: list[Maha7Candidate], top: int) -> dict:
 
 
 def get_recent_daily_bars(settings: Settings, symbols: list[str], lookback_days: int) -> dict[str, list[Bar]]:
-    from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
-    from alpaca_client import make_clients, to_bar
+    from alpaca_client import get_bars_between, make_clients
 
     clients = make_clients(settings)
     start = datetime.now(tz=MARKET_TZ) - timedelta(days=lookback_days * 2)
-    request = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Day,
-        start=start,
-        end=datetime.now(tz=MARKET_TZ) + timedelta(days=1),
-        feed=clients.feed,
-    )
-    response = clients.historical.get_stock_bars(request)
-    return {symbol: [to_bar(item) for item in response.data.get(symbol, [])] for symbol in symbols}
+    end = datetime.now(tz=MARKET_TZ) + timedelta(days=1)
+    return get_bars_between(clients, symbols, TimeFrame.Day, start, end)
 
 
 def get_today_minute_bars(
@@ -341,25 +333,13 @@ def get_today_minute_bars(
     symbols: list[str],
     now: datetime | None = None,
 ) -> dict[str, list[Bar]]:
-    from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
-    from alpaca_client import make_clients, to_bar
+    from alpaca_client import get_bars_between, make_clients
 
     now = now.astimezone(MARKET_TZ) if now else datetime.now(tz=MARKET_TZ)
     start = datetime.combine(now.date(), MARKET_OPEN, tzinfo=MARKET_TZ)
-    if now <= start:
-        return {}
-
     clients = make_clients(settings)
-    request = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Minute,
-        start=start,
-        end=now,
-        feed=clients.feed,
-    )
-    response = clients.historical.get_stock_bars(request)
-    return {symbol: [to_bar(item) for item in response.data.get(symbol, [])] for symbol in symbols}
+    return get_bars_between(clients, symbols, TimeFrame.Minute, start, now)
 
 
 def get_latest_quotes_for_symbols(settings: Settings, symbols: list[str]) -> dict[str, Quote]:
