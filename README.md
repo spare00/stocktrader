@@ -61,10 +61,11 @@ Execution modes:
 Strategies:
 
 - `spike`: short-window price/volume spike detection
+- `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7_pullback_reclaim`: 10:00-14:30 ET MA7/MA20 pullback reclaim with sustained RSI 55 reclaim, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50
 
-Choose one or many with `STRATEGIES=spike,opening_impulse`.
+Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go`.
 When running `main.py`, you can also override that directly with `--strategy`.
 
 Strategy entry windows are configured independently, in minutes from the
