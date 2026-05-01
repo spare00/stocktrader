@@ -260,6 +260,5 @@ class GapAndGoStrategy(Strategy):
         last_log_ms = self._last_reject_log_ms.get(key, -10_000)
         if timestamp_ms - last_log_ms >= 10_000:
             self._last_reject_log_ms[key] = timestamp_ms
-            # --- Change #4: Elevated to INFO for debugging ---
-            LOG.info("No gap_and_go entry %s [%s]: %s", state.symbol, code, detail)
+            LOG.debug("No gap_and_go entry %s [%s]: %s", state.symbol, code, detail)
         return None
