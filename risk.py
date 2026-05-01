@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from config import Settings
 from market_hours import is_regular_market_time, should_flatten_before_close
@@ -17,6 +18,9 @@ class RiskManager:
     last_trade_ms: dict[str, int] = field(default_factory=dict)
     last_trade_by_strategy_ms: dict[tuple[str, str], int] = field(default_factory=dict)
     last_failed_entry_ms: dict[str, int] = field(default_factory=dict)
+    consecutive_losses: int = 0
+    pause_until_ms: int = 0
+    daily_realized_pnl: dict[str, float] = field(default_factory=dict)
 
     def check_entry(self, signal: Signal, open_symbols: set[str], total_pnl: float) -> RiskDecision:
         if self.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
@@ -25,7 +29,12 @@ class RiskManager:
         if should_flatten_before_close(signal.timestamp_ms, self.settings.flatten_before_close_minutes):
             return RiskDecision(False, "close flatten window active")
 
-        if total_pnl <= -self.settings.daily_max_loss:
+        if signal.timestamp_ms < self.pause_until_ms:
+            return RiskDecision(False, "consecutive loss pause active")
+
+        daily_limit = self._daily_loss_limit()
+        daily_pnl = self.daily_realized_pnl.get(self._day_key(signal.timestamp_ms), 0.0)
+        if total_pnl <= -daily_limit or daily_pnl <= -daily_limit:
             return RiskDecision(False, "daily loss limit reached")
 
         if signal.side != "BUY":
@@ -70,3 +79,21 @@ class RiskManager:
 
     def record_failed_entry(self, symbol: str, timestamp_ms: int) -> None:
         self.last_failed_entry_ms[symbol] = timestamp_ms
+
+    def record_exit(self, pnl: float, timestamp_ms: int) -> None:
+        day_key = self._day_key(timestamp_ms)
+        self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
+        if pnl < 0:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= self.settings.consecutive_loss_pause_count:
+                self.pause_until_ms = timestamp_ms + self.settings.consecutive_loss_pause_minutes * 60_000
+        elif pnl > 0:
+            self.consecutive_losses = 0
+
+    def _daily_loss_limit(self) -> float:
+        percent_limit = self.settings.starting_cash * self.settings.daily_max_loss_pct
+        return min(self.settings.daily_max_loss, percent_limit)
+
+    @staticmethod
+    def _day_key(timestamp_ms: int) -> str:
+        return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()

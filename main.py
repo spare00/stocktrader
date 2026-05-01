@@ -220,9 +220,14 @@ def runtime_settings_snapshot(settings) -> dict:
             "stop_loss_pct": settings.stop_loss_pct,
             "max_hold_seconds": settings.max_hold_seconds,
             "max_position_value": settings.max_position_value,
+            "position_sizing_mode": settings.position_sizing_mode,
+            "risk_per_trade_pct": settings.risk_per_trade_pct,
             "max_open_positions": settings.max_open_positions,
             "trade_cooldown_seconds": settings.trade_cooldown_seconds,
             "daily_max_loss": settings.daily_max_loss,
+            "daily_max_loss_pct": settings.daily_max_loss_pct,
+            "consecutive_loss_pause_count": settings.consecutive_loss_pause_count,
+            "consecutive_loss_pause_minutes": settings.consecutive_loss_pause_minutes,
             "flatten_before_close_minutes": settings.flatten_before_close_minutes,
         },
         "stream": {
@@ -296,6 +301,9 @@ def runtime_settings_snapshot(settings) -> dict:
             "pullback_pct": settings.opening_impulse_pullback_pct,
             "strong_volume_ratio": settings.opening_impulse_strong_volume_ratio,
             "strong_pullback_pct": settings.opening_impulse_strong_pullback_pct,
+            "partial_take_profit_pct": settings.opening_impulse_partial_take_profit_pct,
+            "partial_take_profit_fraction": settings.opening_impulse_partial_take_profit_fraction,
+            "runner_pullback_pct": settings.opening_impulse_runner_pullback_pct,
             "volume_collapse_ratio": settings.opening_impulse_volume_collapse_ratio,
             "price_stall_seconds": settings.opening_impulse_price_stall_seconds,
         }
@@ -456,7 +464,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         async for event in stream.events():
             if isinstance(event, Heartbeat):
                 heartbeat.record_heartbeat()
-                manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms)
+                manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms, risk)
                 heartbeat.emit(settings, states, executor)
                 continue
 
@@ -474,7 +482,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 continue
 
             event_ms = state.last_event_ms
-            manage_all_exits(executor, states, strategies_by_name, event_ms)
+            manage_all_exits(executor, states, strategies_by_name, event_ms, risk)
 
             for strategy in strategies:
                 signal = strategy.evaluate(state)

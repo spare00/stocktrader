@@ -5,9 +5,11 @@ from candle import SymbolState
 from market_hours import should_flatten_before_close
 
 
-def manage_all_exits(executor, states: dict[str, SymbolState], strategies_by_name: dict, event_ms: int | None) -> None:
+def manage_all_exits(executor, states: dict[str, SymbolState], strategies_by_name: dict, event_ms: int | None, risk=None) -> None:
     for exit_state in states.values():
-        executor.manage_exit(exit_state, strategies_by_name, event_ms)
+        fill = executor.manage_exit(exit_state, strategies_by_name, event_ms)
+        if fill and risk is not None:
+            risk.record_exit(fill.pnl, fill.timestamp_ms)
 
 
 def flatten_on_shutdown(settings, executor, states: dict[str, SymbolState], strategies_by_name: dict, now_ms: int | None = None) -> None:

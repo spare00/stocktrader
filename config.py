@@ -76,10 +76,15 @@ class Settings:
 
     starting_cash: float = 25_000.0
     max_position_value: float = 2_500.0
+    position_sizing_mode: str = "fixed_value"
+    risk_per_trade_pct: float = 0.005
     max_open_positions: int = 2
     trade_cooldown_seconds: int = 60
     failed_entry_cooldown_seconds: int = 30
     daily_max_loss: float = 250.0
+    daily_max_loss_pct: float = 0.02
+    consecutive_loss_pause_count: int = 3
+    consecutive_loss_pause_minutes: int = 30
     regular_market_only: bool = True
     flatten_before_close_minutes: int = 15
     heartbeat_seconds: int = 5
@@ -123,6 +128,9 @@ class Settings:
     opening_impulse_pullback_pct: float = 0.005
     opening_impulse_strong_volume_ratio: float = 2.5
     opening_impulse_strong_pullback_pct: float = 0.01
+    opening_impulse_partial_take_profit_pct: float = 0.008
+    opening_impulse_partial_take_profit_fraction: float = 0.5
+    opening_impulse_runner_pullback_pct: float = 0.012
     opening_impulse_volume_collapse_ratio: float = 0.5
     opening_impulse_price_stall_seconds: int = 60
 
@@ -172,10 +180,15 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("max_hold_seconds", "MAX_HOLD_SECONDS", _int_env, 120),
     ("starting_cash", "STARTING_CASH", _float_env, 25_000.0),
     ("max_position_value", "MAX_POSITION_VALUE", _float_env, 2_500.0),
+    ("position_sizing_mode", "POSITION_SIZING_MODE", _lower_env, "fixed_value"),
+    ("risk_per_trade_pct", "RISK_PER_TRADE_PCT", _float_env, 0.005),
     ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 2),
     ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
     ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
+    ("daily_max_loss_pct", "DAILY_MAX_LOSS_PCT", _float_env, 0.02),
+    ("consecutive_loss_pause_count", "CONSECUTIVE_LOSS_PAUSE_COUNT", _int_env, 3),
+    ("consecutive_loss_pause_minutes", "CONSECUTIVE_LOSS_PAUSE_MINUTES", _int_env, 30),
     ("regular_market_only", "REGULAR_MARKET_ONLY", _bool_env, True),
     ("flatten_before_close_minutes", "FLATTEN_BEFORE_CLOSE_MINUTES", _int_env, 15),
     ("heartbeat_seconds", "HEARTBEAT_SECONDS", _int_env, 5),
@@ -243,6 +256,9 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("opening_impulse_pullback_pct", "OPENING_IMPULSE_PULLBACK_PCT", _float_env, 0.005),
         ("opening_impulse_strong_volume_ratio", "OPENING_IMPULSE_STRONG_VOLUME_RATIO", _float_env, 2.5),
         ("opening_impulse_strong_pullback_pct", "OPENING_IMPULSE_STRONG_PULLBACK_PCT", _float_env, 0.01),
+        ("opening_impulse_partial_take_profit_pct", "OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_PCT", _float_env, 0.008),
+        ("opening_impulse_partial_take_profit_fraction", "OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_FRACTION", _float_env, 0.5),
+        ("opening_impulse_runner_pullback_pct", "OPENING_IMPULSE_RUNNER_PULLBACK_PCT", _float_env, 0.012),
         ("opening_impulse_volume_collapse_ratio", "OPENING_IMPULSE_VOLUME_COLLAPSE_RATIO", _float_env, 0.5),
         ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", _int_env, 60),
     ),

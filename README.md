@@ -249,15 +249,18 @@ The first strategy watches each symbol for:
 - `OPENING_IMPULSE_PULLBACK_PCT=0.005`, used as the normal-volume pullback exit
 - `OPENING_IMPULSE_STRONG_VOLUME_RATIO=2.5`
 - `OPENING_IMPULSE_STRONG_PULLBACK_PCT=0.01`, letting high-volume winners breathe more before a pullback exit
+- `OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_PCT=0.008`
+- `OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_FRACTION=0.5`
+- `OPENING_IMPULSE_RUNNER_PULLBACK_PCT=0.012`
 
 Accepted paper entries use:
 
-- no fixed take-profit ceiling for `opening_impulse`; profitable exits hold higher-high structure and exit on confirmed higher-high break, adaptive pullback from local high, or volume collapse with price stall
+- no fixed take-profit ceiling for `opening_impulse`; profitable exits sell half at +0.8%, then keep the runner for confirmed higher-high break or 1.2% runner pullback
 - chase protection via `MAX_ENTRY_CHASE_PCT=0.003`, which skips stale entries if the fresh ask has moved more than 0.3% beyond the signal price
-- journal metrics include entry-vs-open percentage, holding duration, max favorable excursion, signal price, slippage, and fill latency
+- journal metrics include entry-vs-open percentage, holding duration, max favorable excursion, signal price, slippage, fill latency, R-multiple, and cumulative daily PnL
 - stop loss via `STOP_LOSS_PCT`
 - time exit via `MAX_HOLD_SECONDS`
-- max position count, cash sizing, symbol cooldown, and daily loss limit
+- max position count, cash/risk sizing, symbol cooldown, consecutive-loss pause, and daily loss limit
 - regular-session gating via `REGULAR_MARKET_ONLY=true`
 - end-of-day flattening via `FLATTEN_BEFORE_CLOSE_MINUTES` defaults to 15 minutes before close
 - stream heartbeat exits via `HEARTBEAT_SECONDS`

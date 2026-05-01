@@ -29,6 +29,7 @@ class Position:
     max_price: float = 0.0
     last_high_ts: int = 0
     partial_exit_taken: bool = False
+    original_shares: int = 0
     session_open_price: float | None = None
     entry_open_pct: float | None = None
 
@@ -51,6 +52,8 @@ class Fill:
     signal_price: float | None = None
     slippage_pct: float | None = None
     fill_latency_seconds: float | None = None
+    r_multiple: float | None = None
+    cumulative_daily_pnl: float | None = None
 
 
 @dataclass
@@ -60,6 +63,7 @@ class PositionTracker:
     positions: dict[str, Position] = field(default_factory=dict)
     fills: list[Fill] = field(default_factory=list)
     realized_pnl: float = 0.0
+    daily_realized_pnl: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.cash = self.settings.starting_cash
@@ -67,8 +71,13 @@ class PositionTracker:
     def open_symbols(self) -> set[str]:
         return set(self.positions)
 
-    def planned_shares(self, price: float) -> int:
+    def planned_shares(self, price: float, stop_price: float | None = None) -> int:
         budget = min(self.settings.max_position_value, self.cash)
+        if self.settings.position_sizing_mode == "risk":
+            stop_distance = price - stop_price if stop_price is not None else price * self.settings.stop_loss_pct
+            if stop_distance > 0:
+                risk_budget = max(0.0, self.cash * self.settings.risk_per_trade_pct)
+                budget = min(budget, risk_budget / stop_distance * price)
         return int(budget // price)
 
     def total_pnl(self, mark_prices: dict[str, float]) -> float:
@@ -100,6 +109,7 @@ class PositionTracker:
             stop_price=signal.stop_price or fill_price * (1 - self.settings.stop_loss_pct),
             max_price=fill_price,
             last_high_ts=signal.timestamp_ms,
+            original_shares=shares,
             session_open_price=signal.session_open_price,
             entry_open_pct=signal.entry_open_pct,
         )
@@ -132,6 +142,7 @@ class PositionTracker:
             stop_price=entry_price * (1 - self.settings.stop_loss_pct),
             max_price=entry_price,
             last_high_ts=timestamp_ms,
+            original_shares=shares,
         )
 
     def record_exit(
@@ -153,6 +164,8 @@ class PositionTracker:
         pnl = (price - position.entry_price) * shares
         self.cash += proceeds
         self.realized_pnl += pnl
+        day_key = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
+        self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
         if shares >= position.shares:
             self.positions.pop(symbol, None)
         else:
@@ -164,6 +177,9 @@ class PositionTracker:
         hold_seconds = (timestamp_ms - position.entry_ms) / 1000
         mfe_price = max(position.max_price, price)
         mfe_pct = (mfe_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
+        risk_per_share = position.entry_price - position.stop_price
+        r_multiple = (price - position.entry_price) / risk_per_share if risk_per_share > 0 else None
+        cumulative_daily_pnl = self.daily_realized_pnl[day_key]
         fill = Fill(
             symbol,
             "SELL",
@@ -178,6 +194,8 @@ class PositionTracker:
             entry_open_pct=position.entry_open_pct,
             hold_seconds=hold_seconds,
             mfe_pct=mfe_pct,
+            r_multiple=r_multiple,
+            cumulative_daily_pnl=cumulative_daily_pnl,
         )
         self.fills.append(fill)
         self._write_trade_journal(fill)
@@ -209,6 +227,10 @@ class PositionTracker:
             entry["slippage_pct"] = fill.slippage_pct
         if fill.fill_latency_seconds is not None:
             entry["fill_latency_seconds"] = fill.fill_latency_seconds
+        if fill.r_multiple is not None:
+            entry["r_multiple"] = fill.r_multiple
+        if fill.cumulative_daily_pnl is not None:
+            entry["cumulative_daily_pnl"] = fill.cumulative_daily_pnl
         if fill.order_id:
             entry["order_id"] = fill.order_id
 
@@ -255,7 +277,7 @@ class LocalPaperExecutor:
         if signal.symbol in self.tracker.positions:
             return None
 
-        shares = self.tracker.planned_shares(signal.price)
+        shares = self.tracker.planned_shares(signal.price, signal.stop_price)
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
@@ -394,7 +416,7 @@ class AlpacaPaperExecutor:
         if signal.symbol in self.tracker.positions:
             return None
 
-        shares = self.tracker.planned_shares(signal.price)
+        shares = self.tracker.planned_shares(signal.price, signal.stop_price)
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None

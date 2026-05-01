@@ -190,6 +190,19 @@ class OpeningImpulseStrategy(Strategy):
                 return ExitDecision("higher-high break")
 
             pullback_pct = (position.max_price - price) / position.max_price if position.max_price > 0 else 0.0
+            if position.partial_exit_taken:
+                if pullback_pct >= self.settings.opening_impulse_runner_pullback_pct:
+                    return ExitDecision("runner pullback")
+                return None
+
+            if (
+                position.shares >= 2
+                and pnl_pct >= self.settings.opening_impulse_partial_take_profit_pct
+            ):
+                shares = max(1, int(position.shares * self.settings.opening_impulse_partial_take_profit_fraction))
+                shares = min(position.shares - 1, shares)
+                return ExitDecision("partial take profit", shares=shares, mark_partial=True)
+
             pullback_limit = self._pullback_limit(state)
             if pullback_pct >= pullback_limit:
                 return ExitDecision("pullback from high")

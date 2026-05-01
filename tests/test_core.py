@@ -1199,7 +1199,41 @@ class CoreTradingTests(unittest.TestCase):
         decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "pullback from high")
+        self.assertEqual(decision.reason, "partial take profit")
+        self.assertEqual(decision.shares, 5)
+        self.assertTrue(decision.mark_partial)
+
+    def test_opening_impulse_runner_exits_on_wider_pullback(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_negative_steps=99,
+            opening_impulse_runner_pullback_pct=0.012,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=100.75, ask=100.77, bid_size=20, ask_size=20, timestamp_ms=301_000))
+
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=5,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=102.0,
+            last_high_ts=280_000,
+            partial_exit_taken=True,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "runner pullback")
 
     def test_opening_impulse_strong_volume_allows_wider_pullback(self):
         settings = Settings(
@@ -1229,13 +1263,14 @@ class CoreTradingTests(unittest.TestCase):
             stop_price=99.5,
             max_price=102.0,
             last_high_ts=181_000,
+            partial_exit_taken=True,
         )
 
         decision = strategy.should_exit(state, position)
 
         self.assertIsNone(decision)
 
-    def test_opening_impulse_normal_volume_uses_tighter_pullback(self):
+    def test_opening_impulse_runner_ignores_normal_pullback_before_runner_limit(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -1263,12 +1298,12 @@ class CoreTradingTests(unittest.TestCase):
             stop_price=99.5,
             max_price=102.0,
             last_high_ts=181_000,
+            partial_exit_taken=True,
         )
 
         decision = strategy.should_exit(state, position)
 
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "pullback from high")
+        self.assertIsNone(decision)
 
     def test_opening_impulse_volume_collapse_stall_exits_profitable_trade(self):
         settings = Settings(
@@ -1575,8 +1610,26 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertAlmostEqual(rows[1]["entry_open_pct"], 0.011111111111111112)
                 self.assertAlmostEqual(rows[1]["hold_seconds"], 300.0)
                 self.assertAlmostEqual(rows[1]["mfe_pct"], (101.2 - 100.1) / 100.1)
+                self.assertAlmostEqual(rows[1]["r_multiple"], (101.2 - 100.1) / (100.1 - 100.1 * 0.995))
+                self.assertAlmostEqual(rows[1]["cumulative_daily_pnl"], 3.3)
         finally:
             execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
+
+    def test_position_tracker_uses_risk_sizing_when_enabled(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            starting_cash=25_000.0,
+            max_position_value=20_000.0,
+            position_sizing_mode="risk",
+            risk_per_trade_pct=0.005,
+        )
+        tracker = PositionTracker(settings)
+
+        shares = tracker.planned_shares(100.0, 99.0)
+
+        self.assertEqual(shares, 125)
 
     def test_position_tracker_total_pnl_includes_unrealized_loss(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], daily_max_loss=250.0)
@@ -3131,6 +3184,68 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertIn("flatten", decision.reason)
+
+    def test_risk_pauses_after_consecutive_losses(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            consecutive_loss_pause_count=3,
+            consecutive_loss_pause_minutes=30,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_exit(-1.0, base_ms)
+        risk.record_exit(-2.0, base_ms + 60_000)
+        risk.record_exit(-3.0, base_ms + 120_000)
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 10 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "consecutive loss pause active")
+
+    def test_risk_rejects_daily_loss_percent_limit(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            starting_cash=25_000.0,
+            daily_max_loss=1_000.0,
+            daily_max_loss_pct=0.02,
+            consecutive_loss_pause_count=99,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_exit(-500.0, base_ms)
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "daily loss limit reached")
 
     def test_risk_rejects_maha7_within_opening_impulse_cooldown(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
