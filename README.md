@@ -246,12 +246,15 @@ The first strategy watches each symbol for:
 - `OPENING_IMPULSE_RANGE_VOLUME_RATIO=1.2`
 - `OPENING_IMPULSE_MIN_HOLD_SECONDS=60`, which delays strategy-managed exits so a 1-minute candle structure can form
 - `OPENING_IMPULSE_EXIT_NEGATIVE_STEPS=3`, with quote fade used as a less-sensitive fallback exit after structural checks
-- `OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT=0.008`, leaving room for normal opening volatility before a retrace exit
+- `OPENING_IMPULSE_PULLBACK_PCT=0.005`, used as the normal-volume pullback exit
+- `OPENING_IMPULSE_STRONG_VOLUME_RATIO=2.5`
+- `OPENING_IMPULSE_STRONG_PULLBACK_PCT=0.01`, letting high-volume winners breathe more before a pullback exit
 
 Accepted paper entries use:
 
-- no fixed take-profit ceiling for `opening_impulse`; profitable exits hold higher-high structure and exit on higher-high break, 0.5%-0.8% pullback from local high, or volume collapse with price stall
-- journal metrics include entry-vs-open percentage, holding duration, and max favorable excursion
+- no fixed take-profit ceiling for `opening_impulse`; profitable exits hold higher-high structure and exit on confirmed higher-high break, adaptive pullback from local high, or volume collapse with price stall
+- chase protection via `MAX_ENTRY_CHASE_PCT=0.003`, which skips stale entries if the fresh ask has moved more than 0.3% beyond the signal price
+- journal metrics include entry-vs-open percentage, holding duration, max favorable excursion, signal price, slippage, and fill latency
 - stop loss via `STOP_LOSS_PCT`
 - time exit via `MAX_HOLD_SECONDS`
 - max position count, cash sizing, symbol cooldown, and daily loss limit

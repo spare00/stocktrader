@@ -186,12 +186,11 @@ class OpeningImpulseStrategy(Strategy):
         pnl_pct = (price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
 
         if pnl_pct > 0:
-            bars = list(state.bars)[-max(2, self.settings.opening_impulse_bar_window) :]
-            if len(bars) >= max(2, self.settings.opening_impulse_bar_window) and not self._higher_high_structure(state):
+            if self._confirmed_higher_high_break(state):
                 return ExitDecision("higher-high break")
 
             pullback_pct = (position.max_price - price) / position.max_price if position.max_price > 0 else 0.0
-            pullback_limit = 0.005 if pnl_pct >= 0.02 else self.settings.opening_impulse_retrace_from_high_pct
+            pullback_limit = self._pullback_limit(state)
             if pullback_pct >= pullback_limit:
                 return ExitDecision("pullback from high")
 
@@ -408,6 +407,20 @@ class OpeningImpulseStrategy(Strategy):
         if len(bars) < size:
             return False
         return all(bars[index].high > bars[index - 1].high for index in range(1, len(bars)))
+
+    def _confirmed_higher_high_break(self, state: SymbolState) -> bool:
+        bars = list(state.bars)[-3:]
+        if len(bars) < 3:
+            return False
+        first_weak = bars[-2].high <= bars[-3].high
+        confirmation = bars[-1].high <= bars[-2].high and bars[-1].close <= bars[-2].close
+        return first_weak and confirmation
+
+    def _pullback_limit(self, state: SymbolState) -> float:
+        volume_ratio = self._volume_ratio(state)
+        if volume_ratio >= self.settings.opening_impulse_strong_volume_ratio:
+            return self.settings.opening_impulse_strong_pullback_pct
+        return self.settings.opening_impulse_pullback_pct
 
     def _session_open_price(self, state: SymbolState) -> float | None:
         for bar in state.bars:

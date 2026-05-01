@@ -48,6 +48,9 @@ class Fill:
     entry_open_pct: float | None = None
     hold_seconds: float | None = None
     mfe_pct: float | None = None
+    signal_price: float | None = None
+    slippage_pct: float | None = None
+    fill_latency_seconds: float | None = None
 
 
 @dataclass
@@ -76,8 +79,17 @@ class PositionTracker:
                 unrealized += (mark_price - position.entry_price) * position.shares
         return self.realized_pnl + unrealized
 
-    def record_entry(self, signal: Signal, shares: int, fill_price: float, reason: str, order_id: str = "") -> Fill:
+    def record_entry(
+        self,
+        signal: Signal,
+        shares: int,
+        fill_price: float,
+        reason: str,
+        order_id: str = "",
+        fill_latency_seconds: float | None = None,
+    ) -> Fill:
         self.cash -= shares * fill_price
+        slippage_pct = (fill_price - signal.price) / signal.price if signal.price > 0 else None
         self.positions[signal.symbol] = Position(
             symbol=signal.symbol,
             strategy=signal.strategy,
@@ -101,6 +113,9 @@ class PositionTracker:
             reason=reason,
             order_id=order_id,
             entry_open_pct=signal.entry_open_pct,
+            signal_price=signal.price,
+            slippage_pct=slippage_pct,
+            fill_latency_seconds=fill_latency_seconds,
         )
         self.fills.append(fill)
         self._write_trade_journal(fill)
@@ -188,6 +203,12 @@ class PositionTracker:
             entry["hold_seconds"] = fill.hold_seconds
         if fill.mfe_pct is not None:
             entry["mfe_pct"] = fill.mfe_pct
+        if fill.signal_price is not None:
+            entry["signal_price"] = fill.signal_price
+        if fill.slippage_pct is not None:
+            entry["slippage_pct"] = fill.slippage_pct
+        if fill.fill_latency_seconds is not None:
+            entry["fill_latency_seconds"] = fill.fill_latency_seconds
         if fill.order_id:
             entry["order_id"] = fill.order_id
 
@@ -226,7 +247,7 @@ class LocalPaperExecutor:
     def consume_failed_entry(self, symbol: str) -> bool:
         return False
 
-    def buy(self, signal: Signal) -> Fill | None:
+    def buy(self, signal: Signal, state=None) -> Fill | None:
         if self.tracker.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
             LOG.info("Skipping %s: outside regular market hours", signal.symbol)
             return None
@@ -239,7 +260,17 @@ class LocalPaperExecutor:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
 
-        fill = self.tracker.record_entry(signal, shares, signal.price, signal.reason)
+        fresh_price = self._fresh_entry_price(signal, state)
+        if fresh_price is not None and fresh_price > signal.price * (1 + self.tracker.settings.max_entry_chase_pct):
+            LOG.info(
+                "Skipping %s: entry chase protection %.2f > %.2f",
+                signal.symbol,
+                fresh_price,
+                signal.price * (1 + self.tracker.settings.max_entry_chase_pct),
+            )
+            return None
+
+        fill = self.tracker.record_entry(signal, shares, signal.price, signal.reason, fill_latency_seconds=0.0)
         LOG.info("LOCAL PAPER BUY %s %s @ %.2f | %s", shares, signal.symbol, signal.price, signal.reason)
         return fill
 
@@ -304,6 +335,15 @@ class LocalPaperExecutor:
             LOG.info("LOCAL PAPER SELL %s %s @ %.2f | pnl %.2f | %s", fill.shares, fill.symbol, fill.price, fill.pnl, fill.reason)
         return fill
 
+    @staticmethod
+    def _fresh_entry_price(signal: Signal, state) -> float | None:
+        if state is None or getattr(state, "symbol", signal.symbol) != signal.symbol:
+            return None
+        quote = getattr(state, "quote", None)
+        if quote is not None and quote.ask > 0:
+            return quote.ask
+        return getattr(state, "last_price", None)
+
 
 @dataclass
 class AlpacaPaperExecutor:
@@ -339,7 +379,7 @@ class AlpacaPaperExecutor:
         self._failed_entry_reason = ""
         return True
 
-    def buy(self, signal: Signal) -> Fill | None:
+    def buy(self, signal: Signal, state=None) -> Fill | None:
         from alpaca.common.exceptions import APIError
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
@@ -359,6 +399,18 @@ class AlpacaPaperExecutor:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
 
+        fresh_price = self._fresh_entry_price(signal, state)
+        if fresh_price is not None and fresh_price > signal.price * (1 + self.settings.max_entry_chase_pct):
+            self._failed_entry_symbol = signal.symbol
+            self._failed_entry_reason = "entry chase protection"
+            LOG.info(
+                "Skipping %s: entry chase protection %.2f > %.2f",
+                signal.symbol,
+                fresh_price,
+                signal.price * (1 + self.settings.max_entry_chase_pct),
+            )
+            return None
+
         request = MarketOrderRequest(
             symbol=signal.symbol,
             qty=shares,
@@ -366,12 +418,14 @@ class AlpacaPaperExecutor:
             time_in_force=TimeInForce.DAY,
             client_order_id=self._new_client_order_id(signal.symbol, "buy", signal.timestamp_ms),
         )
+        started = time.monotonic()
         try:
             order = self.clients.trading.submit_order(order_data=request)
         except APIError as exc:
             LOG.warning("Skipping %s: Alpaca buy order rejected: %s", signal.symbol, exc)
             return None
         settled = self._settled_fill(order)
+        fill_latency_seconds = time.monotonic() - started
         if settled is None:
             self._failed_entry_symbol = signal.symbol
             self._failed_entry_reason = "unfilled buy timeout"
@@ -385,8 +439,17 @@ class AlpacaPaperExecutor:
             fill_price,
             f"{signal.reason} | alpaca_order_id={order.id}",
             order_id=str(order.id),
+            fill_latency_seconds=fill_latency_seconds,
         )
-        LOG.info("ALPACA PAPER BUY %s %s @ %.2f | order=%s", filled_shares, signal.symbol, fill_price, order.id)
+        LOG.info(
+            "ALPACA PAPER BUY %s %s @ %.2f | order=%s | slippage %.3f%% | fill_latency %.2fs",
+            filled_shares,
+            signal.symbol,
+            fill_price,
+            order.id,
+            ((fill_price - signal.price) / signal.price) * 100 if signal.price > 0 else 0.0,
+            fill_latency_seconds,
+        )
         return fill
 
     def manage_exit(self, state, strategies_by_name, now_ms: int | None = None) -> Fill | None:
@@ -562,6 +625,15 @@ class AlpacaPaperExecutor:
                 return self._existing_fill(current_order)
 
             if time.monotonic() >= deadline:
+                if filled_shares > 0 and fill_price is not None:
+                    LOG.info(
+                        "Recording partial Alpaca fill after %.1fs timeout and leaving remainder open | order=%s filled_qty=%s",
+                        self.settings.alpaca_fill_timeout_seconds,
+                        getattr(current_order, "id", "unknown"),
+                        filled_shares,
+                    )
+                    return filled_shares, fill_price, current_order
+
                 LOG.info(
                     "Canceling unfilled Alpaca order after %.1fs timeout | order=%s status=%s filled_qty=%s",
                     self.settings.alpaca_fill_timeout_seconds,
@@ -582,6 +654,26 @@ class AlpacaPaperExecutor:
         if filled_shares > 0 and fill_price is not None:
             return filled_shares, fill_price, order
         return None
+
+    def _fresh_entry_price(self, signal: Signal, state) -> float | None:
+        from alpaca.data.requests import StockLatestQuoteRequest
+
+        try:
+            request = StockLatestQuoteRequest(symbol_or_symbols=[signal.symbol], feed=self.clients.feed)
+            response = self.clients.historical.get_stock_latest_quote(request)
+            latest_quote = response.get(signal.symbol)
+            ask_price = float(getattr(latest_quote, "ask_price", 0) or 0)
+            if ask_price > 0:
+                return ask_price
+        except Exception:
+            LOG.debug("Could not fetch fresh quote for %s before submit; using cached state", signal.symbol, exc_info=True)
+
+        if state is None or getattr(state, "symbol", signal.symbol) != signal.symbol:
+            return None
+        quote = getattr(state, "quote", None)
+        if quote is not None and quote.ask > 0:
+            return quote.ask
+        return getattr(state, "last_price", None)
 
     def _cancel_unfilled_order(self, order) -> None:
         from alpaca.common.exceptions import APIError

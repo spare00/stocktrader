@@ -230,6 +230,7 @@ def runtime_settings_snapshot(settings) -> dict:
             "alpaca_market_data_poll_seconds": settings.alpaca_market_data_poll_seconds,
             "alpaca_fill_timeout_seconds": settings.alpaca_fill_timeout_seconds,
             "alpaca_fill_poll_seconds": settings.alpaca_fill_poll_seconds,
+            "max_entry_chase_pct": settings.max_entry_chase_pct,
         },
     }
 
@@ -292,6 +293,9 @@ def runtime_settings_snapshot(settings) -> dict:
             "early_loss_cut_pct": settings.opening_impulse_early_loss_cut_pct,
             "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
             "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
+            "pullback_pct": settings.opening_impulse_pullback_pct,
+            "strong_volume_ratio": settings.opening_impulse_strong_volume_ratio,
+            "strong_pullback_pct": settings.opening_impulse_strong_pullback_pct,
             "volume_collapse_ratio": settings.opening_impulse_volume_collapse_ratio,
             "price_stall_seconds": settings.opening_impulse_price_stall_seconds,
         }
@@ -495,7 +499,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 if note:
                     logging.info("AI review %s %s: %s", signal.strategy, signal.symbol, note)
 
-                fill = executor.buy(signal)
+                fill = executor.buy(signal, state)
                 if fill:
                     heartbeat.record_entry(signal.strategy)
                     risk.record_trade(signal.symbol, signal.timestamp_ms, signal.strategy)

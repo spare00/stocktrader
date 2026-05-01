@@ -1201,6 +1201,75 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "pullback from high")
 
+    def test_opening_impulse_strong_volume_allows_wider_pullback(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_negative_steps=99,
+            opening_impulse_pullback_pct=0.005,
+            opening_impulse_strong_volume_ratio=2.5,
+            opening_impulse_strong_pullback_pct=0.01,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.8, low=99.9, close=100.6, volume=100, vwap=100.4, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.6, high=101.1, low=100.5, close=101.0, volume=100, vwap=100.8, start_ms=61_000, end_ms=121_000))
+        state.add_bar(Bar("AAPL", open=101.0, high=101.8, low=100.9, close=101.6, volume=300, vwap=101.4, start_ms=121_000, end_ms=181_000))
+        state.update_quote(Quote("AAPL", bid=101.29, ask=101.31, bid_size=20, ask_size=20, timestamp_ms=200_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=102.0,
+            last_high_ts=181_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
+    def test_opening_impulse_normal_volume_uses_tighter_pullback(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_negative_steps=99,
+            opening_impulse_pullback_pct=0.005,
+            opening_impulse_strong_volume_ratio=2.5,
+            opening_impulse_strong_pullback_pct=0.01,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.8, low=99.9, close=100.6, volume=100, vwap=100.4, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.6, high=101.1, low=100.5, close=101.0, volume=100, vwap=100.8, start_ms=61_000, end_ms=121_000))
+        state.add_bar(Bar("AAPL", open=101.0, high=101.8, low=100.9, close=101.6, volume=120, vwap=101.4, start_ms=121_000, end_ms=181_000))
+        state.update_quote(Quote("AAPL", bid=101.29, ask=101.31, bid_size=20, ask_size=20, timestamp_ms=200_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=102.0,
+            last_high_ts=181_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "pullback from high")
+
     def test_opening_impulse_volume_collapse_stall_exits_profitable_trade(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -1264,6 +1333,36 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "higher-high break")
+
+    def test_opening_impulse_first_lower_high_does_not_exit_without_confirmation(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=15,
+            opening_impulse_exit_negative_steps=99,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.8, low=99.9, close=100.6, volume=100, vwap=100.4, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.6, high=100.7, low=100.4, close=100.6, volume=100, vwap=100.5, start_ms=61_000, end_ms=121_000))
+        state.update_quote(Quote("AAPL", bid=100.59, ask=100.61, bid_size=20, ask_size=20, timestamp_ms=140_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=100.8,
+            last_high_ts=61_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
 
     def test_opening_impulse_momentum_stall_does_not_exit_loser(self):
         settings = Settings(
@@ -1443,7 +1542,14 @@ class CoreTradingTests(unittest.TestCase):
                     entry_open_pct=0.011111111111111112,
                 )
 
-                tracker.record_entry(signal, shares=3, fill_price=100.1, reason="test impulse", order_id="buy-1")
+                tracker.record_entry(
+                    signal,
+                    shares=3,
+                    fill_price=100.1,
+                    reason="test impulse",
+                    order_id="buy-1",
+                    fill_latency_seconds=0.42,
+                )
                 tracker.record_exit(
                     "AAPL",
                     shares=3,
@@ -1460,6 +1566,9 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertEqual(rows[0]["strategy"], "opening_impulse")
                 self.assertEqual(rows[0]["order_id"], "buy-1")
                 self.assertAlmostEqual(rows[0]["entry_open_pct"], 0.011111111111111112)
+                self.assertAlmostEqual(rows[0]["signal_price"], 100.0)
+                self.assertAlmostEqual(rows[0]["slippage_pct"], 0.001)
+                self.assertAlmostEqual(rows[0]["fill_latency_seconds"], 0.42)
                 self.assertAlmostEqual(rows[1]["pnl"], 3.3)
                 self.assertEqual(rows[1]["reason"], "target profit")
                 self.assertEqual(rows[1]["trade_type"], "winner")
@@ -1490,7 +1599,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("daily loss", decision.reason)
 
-    def test_alpaca_partial_fill_is_canceled_before_recording(self):
+    def test_alpaca_partial_fill_is_kept_without_canceling_remainder(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -1510,8 +1619,45 @@ class CoreTradingTests(unittest.TestCase):
         settled = executor._settled_fill(order)
 
         self.assertIsNotNone(settled)
-        self.assertTrue(executor.clients.trading.cancel_called)
+        self.assertFalse(executor.clients.trading.cancel_called)
         self.assertEqual(settled[0], 3)
+
+    def test_alpaca_buy_skips_chased_price_before_submit(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["AAPL"],
+                regular_market_only=False,
+                max_entry_chase_pct=0.003,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.clients = FakeClients(
+                [FakeOrder("buy-1", status="filled", filled_qty="5", filled_avg_price="100.00")],
+                latest_quotes={"AAPL": types.SimpleNamespace(ask_price="100.40")},
+            )
+            signal = Signal(
+                symbol="AAPL",
+                side="BUY",
+                price=100.0,
+                change_pct=0.01,
+                volume_ratio=2.5,
+                spread_bps=4.0,
+                reason="test",
+                timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+                strategy="opening_impulse",
+            )
+            fill = executor.buy(signal)
+
+            self.assertIsNone(fill)
+            self.assertEqual(executor.clients.trading.submitted_orders, [])
+            self.assertEqual(len(executor.clients.historical.latest_quote_requests), 1)
+            self.assertTrue(executor.consume_failed_entry("AAPL"))
+        finally:
+            remove_fake_alpaca_modules()
 
     def test_alpaca_cancel_unfilled_order_ignores_already_filled_race(self):
         install_fake_alpaca_modules()
@@ -2757,6 +2903,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["alpaca_api_key_fingerprint"], trading_main.credential_fingerprint("test"))
         self.assertEqual(snapshot["alpaca_market_data_mode"], "stream")
         self.assertEqual(snapshot["stream"]["alpaca_market_data_poll_seconds"], 5.0)
+        self.assertEqual(snapshot["stream"]["alpaca_fill_timeout_seconds"], 5.0)
+        self.assertEqual(snapshot["stream"]["max_entry_chase_pct"], 0.003)
         self.assertNotIn("alpaca_secret_key", snapshot)
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
@@ -2764,6 +2912,9 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
         self.assertEqual(snapshot["opening_impulse"]["winner_min_pnl_pct"], 0.003)
+        self.assertEqual(snapshot["opening_impulse"]["pullback_pct"], 0.005)
+        self.assertEqual(snapshot["opening_impulse"]["strong_volume_ratio"], 2.5)
+        self.assertEqual(snapshot["opening_impulse"]["strong_pullback_pct"], 0.01)
         self.assertEqual(snapshot["spike"]["start_minute"], settings.spike_start_minute)
         self.assertEqual(snapshot["spike"]["end_minute"], settings.spike_end_minute)
         self.assertEqual(snapshot["spike"]["lookback_seconds"], settings.spike_lookback_seconds)
@@ -3200,6 +3351,16 @@ class FakeTrading:
         return self.orders.pop(0)
 
 
+class FakeHistorical:
+    def __init__(self, latest_quotes: dict[str, object] | None = None):
+        self.latest_quotes = latest_quotes or {}
+        self.latest_quote_requests = []
+
+    def get_stock_latest_quote(self, request):
+        self.latest_quote_requests.append(request)
+        return self.latest_quotes
+
+
 class FakeClients:
     def __init__(
         self,
@@ -3209,6 +3370,7 @@ class FakeClients:
         cash: str = "10000.00",
         submit_error: Exception | None = None,
         cancel_error: Exception | None = None,
+        latest_quotes: dict[str, object] | None = None,
     ):
         self.trading = FakeTrading(
             orders,
@@ -3218,6 +3380,8 @@ class FakeClients:
             submit_error=submit_error,
             cancel_error=cancel_error,
         )
+        self.historical = FakeHistorical(latest_quotes)
+        self.feed = "iex"
 
 
 class FakeExecutor:
@@ -3236,6 +3400,8 @@ def install_fake_alpaca_modules() -> None:
     trading = types.ModuleType("alpaca.trading")
     enums = types.ModuleType("alpaca.trading.enums")
     requests = types.ModuleType("alpaca.trading.requests")
+    data = types.ModuleType("alpaca.data")
+    data_requests = types.ModuleType("alpaca.data.requests")
 
     enums.OrderSide = types.SimpleNamespace(SELL="sell", BUY="buy")
     enums.TimeInForce = types.SimpleNamespace(DAY="day")
@@ -3248,22 +3414,39 @@ def install_fake_alpaca_modules() -> None:
             self.time_in_force = time_in_force
             self.client_order_id = client_order_id
 
+    class StockLatestQuoteRequest:
+        def __init__(self, symbol_or_symbols, feed):
+            self.symbol_or_symbols = symbol_or_symbols
+            self.feed = feed
+
     class APIError(Exception):
         pass
 
     FakeAPIError = APIError
     exceptions.APIError = APIError
     requests.MarketOrderRequest = MarketOrderRequest
+    data_requests.StockLatestQuoteRequest = StockLatestQuoteRequest
     sys.modules["alpaca"] = alpaca
     sys.modules["alpaca.common"] = common
     sys.modules["alpaca.common.exceptions"] = exceptions
     sys.modules["alpaca.trading"] = trading
     sys.modules["alpaca.trading.enums"] = enums
     sys.modules["alpaca.trading.requests"] = requests
+    sys.modules["alpaca.data"] = data
+    sys.modules["alpaca.data.requests"] = data_requests
 
 
 def remove_fake_alpaca_modules() -> None:
-    for name in ["alpaca.common.exceptions", "alpaca.common", "alpaca.trading.requests", "alpaca.trading.enums", "alpaca.trading", "alpaca"]:
+    for name in [
+        "alpaca.data.requests",
+        "alpaca.data",
+        "alpaca.common.exceptions",
+        "alpaca.common",
+        "alpaca.trading.requests",
+        "alpaca.trading.enums",
+        "alpaca.trading",
+        "alpaca",
+    ]:
         sys.modules.pop(name, None)
 
 FakeAPIError = Exception

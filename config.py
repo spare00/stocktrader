@@ -83,8 +83,9 @@ class Settings:
     regular_market_only: bool = True
     flatten_before_close_minutes: int = 15
     heartbeat_seconds: int = 5
-    alpaca_fill_timeout_seconds: float = 15.0
+    alpaca_fill_timeout_seconds: float = 5.0
     alpaca_fill_poll_seconds: float = 0.25
+    max_entry_chase_pct: float = 0.003
 
     opening_impulse_start_minute: int = 0
     opening_impulse_end_minute: int = 150
@@ -119,6 +120,9 @@ class Settings:
     opening_impulse_early_loss_cut_pct: float = 0.0
     opening_impulse_stall_buffer_pct: float = 0.001
     opening_impulse_retrace_from_high_pct: float = 0.008
+    opening_impulse_pullback_pct: float = 0.005
+    opening_impulse_strong_volume_ratio: float = 2.5
+    opening_impulse_strong_pullback_pct: float = 0.01
     opening_impulse_volume_collapse_ratio: float = 0.5
     opening_impulse_price_stall_seconds: int = 60
 
@@ -175,8 +179,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("regular_market_only", "REGULAR_MARKET_ONLY", _bool_env, True),
     ("flatten_before_close_minutes", "FLATTEN_BEFORE_CLOSE_MINUTES", _int_env, 15),
     ("heartbeat_seconds", "HEARTBEAT_SECONDS", _int_env, 5),
-    ("alpaca_fill_timeout_seconds", "ALPACA_FILL_TIMEOUT_SECONDS", _float_env, 15.0),
+    ("alpaca_fill_timeout_seconds", "ALPACA_FILL_TIMEOUT_SECONDS", _float_env, 5.0),
     ("alpaca_fill_poll_seconds", "ALPACA_FILL_POLL_SECONDS", _float_env, 0.25),
+    ("max_entry_chase_pct", "MAX_ENTRY_CHASE_PCT", _float_env, 0.003),
     ("ai_review", "AI_REVIEW", _bool_env, False),
 )
 
@@ -235,6 +240,9 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", _float_env, 0.0),
         ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", _float_env, 0.001),
         ("opening_impulse_retrace_from_high_pct", "OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", _float_env, 0.008),
+        ("opening_impulse_pullback_pct", "OPENING_IMPULSE_PULLBACK_PCT", _float_env, 0.005),
+        ("opening_impulse_strong_volume_ratio", "OPENING_IMPULSE_STRONG_VOLUME_RATIO", _float_env, 2.5),
+        ("opening_impulse_strong_pullback_pct", "OPENING_IMPULSE_STRONG_PULLBACK_PCT", _float_env, 0.01),
         ("opening_impulse_volume_collapse_ratio", "OPENING_IMPULSE_VOLUME_COLLAPSE_RATIO", _float_env, 0.5),
         ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", _int_env, 60),
     ),
