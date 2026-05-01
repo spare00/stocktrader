@@ -20,6 +20,7 @@ class RiskManager:
     last_failed_entry_ms: dict[str, int] = field(default_factory=dict)
     consecutive_losses: int = 0
     pause_until_ms: int = 0
+    stopped_day_keys: set[str] = field(default_factory=set)
     daily_realized_pnl: dict[str, float] = field(default_factory=dict)
 
     def check_entry(self, signal: Signal, open_symbols: set[str], total_pnl: float) -> RiskDecision:
@@ -29,11 +30,15 @@ class RiskManager:
         if should_flatten_before_close(signal.timestamp_ms, self.settings.flatten_before_close_minutes):
             return RiskDecision(False, "close flatten window active")
 
+        day_key = self._day_key(signal.timestamp_ms)
+        if day_key in self.stopped_day_keys:
+            return RiskDecision(False, "consecutive loss day stop active")
+
         if signal.timestamp_ms < self.pause_until_ms:
             return RiskDecision(False, "consecutive loss pause active")
 
         daily_limit = self._daily_loss_limit()
-        daily_pnl = self.daily_realized_pnl.get(self._day_key(signal.timestamp_ms), 0.0)
+        daily_pnl = self.daily_realized_pnl.get(day_key, 0.0)
         if total_pnl <= -daily_limit or daily_pnl <= -daily_limit:
             return RiskDecision(False, "daily loss limit reached")
 
@@ -85,6 +90,8 @@ class RiskManager:
         self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
         if pnl < 0:
             self.consecutive_losses += 1
+            if self.consecutive_losses >= self.settings.consecutive_loss_stop_count:
+                self.stopped_day_keys.add(day_key)
             if self.consecutive_losses >= self.settings.consecutive_loss_pause_count:
                 self.pause_until_ms = timestamp_ms + self.settings.consecutive_loss_pause_minutes * 60_000
         elif pnl > 0:

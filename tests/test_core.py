@@ -368,6 +368,8 @@ class CoreTradingTests(unittest.TestCase):
                     "price": 101.0,
                     "pnl": 4.0,
                     "reason": "target profit | alpaca_order_id=sell-1",
+                    "r_multiple": 2.0,
+                    "cumulative_daily_pnl": 4.0,
                     "timestamp_ms": 11_000,
                 },
                 {
@@ -398,6 +400,8 @@ class CoreTradingTests(unittest.TestCase):
                     "price": 49.5,
                     "pnl": -1.0,
                     "reason": "momentum stall | alpaca_order_id=sell-2",
+                    "r_multiple": -1.0,
+                    "cumulative_daily_pnl": 3.0,
                     "timestamp_ms": 30_000,
                 },
             ]
@@ -410,16 +414,20 @@ class CoreTradingTests(unittest.TestCase):
             self.assertEqual(summary["losses"], 1)
             self.assertAlmostEqual(summary["total_pnl"], 3.0)
             self.assertAlmostEqual(summary["win_rate"], 0.5)
+            self.assertAlmostEqual(summary["expectancy_r"], 0.5)
             self.assertAlmostEqual(summary["average_pnl_pct"], 0.0)
             self.assertAlmostEqual(summary["average_mfe_pct"], 0.01)
             self.assertAlmostEqual(summary["average_mae_pct"], -0.01)
             self.assertAlmostEqual(summary["average_missed_profit_pct"], 0.01)
             self.assertEqual(summary["by_exit_reason"]["target profit"]["trades"], 1)
+            self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["expectancy_r"], 2.0)
             self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["average_pnl_pct"], 0.01)
             self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["average_mfe_pct"], 0.02)
             self.assertAlmostEqual(summary["by_exit_reason"]["target profit"]["average_hold_seconds"], 10.0)
             self.assertEqual(summary["by_exit_reason"]["momentum stall"]["trades"], 1)
             self.assertEqual(summary["by_symbol"]["MU"]["total_pnl"], 4.0)
+            self.assertAlmostEqual(summary["by_day"]["1969-12-31"]["expectancy_r"], 0.5)
+            self.assertAlmostEqual(summary["by_day"]["1969-12-31"]["max_drawdown"], 1.0)
             self.assertAlmostEqual(summary["best_trade"]["mfe_pct"], 0.02)
             self.assertAlmostEqual(summary["worst_trade"]["mae_pct"], -0.02)
 
@@ -1143,6 +1151,32 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "max hold")
 
+    def test_paper_broker_forces_exit_at_max_trade_loss_r(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_trade_loss_r=1.2,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=99.39, ask=99.41, bid_size=20, ask_size=20, timestamp_ms=20_000))
+
+        fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max trade loss")
+
     def test_opening_impulse_cuts_loser_early_after_activation_delay(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -1611,9 +1645,36 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertAlmostEqual(rows[1]["hold_seconds"], 300.0)
                 self.assertAlmostEqual(rows[1]["mfe_pct"], (101.2 - 100.1) / 100.1)
                 self.assertAlmostEqual(rows[1]["r_multiple"], (101.2 - 100.1) / (100.1 - 100.1 * 0.995))
+                self.assertEqual(rows[1]["exit_stage"], "full")
+                self.assertAlmostEqual(rows[1]["full_trade_r_multiple"], rows[1]["r_multiple"])
                 self.assertAlmostEqual(rows[1]["cumulative_daily_pnl"], 3.3)
         finally:
             execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
+
+    def test_position_tracker_logs_runner_effectiveness_metrics(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        tracker = PositionTracker(settings)
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 9, 35),
+            change_pct=0.004,
+            volume_ratio=3.0,
+            spread_bps=4.0,
+            reason="test impulse",
+        )
+
+        tracker.record_entry(signal, shares=10, fill_price=100.0, reason="test impulse")
+        partial = tracker.record_exit("AAPL", shares=5, price=101.0, timestamp_ms=market_ms(2026, 4, 24, 9, 36), reason="partial take profit", mark_partial=True)
+        runner = tracker.record_exit("AAPL", shares=5, price=102.0, timestamp_ms=market_ms(2026, 4, 24, 9, 40), reason="runner pullback")
+
+        self.assertEqual(partial.exit_stage, "partial")
+        self.assertIsNone(partial.full_trade_r_multiple)
+        self.assertEqual(runner.exit_stage, "runner")
+        self.assertAlmostEqual(runner.runner_r_multiple, (102.0 - 100.0) / (100.0 - 99.5))
+        self.assertAlmostEqual(runner.full_trade_r_multiple, 15.0 / ((100.0 - 99.5) * 10))
 
     def test_position_tracker_uses_risk_sizing_when_enabled(self):
         settings = Settings(
@@ -2960,6 +3021,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["stream"]["max_entry_chase_pct"], 0.003)
         self.assertNotIn("alpaca_secret_key", snapshot)
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
+        self.assertEqual(snapshot["risk"]["max_trade_loss_r"], 1.2)
+        self.assertEqual(snapshot["risk"]["consecutive_loss_stop_count"], 5)
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
         self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
@@ -3215,6 +3278,36 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "consecutive loss pause active")
+
+    def test_risk_stops_day_after_five_consecutive_losses(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            daily_max_loss=10_000.0,
+            consecutive_loss_stop_count=5,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(5):
+            risk.record_exit(-1.0, base_ms + index * 60_000)
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 6 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "consecutive loss day stop active")
 
     def test_risk_rejects_daily_loss_percent_limit(self):
         settings = Settings(

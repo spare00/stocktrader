@@ -28,6 +28,11 @@ class TradeEvent:
     strategy: str
     reason: str
     order_id: str
+    r_multiple: float | None = None
+    exit_stage: str = ""
+    runner_r_multiple: float | None = None
+    full_trade_r_multiple: float | None = None
+    cumulative_daily_pnl: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,11 @@ class RoundTrip:
     mae_pct: float
     reason: str
     hold_seconds: float
+    r_multiple: float | None = None
+    exit_stage: str = ""
+    runner_r_multiple: float | None = None
+    full_trade_r_multiple: float | None = None
+    cumulative_daily_pnl: float | None = None
 
 
 def parse_event(row: dict) -> TradeEvent:
@@ -60,6 +70,11 @@ def parse_event(row: dict) -> TradeEvent:
         strategy=str(row.get("strategy", "")),
         reason=str(row.get("reason", "")),
         order_id=str(row.get("order_id", "")),
+        r_multiple=optional_float(row.get("r_multiple")),
+        exit_stage=str(row.get("exit_stage", "")),
+        runner_r_multiple=optional_float(row.get("runner_r_multiple")),
+        full_trade_r_multiple=optional_float(row.get("full_trade_r_multiple")),
+        cumulative_daily_pnl=optional_float(row.get("cumulative_daily_pnl")),
     )
 
 
@@ -129,6 +144,11 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
                     mae_pct=pct_change(min_price, buy.price),
                     reason=event.reason.split(" | ")[0],
                     hold_seconds=(event.timestamp_ms - buy.timestamp_ms) / 1000,
+                    r_multiple=event.r_multiple,
+                    exit_stage=event.exit_stage,
+                    runner_r_multiple=event.runner_r_multiple,
+                    full_trade_r_multiple=event.full_trade_r_multiple,
+                    cumulative_daily_pnl=event.cumulative_daily_pnl,
                 )
             )
             remaining_shares -= matched_shares
@@ -146,6 +166,11 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
                     strategy=buy.strategy,
                     reason=buy.reason,
                     order_id=buy.order_id,
+                    r_multiple=buy.r_multiple,
+                    exit_stage=buy.exit_stage,
+                    runner_r_multiple=buy.runner_r_multiple,
+                    full_trade_r_multiple=buy.full_trade_r_multiple,
+                    cumulative_daily_pnl=buy.cumulative_daily_pnl,
                 )
 
         if remaining_shares > 0:
@@ -160,6 +185,12 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
 
 def pct_change(price: float, entry_price: float) -> float:
     return (price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+
+def optional_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
 
 
 def excursion_prices(
@@ -184,6 +215,9 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
     mfe_pcts = [trade.mfe_pct for trade in round_trips]
     mae_pcts = [trade.mae_pct for trade in round_trips]
     missed_profit_pcts = [trade.mfe_pct - trade.pnl_pct for trade in round_trips]
+    r_multiples = [trade.r_multiple for trade in round_trips if trade.r_multiple is not None]
+    runner_r_multiples = [trade.runner_r_multiple for trade in round_trips if trade.runner_r_multiple is not None]
+    full_trade_r_multiples = [trade.full_trade_r_multiple for trade in round_trips if trade.full_trade_r_multiple is not None]
 
     by_symbol = defaultdict(list)
     by_reason = defaultdict(list)
@@ -211,6 +245,9 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "average_mfe_pct": round(mean(mfe_pcts), 6) if mfe_pcts else 0.0,
         "average_mae_pct": round(mean(mae_pcts), 6) if mae_pcts else 0.0,
         "average_missed_profit_pct": round(mean(missed_profit_pcts), 6) if missed_profit_pcts else 0.0,
+        "expectancy_r": round(mean(r_multiples), 4) if r_multiples else 0.0,
+        "average_runner_r_multiple": round(mean(runner_r_multiples), 4) if runner_r_multiples else 0.0,
+        "average_full_trade_r_multiple": round(mean(full_trade_r_multiples), 4) if full_trade_r_multiples else 0.0,
         "average_hold_seconds": round(mean(hold_times), 2) if hold_times else 0.0,
         "median_hold_seconds": round(median(hold_times), 2) if hold_times else 0.0,
         "best_trade": trade_summary(max(round_trips, key=lambda trade: trade.pnl)) if round_trips else None,
@@ -239,6 +276,10 @@ def summarize_groups(groups: dict[str, list[RoundTrip]]) -> dict:
             "average_pnl_pct": round(mean([trade.pnl_pct for trade in trades]), 6) if trades else 0.0,
             "average_mfe_pct": round(mean([trade.mfe_pct for trade in trades]), 6) if trades else 0.0,
             "average_hold_seconds": round(mean([trade.hold_seconds for trade in trades]), 2) if trades else 0.0,
+            "expectancy_r": round(mean([trade.r_multiple for trade in trades if trade.r_multiple is not None]), 4)
+            if any(trade.r_multiple is not None for trade in trades)
+            else 0.0,
+            "max_drawdown": round(max_drawdown(trades), 4),
         }
     return summary
 
@@ -273,7 +314,22 @@ def trade_summary(trade: RoundTrip) -> dict:
         "missed_profit_pct": round(trade.mfe_pct - trade.pnl_pct, 6),
         "reason": trade.reason,
         "hold_seconds": round(trade.hold_seconds, 2),
+        "r_multiple": round(trade.r_multiple, 4) if trade.r_multiple is not None else None,
+        "exit_stage": trade.exit_stage,
+        "runner_r_multiple": round(trade.runner_r_multiple, 4) if trade.runner_r_multiple is not None else None,
+        "full_trade_r_multiple": round(trade.full_trade_r_multiple, 4) if trade.full_trade_r_multiple is not None else None,
     }
+
+
+def max_drawdown(trades: list[RoundTrip]) -> float:
+    peak = 0.0
+    cumulative = 0.0
+    drawdown = 0.0
+    for trade in sorted(trades, key=lambda item: item.sell_timestamp_ms):
+        cumulative += trade.pnl
+        peak = max(peak, cumulative)
+        drawdown = min(drawdown, cumulative - peak)
+    return abs(drawdown)
 
 
 def format_timestamp(timestamp_ms: int) -> str:
@@ -284,6 +340,11 @@ def print_text(summary: dict) -> None:
     print("Trade Journal Summary")
     print(f"Trades: {summary['trades']} | Wins: {summary['wins']} | Losses: {summary['losses']} | Win rate: {summary['win_rate']:.1%}")
     print(f"Total P/L: {summary['total_pnl']:.2f} | Avg P/L: {summary['average_pnl']:.2f} | Median P/L: {summary['median_pnl']:.2f}")
+    print(
+        f"Expectancy: {summary['expectancy_r']:.2f}R | "
+        f"Avg runner: {summary['average_runner_r_multiple']:.2f}R | "
+        f"Avg full trade: {summary['average_full_trade_r_multiple']:.2f}R"
+    )
     print(
         "Avg P/L%: "
         f"{summary['average_pnl_pct']:.2%} | Avg MFE: {summary['average_mfe_pct']:.2%} | "
@@ -313,7 +374,11 @@ def print_text(summary: dict) -> None:
     if summary["by_day"]:
         print("\nTrading Days")
         for day, item in sorted(summary["by_day"].items()):
-            print(f"- {day}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+            print(
+                f"- {day}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, "
+                f"expectancy {item['expectancy_r']:.2f}R, max DD {item['max_drawdown']:.2f}, "
+                f"win rate {item['win_rate']:.1%}"
+            )
 
     if summary["best_trade"]:
         print(f"\nBest: {summary['best_trade']['symbol']} P/L {summary['best_trade']['pnl']:.2f} via {summary['best_trade']['reason']}")

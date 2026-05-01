@@ -30,6 +30,7 @@ class Position:
     last_high_ts: int = 0
     partial_exit_taken: bool = False
     original_shares: int = 0
+    realized_pnl: float = 0.0
     session_open_price: float | None = None
     entry_open_pct: float | None = None
 
@@ -53,7 +54,10 @@ class Fill:
     slippage_pct: float | None = None
     fill_latency_seconds: float | None = None
     r_multiple: float | None = None
+    runner_r_multiple: float | None = None
+    full_trade_r_multiple: float | None = None
     cumulative_daily_pnl: float | None = None
+    exit_stage: str = ""
 
 
 @dataclass
@@ -164,8 +168,12 @@ class PositionTracker:
         pnl = (price - position.entry_price) * shares
         self.cash += proceeds
         self.realized_pnl += pnl
+        prior_position_pnl = position.realized_pnl
+        position.realized_pnl += pnl
         day_key = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
         self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
+        closing_position = shares >= position.shares
+        was_partial = position.partial_exit_taken
         if shares >= position.shares:
             self.positions.pop(symbol, None)
         else:
@@ -179,7 +187,17 @@ class PositionTracker:
         mfe_pct = (mfe_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
         risk_per_share = position.entry_price - position.stop_price
         r_multiple = (price - position.entry_price) / risk_per_share if risk_per_share > 0 else None
+        runner_r_multiple = r_multiple if was_partial and closing_position else None
+        full_trade_r_multiple = None
+        if closing_position and risk_per_share > 0 and position.original_shares > 0:
+            full_trade_r_multiple = (prior_position_pnl + pnl) / (risk_per_share * position.original_shares)
         cumulative_daily_pnl = self.daily_realized_pnl[day_key]
+        if mark_partial:
+            exit_stage = "partial"
+        elif was_partial:
+            exit_stage = "runner"
+        else:
+            exit_stage = "full"
         fill = Fill(
             symbol,
             "SELL",
@@ -195,7 +213,10 @@ class PositionTracker:
             hold_seconds=hold_seconds,
             mfe_pct=mfe_pct,
             r_multiple=r_multiple,
+            runner_r_multiple=runner_r_multiple,
+            full_trade_r_multiple=full_trade_r_multiple,
             cumulative_daily_pnl=cumulative_daily_pnl,
+            exit_stage=exit_stage,
         )
         self.fills.append(fill)
         self._write_trade_journal(fill)
@@ -229,8 +250,14 @@ class PositionTracker:
             entry["fill_latency_seconds"] = fill.fill_latency_seconds
         if fill.r_multiple is not None:
             entry["r_multiple"] = fill.r_multiple
+        if fill.runner_r_multiple is not None:
+            entry["runner_r_multiple"] = fill.runner_r_multiple
+        if fill.full_trade_r_multiple is not None:
+            entry["full_trade_r_multiple"] = fill.full_trade_r_multiple
         if fill.cumulative_daily_pnl is not None:
             entry["cumulative_daily_pnl"] = fill.cumulative_daily_pnl
+        if fill.exit_stage:
+            entry["exit_stage"] = fill.exit_stage
         if fill.order_id:
             entry["order_id"] = fill.order_id
 
@@ -316,7 +343,10 @@ class LocalPaperExecutor:
         exit_price = current_price
         self.tracker.update_position_price(position, current_price, event_ms)
 
-        if should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
+        max_loss_price = self._max_loss_price(position)
+        if max_loss_price is not None and current_price <= max_loss_price:
+            reason = "max trade loss"
+        elif should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
         elif current_price <= position.stop_price:
             reason = "stop loss"
@@ -365,6 +395,12 @@ class LocalPaperExecutor:
         if quote is not None and quote.ask > 0:
             return quote.ask
         return getattr(state, "last_price", None)
+
+    def _max_loss_price(self, position: Position) -> float | None:
+        risk_per_share = position.entry_price - position.stop_price
+        if risk_per_share <= 0:
+            return None
+        return position.entry_price - self.tracker.settings.max_trade_loss_r * risk_per_share
 
 
 @dataclass
@@ -502,7 +538,10 @@ class AlpacaPaperExecutor:
         if current_price is not None:
             self.tracker.update_position_price(position, current_price, event_ms)
 
-        if flatten:
+        max_loss_price = self._max_loss_price(position)
+        if current_price is not None and max_loss_price is not None and current_price <= max_loss_price:
+            reason = "max trade loss"
+        elif flatten:
             reason = "end-of-day flatten"
         elif current_price <= position.stop_price:
             reason = "stop loss"
@@ -696,6 +735,12 @@ class AlpacaPaperExecutor:
         if quote is not None and quote.ask > 0:
             return quote.ask
         return getattr(state, "last_price", None)
+
+    def _max_loss_price(self, position: Position) -> float | None:
+        risk_per_share = position.entry_price - position.stop_price
+        if risk_per_share <= 0:
+            return None
+        return position.entry_price - self.settings.max_trade_loss_r * risk_per_share
 
     def _cancel_unfilled_order(self, order) -> None:
         from alpaca.common.exceptions import APIError

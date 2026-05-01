@@ -78,6 +78,7 @@ class Settings:
     max_position_value: float = 2_500.0
     position_sizing_mode: str = "fixed_value"
     risk_per_trade_pct: float = 0.005
+    max_trade_loss_r: float = 1.2
     max_open_positions: int = 2
     trade_cooldown_seconds: int = 60
     failed_entry_cooldown_seconds: int = 30
@@ -85,6 +86,7 @@ class Settings:
     daily_max_loss_pct: float = 0.02
     consecutive_loss_pause_count: int = 3
     consecutive_loss_pause_minutes: int = 30
+    consecutive_loss_stop_count: int = 5
     regular_market_only: bool = True
     flatten_before_close_minutes: int = 15
     heartbeat_seconds: int = 5
@@ -182,6 +184,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("max_position_value", "MAX_POSITION_VALUE", _float_env, 2_500.0),
     ("position_sizing_mode", "POSITION_SIZING_MODE", _lower_env, "fixed_value"),
     ("risk_per_trade_pct", "RISK_PER_TRADE_PCT", _float_env, 0.005),
+    ("max_trade_loss_r", "MAX_TRADE_LOSS_R", _float_env, 1.2),
     ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 2),
     ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
@@ -189,6 +192,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("daily_max_loss_pct", "DAILY_MAX_LOSS_PCT", _float_env, 0.02),
     ("consecutive_loss_pause_count", "CONSECUTIVE_LOSS_PAUSE_COUNT", _int_env, 3),
     ("consecutive_loss_pause_minutes", "CONSECUTIVE_LOSS_PAUSE_MINUTES", _int_env, 30),
+    ("consecutive_loss_stop_count", "CONSECUTIVE_LOSS_STOP_COUNT", _int_env, 5),
     ("regular_market_only", "REGULAR_MARKET_ONLY", _bool_env, True),
     ("flatten_before_close_minutes", "FLATTEN_BEFORE_CLOSE_MINUTES", _int_env, 15),
     ("heartbeat_seconds", "HEARTBEAT_SECONDS", _int_env, 5),

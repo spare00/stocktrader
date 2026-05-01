@@ -257,10 +257,11 @@ Accepted paper entries use:
 
 - no fixed take-profit ceiling for `opening_impulse`; profitable exits sell half at +0.8%, then keep the runner for confirmed higher-high break or 1.2% runner pullback
 - chase protection via `MAX_ENTRY_CHASE_PCT=0.003`, which skips stale entries if the fresh ask has moved more than 0.3% beyond the signal price
-- journal metrics include entry-vs-open percentage, holding duration, max favorable excursion, signal price, slippage, fill latency, R-multiple, and cumulative daily PnL
+- journal metrics include entry-vs-open percentage, holding duration, max favorable excursion, signal price, slippage, fill latency, R-multiple, runner R-multiple, full-trade R-multiple, and cumulative daily PnL
 - stop loss via `STOP_LOSS_PCT`
+- max-trade loss protection via `MAX_TRADE_LOSS_R=1.2`
 - time exit via `MAX_HOLD_SECONDS`
-- max position count, cash/risk sizing, symbol cooldown, consecutive-loss pause, and daily loss limit
+- max position count, cash/risk sizing, symbol cooldown, consecutive-loss pause/day stop, and daily loss limit
 - regular-session gating via `REGULAR_MARKET_ONLY=true`
 - end-of-day flattening via `FLATTEN_BEFORE_CLOSE_MINUTES` defaults to 15 minutes before close
 - stream heartbeat exits via `HEARTBEAT_SECONDS`
