@@ -2309,7 +2309,9 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal.strategy, "gap_and_go")
-        self.assertIn("breakout above premarket high", signal.reason)
+        self.assertIn("gap_and_go gap", signal.reason)
+        self.assertIn("premarket_high", signal.reason)
+        self.assertIn("entry_type=", signal.reason)
 
     def test_gap_and_go_selector_ranks_best_candidates(self):
         settings = Settings(

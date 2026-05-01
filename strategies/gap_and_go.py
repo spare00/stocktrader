@@ -24,6 +24,10 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 
+# --- Breakout confirmation (Change #6) ---
+GAP_AND_GO_CONFIRM_BREAKOUT = True
+GAP_AND_GO_CONFIRM_BARS = 2
+
 
 class GapAndGoStrategy(Strategy):
     name = "gap_and_go"
@@ -98,17 +102,52 @@ class GapAndGoStrategy(Strategy):
         gap_pct = decision.candidate.gap_pct
         premarket_high = decision.candidate.premarket_high
         premarket_volume = decision.candidate.premarket_volume_ratio
-        breakout_level = premarket_high * (1 + self.settings.gap_and_go_breakout_buffer_pct)
-        if last.ask <= breakout_level:
+
+        # --- Change #1: Relaxed breakout level (-0.2% below premarket high) ---
+        breakout_level = premarket_high * (1 - 0.002)
+
+        # --- Change #2: Reclaim entry logic ---
+        reclaim_level = premarket_high * 0.98
+        if last.ask >= reclaim_level:
+            breakout_ok = True
+            entry_type = "reclaim"
+        elif last.ask > breakout_level:
+            breakout_ok = True
+            entry_type = "breakout"
+        else:
+            breakout_ok = False
+            entry_type = "none"
+
+        if not breakout_ok:
             return self._reject(
                 state,
                 "breakout",
-                f"price {last.ask:.2f} <= premarket high breakout {breakout_level:.2f}",
+                f"no breakout/reclaim: {last.ask:.2f} (premarket high {premarket_high:.2f})",
             )
 
+        # --- Change #6: Confirm breakout with N consecutive closes above premarket high ---
+        if GAP_AND_GO_CONFIRM_BREAKOUT and entry_type == "breakout":
+            recent_bars = self._regular_bars(state)
+            last_n = recent_bars[-GAP_AND_GO_CONFIRM_BARS:] if len(recent_bars) >= GAP_AND_GO_CONFIRM_BARS else []
+            if not last_n or not all(bar.close > premarket_high for bar in last_n):
+                return self._reject(
+                    state,
+                    "confirm_breakout",
+                    f"breakout not confirmed over last {GAP_AND_GO_CONFIRM_BARS} bars above {premarket_high:.2f}",
+                )
+
+        # --- Change #7: Fallback ORB entry ---
+        opening_range_bars = self._opening_range_bars(state, minutes=5)
+        opening_range_high = max((bar.high for bar in opening_range_bars), default=None)
+        if opening_range_high and last.ask > opening_range_high:
+            if not breakout_ok:
+                breakout_ok = True
+                entry_type = "orb"
+
+        # --- Change #8: Extended reason log ---
         reason = (
-            f"gap_and_go gap {gap_pct:.2%}, premarket volume {premarket_volume:.1f}x, "
-            f"breakout above premarket high {premarket_high:.2f}"
+            f"gap_and_go gap {gap_pct:.2%}, vol {premarket_volume:.1f}x, "
+            f"premarket_high {premarket_high:.2f}, entry_type={entry_type}"
         )
         return Signal(
             strategy=self.name,
@@ -161,7 +200,10 @@ class GapAndGoStrategy(Strategy):
         minutes = current.hour * 60 + current.minute
         market_open = (MARKET_OPEN.hour * 60) + MARKET_OPEN.minute
         elapsed = minutes - market_open
-        return self.settings.gap_and_go_start_minute <= elapsed <= self.settings.gap_and_go_end_minute
+        # --- Change #3: Expanded entry window (0–60 min after open) ---
+        start = getattr(self.settings, "gap_and_go_start_minute", 0)
+        end = getattr(self.settings, "gap_and_go_end_minute", 60)
+        return start <= elapsed <= end
 
     def _session_vwap(self, state: SymbolState) -> float | None:
         session_bars = regular_bars(state)
@@ -189,6 +231,18 @@ class GapAndGoStrategy(Strategy):
     def _session_date(self, state: SymbolState):
         return session_date(state)
 
+    def _opening_range_bars(self, state: SymbolState, minutes: int = 5):
+        """Return bars from the first `minutes` of the regular session (for ORB)."""
+        session_bars = regular_bars(state)
+        cutoff_ms = None
+        result = []
+        for bar in session_bars:
+            bar_time = datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz).time()
+            bar_elapsed = (bar_time.hour * 60 + bar_time.minute) - (MARKET_OPEN.hour * 60 + MARKET_OPEN.minute)
+            if bar_elapsed < minutes:
+                result.append(bar)
+        return result
+
     def _infer_previous_close(self, state: SymbolState) -> float | None:
         session_date = self._session_date(state)
         if session_date is None:
@@ -206,5 +260,6 @@ class GapAndGoStrategy(Strategy):
         last_log_ms = self._last_reject_log_ms.get(key, -10_000)
         if timestamp_ms - last_log_ms >= 10_000:
             self._last_reject_log_ms[key] = timestamp_ms
-            LOG.debug("No gap_and_go entry %s: %s", state.symbol, detail)
+            # --- Change #4: Elevated to INFO for debugging ---
+            LOG.info("No gap_and_go entry %s [%s]: %s", state.symbol, code, detail)
         return None
