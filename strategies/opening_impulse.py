@@ -47,11 +47,19 @@ class OpeningImpulseStrategy(Strategy):
             return None
 
         if not self._within_trading_window(state.last_event_ms):
-            return self._reject(state, "window", "outside opening impulse entry window")
+            return None
 
         last = self._latest_valid_quote(state)
         if last is None:
             return self._reject(state, "quote", "invalid or missing latest quote")
+
+        spread_bps = last.spread_bps
+        if spread_bps > self.settings.opening_impulse_max_spread_bps:
+            return self._reject(
+                state,
+                "spread",
+                f"spread {spread_bps:.2f}bps > {self.settings.opening_impulse_max_spread_bps:.2f}bps",
+            )
 
         quotes = self._recent_quotes(state, self.settings.opening_impulse_window_seconds)
         quote_change_pct = 0.0
@@ -62,12 +70,24 @@ class OpeningImpulseStrategy(Strategy):
 
         if candidate is None and quote_change_pct >= self.settings.opening_impulse_change_pct:
             first = quotes[0]
+            elapsed_seconds = (last.timestamp_ms - first.timestamp_ms) / 1000
+            if elapsed_seconds < self.settings.opening_impulse_min_quote_move_seconds:
+                return self._reject(
+                    state,
+                    "quote_duration",
+                    (
+                        f"quote impulse duration {elapsed_seconds:.0f}s < "
+                        f"{self.settings.opening_impulse_min_quote_move_seconds}s"
+                    ),
+                )
+            if not self._higher_high_structure(state):
+                return self._reject(state, "structure", "missing higher-high bar structure")
             candidate = EntryCandidate(
                 change_pct=quote_change_pct,
                 volume_ratio=volume_ratio,
                 reason=(
                     f"opening quote impulse {quote_change_pct:.3%} over "
-                    f"{(last.timestamp_ms - first.timestamp_ms) / 1000:.0f}s, "
+                    f"{elapsed_seconds:.0f}s, "
                     f"volume {volume_ratio:.1f}x baseline"
                 ),
                 kind="quote_impulse",
@@ -81,6 +101,31 @@ class OpeningImpulseStrategy(Strategy):
             )
             return self._reject(state, "change", f"no bar/range signal and {quote_detail}")
 
+        if candidate.volume_ratio <= 0:
+            return self._reject(state, "volume", "volume ratio is zero")
+        if candidate.volume_ratio < self.settings.opening_impulse_volume_ratio:
+            return self._reject(
+                state,
+                "volume",
+                f"volume {candidate.volume_ratio:.2f}x < {self.settings.opening_impulse_volume_ratio:.2f}x",
+            )
+        if not self._higher_high_structure(state):
+            return self._reject(state, "structure", "missing higher-high bar structure")
+
+        session_open_price = self._session_open_price(state)
+        if session_open_price is None or session_open_price <= 0:
+            return self._reject(state, "open", "missing regular session open")
+        entry_open_pct = (last.mid - session_open_price) / session_open_price
+        if entry_open_pct > self.settings.opening_impulse_max_entry_extension_pct:
+            return self._reject(
+                state,
+                "extension",
+                (
+                    f"entry extension {entry_open_pct:.3%} > "
+                    f"{self.settings.opening_impulse_max_entry_extension_pct:.3%}"
+                ),
+            )
+
         penalty = 0.0
         warnings = []
 
@@ -89,11 +134,6 @@ class OpeningImpulseStrategy(Strategy):
             warnings.append(
                 f"extended {candidate.change_pct:.3%} > {self.settings.opening_impulse_skip_extended_pct:.3%}"
             )
-
-        spread_bps = last.spread_bps
-        if spread_bps > self.settings.opening_impulse_max_spread_bps:
-            penalty += 1.0
-            warnings.append(f"wide spread {spread_bps:.2f}bps")
 
         if min(last.bid_size, last.ask_size) < self.settings.opening_impulse_min_quote_size:
             penalty += 0.5
@@ -111,12 +151,8 @@ class OpeningImpulseStrategy(Strategy):
                 penalty += 1.0
                 warnings.append(f"quote retrace {retrace_pct:.3%}")
 
-        if candidate.kind == "quote_impulse":
-            if candidate.volume_ratio < self.settings.opening_impulse_volume_ratio:
-                penalty += 1.0
-                warnings.append(f"volume {candidate.volume_ratio:.2f}x")
-
         reason = candidate.reason
+        reason = f"{reason} | entry_vs_open {entry_open_pct:.3%}"
         if warnings:
             reason = f"{reason} | entry_warnings penalty={penalty:.1f}: {', '.join(warnings)}"
 
@@ -130,6 +166,8 @@ class OpeningImpulseStrategy(Strategy):
             volume_ratio=candidate.volume_ratio,
             spread_bps=spread_bps,
             reason=reason,
+            session_open_price=session_open_price,
+            entry_open_pct=entry_open_pct,
         )
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
@@ -147,14 +185,19 @@ class OpeningImpulseStrategy(Strategy):
 
         pnl_pct = (price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
 
-        if pnl_pct >= 0.01:
-            trailing_pct = 0.005 if pnl_pct < 0.02 else 0.003
-            trailing_stop = position.max_price * (1 - trailing_pct)
-            if price <= trailing_stop:
-                return ExitDecision("trailing stop dynamic")
+        if pnl_pct > 0:
+            bars = list(state.bars)[-max(2, self.settings.opening_impulse_bar_window) :]
+            if len(bars) >= max(2, self.settings.opening_impulse_bar_window) and not self._higher_high_structure(state):
+                return ExitDecision("higher-high break")
 
-        if pnl_pct > 0 and position.last_high_ts and event_ms - position.last_high_ts > 60_000:
-            return ExitDecision("momentum stall")
+            pullback_pct = (position.max_price - price) / position.max_price if position.max_price > 0 else 0.0
+            pullback_limit = 0.005 if pnl_pct >= 0.02 else self.settings.opening_impulse_retrace_from_high_pct
+            if pullback_pct >= pullback_limit:
+                return ExitDecision("pullback from high")
+
+            stalled_ms = event_ms - position.last_high_ts if position.last_high_ts else 0
+            if stalled_ms > self.settings.opening_impulse_price_stall_seconds * 1000 and self._volume_collapsed(state):
+                return ExitDecision("volume collapse stall")
 
         bars = list(state.bars)[-max(5, self.settings.opening_impulse_bar_window) :]
         if len(bars) >= 2:
@@ -253,6 +296,8 @@ class OpeningImpulseStrategy(Strategy):
             if current.close >= current.open or current.close > previous_close:
                 rising_bars += 1
         if rising_bars < self.settings.opening_impulse_bar_min_rising:
+            return None
+        if not self._higher_high_structure(state, window):
             return None
 
         volume_ratio = self._volume_ratio(state)
@@ -356,6 +401,28 @@ class OpeningImpulseStrategy(Strategy):
             if current.close >= current.open or current.close > previous_close:
                 rising_bars += 1
         return rising_bars >= self.settings.opening_impulse_bar_min_rising
+
+    def _higher_high_structure(self, state: SymbolState, window: int | None = None) -> bool:
+        size = max(2, window or self.settings.opening_impulse_bar_window)
+        bars = list(state.bars)[-size:]
+        if len(bars) < size:
+            return False
+        return all(bars[index].high > bars[index - 1].high for index in range(1, len(bars)))
+
+    def _session_open_price(self, state: SymbolState) -> float | None:
+        for bar in state.bars:
+            end = datetime.fromtimestamp(bar.end_ms / 1000, tz=self.market_tz)
+            minutes_from_open = ((end.hour * 60 + end.minute) - (MARKET_OPEN.hour * 60 + MARKET_OPEN.minute))
+            if minutes_from_open > 0 and bar.open > 0:
+                return bar.open
+        return None
+
+    def _volume_collapsed(self, state: SymbolState) -> bool:
+        if len(state.bars) < 2:
+            return False
+        latest_volume = state.bars[-1].volume
+        baseline = median([bar.volume for bar in list(state.bars)[:-1] if bar.volume > 0] or [1])
+        return latest_volume <= baseline * self.settings.opening_impulse_volume_collapse_ratio
 
     @staticmethod
     def _volume_ratio(state: SymbolState) -> float:

@@ -264,6 +264,8 @@ def runtime_settings_snapshot(settings) -> dict:
             "last_entry_hour_et": settings.opening_impulse_last_entry_hour_et,
             "window_seconds": settings.opening_impulse_window_seconds,
             "min_quotes": settings.opening_impulse_min_quotes,
+            "min_quote_move_seconds": settings.opening_impulse_min_quote_move_seconds,
+            "max_entry_extension_pct": settings.opening_impulse_max_entry_extension_pct,
             "change_pct": settings.opening_impulse_change_pct,
             "skip_extended_pct": settings.opening_impulse_skip_extended_pct,
             "volume_ratio": settings.opening_impulse_volume_ratio,
@@ -290,6 +292,8 @@ def runtime_settings_snapshot(settings) -> dict:
             "early_loss_cut_pct": settings.opening_impulse_early_loss_cut_pct,
             "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
             "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
+            "volume_collapse_ratio": settings.opening_impulse_volume_collapse_ratio,
+            "price_stall_seconds": settings.opening_impulse_price_stall_seconds,
         }
 
     if "maha7_pullback_reclaim" in settings.strategy_names:

@@ -227,9 +227,14 @@ The first strategy watches each symbol for:
 - volume at least `VOLUME_RATIO` times the recent baseline
 - quote spread below `MAX_SPREAD_BPS`
 
-`opening_impulse` prioritizes opening-range breakout/reversal and confirmed 1-minute bar impulses. Fast quote moves are fallback entries only when no bar/range signal is present. Wide spread, thin quote size, quote retrace, and negative quote steps are recorded as entry warnings rather than hard filters; invalid quotes remain hard rejects. The bar and range paths are controlled by:
+`opening_impulse` prioritizes opening-range breakout/reversal and confirmed 1-minute bar impulses. Fast quote moves are fallback entries only when no bar/range signal is present, and must be sustained for at least 20 seconds with higher-high bar structure. Wide spreads, zero/low volume, invalid quotes, missing higher-high structure, and entries more than 2% above the regular-session open are hard rejects; thin quote size, quote retrace, and negative quote steps remain entry warnings. The bar and range paths are controlled by:
 
 - `OPENING_IMPULSE_BAR_CONFIRMATION=true`
+- `OPENING_IMPULSE_END_MINUTE=150`
+- `OPENING_IMPULSE_VOLUME_RATIO=1.5`
+- `OPENING_IMPULSE_MAX_SPREAD_BPS=15`
+- `OPENING_IMPULSE_MIN_QUOTE_MOVE_SECONDS=20`
+- `OPENING_IMPULSE_MAX_ENTRY_EXTENSION_PCT=0.02`
 - `OPENING_IMPULSE_BAR_WINDOW=3`
 - `OPENING_IMPULSE_BAR_MIN_RISING=2`
 - `OPENING_IMPULSE_BAR_CHANGE_PCT=0.003`
@@ -245,7 +250,8 @@ The first strategy watches each symbol for:
 
 Accepted paper entries use:
 
-- no fixed take-profit ceiling for `opening_impulse`; profitable exits use dynamic trailing after +1% and momentum-stall logic after 60 seconds without a new high
+- no fixed take-profit ceiling for `opening_impulse`; profitable exits hold higher-high structure and exit on higher-high break, 0.5%-0.8% pullback from local high, or volume collapse with price stall
+- journal metrics include entry-vs-open percentage, holding duration, and max favorable excursion
 - stop loss via `STOP_LOSS_PCT`
 - time exit via `MAX_HOLD_SECONDS`
 - max position count, cash sizing, symbol cooldown, and daily loss limit

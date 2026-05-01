@@ -87,13 +87,15 @@ class Settings:
     alpaca_fill_poll_seconds: float = 0.25
 
     opening_impulse_start_minute: int = 0
-    opening_impulse_end_minute: int = 30
+    opening_impulse_end_minute: int = 150
     opening_impulse_last_entry_hour_et: int = 12
     opening_impulse_window_seconds: int = 30
     opening_impulse_min_quotes: int = 10
     opening_impulse_change_pct: float = 0.009
     opening_impulse_skip_extended_pct: float = 0.03
-    opening_impulse_volume_ratio: float = 2.5
+    opening_impulse_volume_ratio: float = 1.5
+    opening_impulse_min_quote_move_seconds: int = 20
+    opening_impulse_max_entry_extension_pct: float = 0.02
     opening_impulse_bar_confirmation: bool = True
     opening_impulse_bar_window: int = 3
     opening_impulse_bar_min_rising: int = 2
@@ -106,7 +108,7 @@ class Settings:
     opening_impulse_range_reversal_min_drop_pct: float = 0.005
     opening_impulse_range_reclaim_buffer_pct: float = 0.0
     opening_impulse_range_volume_ratio: float = 1.2
-    opening_impulse_max_spread_bps: float = 8.0
+    opening_impulse_max_spread_bps: float = 15.0
     opening_impulse_min_quote_size: int = 25
     opening_impulse_max_negative_steps: int = 1
     opening_impulse_exit_window_seconds: int = 10
@@ -117,6 +119,8 @@ class Settings:
     opening_impulse_early_loss_cut_pct: float = 0.0
     opening_impulse_stall_buffer_pct: float = 0.001
     opening_impulse_retrace_from_high_pct: float = 0.008
+    opening_impulse_volume_collapse_ratio: float = 0.5
+    opening_impulse_price_stall_seconds: int = 60
 
     maha7_pullback_reclaim_start_minute: int = 30
     maha7_pullback_reclaim_end_minute: int = 300
@@ -199,13 +203,15 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
     ),
     "opening_impulse": (
         ("opening_impulse_start_minute", "OPENING_IMPULSE_START_MINUTE", _int_env, 0),
-        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", _int_env, 30),
+        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", _int_env, 150),
         ("opening_impulse_last_entry_hour_et", "OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", _int_env, 12),
         ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", _int_env, 30),
         ("opening_impulse_min_quotes", "OPENING_IMPULSE_MIN_QUOTES", _int_env, 10),
         ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", _float_env, 0.009),
         ("opening_impulse_skip_extended_pct", "OPENING_IMPULSE_SKIP_EXTENDED_PCT", _float_env, 0.03),
-        ("opening_impulse_volume_ratio", "OPENING_IMPULSE_VOLUME_RATIO", _float_env, 2.5),
+        ("opening_impulse_volume_ratio", "OPENING_IMPULSE_VOLUME_RATIO", _float_env, 1.5),
+        ("opening_impulse_min_quote_move_seconds", "OPENING_IMPULSE_MIN_QUOTE_MOVE_SECONDS", _int_env, 20),
+        ("opening_impulse_max_entry_extension_pct", "OPENING_IMPULSE_MAX_ENTRY_EXTENSION_PCT", _float_env, 0.02),
         ("opening_impulse_bar_confirmation", "OPENING_IMPULSE_BAR_CONFIRMATION", _bool_env, True),
         ("opening_impulse_bar_window", "OPENING_IMPULSE_BAR_WINDOW", _int_env, 3),
         ("opening_impulse_bar_min_rising", "OPENING_IMPULSE_BAR_MIN_RISING", _int_env, 2),
@@ -218,7 +224,7 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("opening_impulse_range_reversal_min_drop_pct", "OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT", _float_env, 0.005),
         ("opening_impulse_range_reclaim_buffer_pct", "OPENING_IMPULSE_RANGE_RECLAIM_BUFFER_PCT", _float_env, 0.0),
         ("opening_impulse_range_volume_ratio", "OPENING_IMPULSE_RANGE_VOLUME_RATIO", _float_env, 1.2),
-        ("opening_impulse_max_spread_bps", "OPENING_IMPULSE_MAX_SPREAD_BPS", _float_env, 8.0),
+        ("opening_impulse_max_spread_bps", "OPENING_IMPULSE_MAX_SPREAD_BPS", _float_env, 15.0),
         ("opening_impulse_min_quote_size", "OPENING_IMPULSE_MIN_QUOTE_SIZE", _int_env, 25),
         ("opening_impulse_max_negative_steps", "OPENING_IMPULSE_MAX_NEGATIVE_STEPS", _int_env, 1),
         ("opening_impulse_exit_window_seconds", "OPENING_IMPULSE_EXIT_WINDOW_SECONDS", _int_env, 10),
@@ -229,6 +235,8 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", _float_env, 0.0),
         ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", _float_env, 0.001),
         ("opening_impulse_retrace_from_high_pct", "OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", _float_env, 0.008),
+        ("opening_impulse_volume_collapse_ratio", "OPENING_IMPULSE_VOLUME_COLLAPSE_RATIO", _float_env, 0.5),
+        ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", _int_env, 60),
     ),
     "maha7_pullback_reclaim": (
         ("maha7_pullback_reclaim_start_minute", "MAHA7_PULLBACK_RECLAIM_START_MINUTE", _int_env, 30),

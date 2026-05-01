@@ -56,3 +56,5 @@ class Signal:
     spread_bps: float | None
     reason: str
     stop_price: float | None = None
+    session_open_price: float | None = None
+    entry_open_pct: float | None = None

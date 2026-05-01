@@ -29,6 +29,8 @@ class Position:
     max_price: float = 0.0
     last_high_ts: int = 0
     partial_exit_taken: bool = False
+    session_open_price: float | None = None
+    entry_open_pct: float | None = None
 
 
 @dataclass
@@ -43,6 +45,9 @@ class Fill:
     reason: str = ""
     order_id: str = ""
     trade_type: str = ""
+    entry_open_pct: float | None = None
+    hold_seconds: float | None = None
+    mfe_pct: float | None = None
 
 
 @dataclass
@@ -83,8 +88,20 @@ class PositionTracker:
             stop_price=signal.stop_price or fill_price * (1 - self.settings.stop_loss_pct),
             max_price=fill_price,
             last_high_ts=signal.timestamp_ms,
+            session_open_price=signal.session_open_price,
+            entry_open_pct=signal.entry_open_pct,
         )
-        fill = Fill(signal.symbol, "BUY", shares, fill_price, signal.timestamp_ms, strategy=signal.strategy, reason=reason, order_id=order_id)
+        fill = Fill(
+            signal.symbol,
+            "BUY",
+            shares,
+            fill_price,
+            signal.timestamp_ms,
+            strategy=signal.strategy,
+            reason=reason,
+            order_id=order_id,
+            entry_open_pct=signal.entry_open_pct,
+        )
         self.fills.append(fill)
         self._write_trade_journal(fill)
         return fill
@@ -129,6 +146,9 @@ class PositionTracker:
                 position.partial_exit_taken = True
 
         trade_type = "winner" if pnl > 0 else "loser"
+        hold_seconds = (timestamp_ms - position.entry_ms) / 1000
+        mfe_price = max(position.max_price, price)
+        mfe_pct = (mfe_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
         fill = Fill(
             symbol,
             "SELL",
@@ -140,6 +160,9 @@ class PositionTracker:
             reason=reason,
             order_id=order_id,
             trade_type=trade_type,
+            entry_open_pct=position.entry_open_pct,
+            hold_seconds=hold_seconds,
+            mfe_pct=mfe_pct,
         )
         self.fills.append(fill)
         self._write_trade_journal(fill)
@@ -159,6 +182,12 @@ class PositionTracker:
         }
         if fill.trade_type:
             entry["trade_type"] = fill.trade_type
+        if fill.entry_open_pct is not None:
+            entry["entry_open_pct"] = fill.entry_open_pct
+        if fill.hold_seconds is not None:
+            entry["hold_seconds"] = fill.hold_seconds
+        if fill.mfe_pct is not None:
+            entry["mfe_pct"] = fill.mfe_pct
         if fill.order_id:
             entry["order_id"] = fill.order_id
 
