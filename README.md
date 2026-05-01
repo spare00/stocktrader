@@ -14,7 +14,7 @@ cp .env.example .env
 cp profiles/paper.env.example profiles/paper.env
 ```
 
-Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
+Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and local machine overrides; the profile files are for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
 
 For Alpaca paper mode, run:
 
