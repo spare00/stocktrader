@@ -293,6 +293,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(updated.max_open_positions, 1)
         self.assertEqual(updated.opening_impulse_change_pct, 0.008)
 
+    def test_opening_plan_does_not_override_explicit_env_settings(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            max_open_positions=8,
+            opening_impulse_change_pct=0.012,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ",
+            {
+                "MAX_OPEN_POSITIONS": "8",
+                "OPENING_IMPULSE_CHANGE_PCT": "0.012",
+            },
+            clear=False,
+        ):
+            path = Path(tmpdir) / "opening_plan.json"
+            path.write_text(
+                '{"symbols":["INTC"],"settings":{"MAX_OPEN_POSITIONS":2,"OPENING_IMPULSE_CHANGE_PCT":0.008}}'
+            )
+
+            updated = apply_opening_plan(settings, path)
+
+        self.assertEqual(updated.symbols, ["INTC"])
+        self.assertEqual(updated.max_open_positions, 8)
+        self.assertEqual(updated.opening_impulse_change_pct, 0.012)
+
     def test_default_opening_plan_path_is_strategy_specific(self):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))

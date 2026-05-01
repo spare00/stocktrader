@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ PLAN_SETTING_MAP = {
     "TARGET_PROFIT_PCT": "target_profit_pct",
     "STOP_LOSS_PCT": "stop_loss_pct",
 }
+
+FIELD_ENV_MAP = {field_name: external_name for external_name, field_name in PLAN_SETTING_MAP.items()}
 
 SETTING_BOUNDS = {
     "opening_impulse_change_pct": (0.003, 0.02),
@@ -83,6 +86,8 @@ def plan_overrides(settings: Settings, plan: dict[str, Any]) -> dict[str, Any]:
     plan_settings = plan.get("settings") or {}
     for external_name, field_name in PLAN_SETTING_MAP.items():
         if external_name not in plan_settings:
+            continue
+        if os.getenv(FIELD_ENV_MAP[field_name]) is not None:
             continue
         value = plan_settings[external_name]
 
