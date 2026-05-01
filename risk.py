@@ -22,6 +22,7 @@ class RiskManager:
     pause_until_ms: int = 0
     stopped_day_keys: set[str] = field(default_factory=set)
     daily_realized_pnl: dict[str, float] = field(default_factory=dict)
+    session_trade_counts: dict[tuple[str, str, str], int] = field(default_factory=dict)
 
     def check_entry(self, signal: Signal, open_symbols: set[str], total_pnl: float) -> RiskDecision:
         if self.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
@@ -58,6 +59,12 @@ class RiskManager:
             if elapsed < cooldown_seconds:
                 return RiskDecision(False, "opening impulse cooldown active")
 
+        if signal.strategy == "maha7_pullback_reclaim":
+            session_key = (day_key, signal.strategy, signal.symbol)
+            trade_count = self.session_trade_counts.get(session_key, 0)
+            if trade_count >= self.settings.maha7_pullback_reclaim_max_trades_per_symbol_per_session:
+                return RiskDecision(False, "max trades per symbol per session reached")
+
         last_ms = self.last_trade_ms.get(signal.symbol)
         if last_ms is not None:
             elapsed = (signal.timestamp_ms - last_ms) / 1000
@@ -81,6 +88,9 @@ class RiskManager:
         self.last_failed_entry_ms.pop(symbol, None)
         if strategy:
             self.last_trade_by_strategy_ms[(symbol, strategy)] = timestamp_ms
+        if strategy == "maha7_pullback_reclaim":
+            session_key = (self._day_key(timestamp_ms), strategy, symbol)
+            self.session_trade_counts[session_key] = self.session_trade_counts.get(session_key, 0) + 1
 
     def record_failed_entry(self, symbol: str, timestamp_ms: int) -> None:
         self.last_failed_entry_ms[symbol] = timestamp_ms

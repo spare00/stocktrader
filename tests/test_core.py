@@ -2781,7 +2781,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("momentum", decision.reason)
 
     def test_maha7_pullback_reclaim_emits_buy_after_rsi_reclaim(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_trend_min_bars=1,
+        )
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()
 
@@ -2800,6 +2805,29 @@ class CoreTradingTests(unittest.TestCase):
 
         with patch.object(strategy, "_rsi", side_effect=[50.0] * 20):
             signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_maha7_pullback_reclaim_skips_current_neutral_rsi(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        strategy = Maha7PullbackReclaimStrategy(settings)
+        state = self._maha7_reclaim_state()
+
+        with patch.object(strategy, "_rsi", side_effect=[50.0, 56.0]):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_maha7_pullback_reclaim_requires_stabilized_ma_cross(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_trend_min_bars=99,
+        )
+        strategy = Maha7PullbackReclaimStrategy(settings)
+
+        signal = strategy.evaluate(self._maha7_reclaim_state())
 
         self.assertIsNone(signal)
 
@@ -2868,6 +2896,47 @@ class CoreTradingTests(unittest.TestCase):
         final = strategy.should_exit(state, position)
 
         self.assertEqual(final.reason, "target 2.0R")
+
+    def test_maha7_pullback_reclaim_min_hold_blocks_soft_exit(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_min_hold_seconds=120,
+        )
+        strategy = Maha7PullbackReclaimStrategy(settings)
+        state = self._maha7_reclaim_state()
+        last_bar = state.bars[-1]
+        state.add_bar(
+            Bar(
+                "AAPL",
+                open=114.0,
+                high=114.2,
+                low=105.8,
+                close=106.0,
+                volume=1_500,
+                vwap=106.0,
+                start_ms=last_bar.end_ms,
+                end_ms=last_bar.end_ms + 60_000,
+            )
+        )
+        position = Position(
+            symbol="AAPL",
+            strategy="maha7_pullback_reclaim",
+            shares=10,
+            entry_price=112.0,
+            entry_ms=state.last_event_ms - 60_000,
+            target_price=120.0,
+            stop_price=104.0,
+        )
+
+        self.assertIsNone(strategy.should_exit(state, position))
+
+        position.entry_ms = state.last_event_ms - 180_000
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "close below MA7")
 
     def test_opening_impulse_min_hold_delays_structure_exit(self):
         settings = Settings(
@@ -3360,6 +3429,37 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "opening impulse cooldown active")
+
+    def test_risk_rejects_maha7_after_symbol_session_trade_cap(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            trade_cooldown_seconds=0,
+            maha7_pullback_reclaim_reentry_cooldown_seconds=0,
+            maha7_pullback_reclaim_max_trades_per_symbol_per_session=3,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(3):
+            risk.record_trade("AAPL", base_ms + index * 60_000, "maha7_pullback_reclaim")
+        signal = Signal(
+            strategy="maha7_pullback_reclaim",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 10 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=None,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "max trades per symbol per session reached")
 
     def test_risk_rejects_symbol_during_failed_entry_cooldown(self):
         settings = Settings(

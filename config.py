@@ -147,6 +147,9 @@ class Settings:
     maha7_pullback_reclaim_volume_min_ratio: float = 0.8
     maha7_pullback_reclaim_reentry_cooldown_seconds: int = 600
     maha7_pullback_reclaim_min_minutes_after_opening_impulse: int = 5
+    maha7_pullback_reclaim_trend_min_bars: int = 4
+    maha7_pullback_reclaim_min_hold_seconds: int = 120
+    maha7_pullback_reclaim_max_trades_per_symbol_per_session: int = 3
     maha7_pullback_reclaim_partial_r: float = 0.5
     maha7_pullback_reclaim_target_r: float = 2.0
 
@@ -278,6 +281,14 @@ STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
         ("maha7_pullback_reclaim_volume_min_ratio", "MAHA7_PULLBACK_RECLAIM_VOLUME_MIN_RATIO", _float_env, 0.8),
         ("maha7_pullback_reclaim_reentry_cooldown_seconds", "MAHA7_PULLBACK_RECLAIM_REENTRY_COOLDOWN_SECONDS", _int_env, 600),
         ("maha7_pullback_reclaim_min_minutes_after_opening_impulse", "MAHA7_PULLBACK_RECLAIM_MIN_MINUTES_AFTER_OPENING_IMPULSE", _int_env, 5),
+        ("maha7_pullback_reclaim_trend_min_bars", "MAHA7_PULLBACK_RECLAIM_TREND_MIN_BARS", _int_env, 4),
+        ("maha7_pullback_reclaim_min_hold_seconds", "MAHA7_PULLBACK_RECLAIM_MIN_HOLD_SECONDS", _int_env, 120),
+        (
+            "maha7_pullback_reclaim_max_trades_per_symbol_per_session",
+            "MAHA7_PULLBACK_RECLAIM_MAX_TRADES_PER_SYMBOL_PER_SESSION",
+            _int_env,
+            3,
+        ),
         ("maha7_pullback_reclaim_partial_r", "MAHA7_PULLBACK_RECLAIM_PARTIAL_R", _float_env, 0.5),
         ("maha7_pullback_reclaim_target_r", "MAHA7_PULLBACK_RECLAIM_TARGET_R", _float_env, 2.0),
     ),

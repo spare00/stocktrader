@@ -323,6 +323,9 @@ def runtime_settings_snapshot(settings) -> dict:
             "volume_min_ratio": settings.maha7_pullback_reclaim_volume_min_ratio,
             "min_minutes_after_opening_impulse": settings.maha7_pullback_reclaim_min_minutes_after_opening_impulse,
             "reentry_cooldown_seconds": settings.maha7_pullback_reclaim_reentry_cooldown_seconds,
+            "trend_min_bars": settings.maha7_pullback_reclaim_trend_min_bars,
+            "min_hold_seconds": settings.maha7_pullback_reclaim_min_hold_seconds,
+            "max_trades_per_symbol_per_session": settings.maha7_pullback_reclaim_max_trades_per_symbol_per_session,
             "partial_r": settings.maha7_pullback_reclaim_partial_r,
             "target_r": settings.maha7_pullback_reclaim_target_r,
         }

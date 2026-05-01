@@ -16,6 +16,12 @@ MARKET_OPEN = time(9, 30)
 
 
 class Maha7PullbackReclaimStrategy(Strategy):
+    # MAHA7 refined:
+    # - confirmation-based pullback strategy
+    # - no early entry after crossover
+    # - avoid RSI neutral zone
+    # - enforce minimum hold to avoid noise exits
+    # - reduce overtrading via per-symbol cap
     name = "maha7_pullback_reclaim"
 
     def __init__(self, settings: Settings):
@@ -54,6 +60,10 @@ class Maha7PullbackReclaimStrategy(Strategy):
             return self._reject(state, "trend", "MA7 is not above MA20")
         if ma7_slope_pct <= 0:
             return self._reject(state, "trend", "MA7 slope is not positive")
+        bars_since_crossover = self._bars_since_ma7_cross_above_ma20(closes)
+        min_trend_bars = self.settings.maha7_pullback_reclaim_trend_min_bars
+        if bars_since_crossover is None or bars_since_crossover < min_trend_bars:
+            return self._reject(state, "trend", f"MA7/MA20 trend has not stabilized for {min_trend_bars} bars")
         vwap = self._session_vwap(bars)
         vwap_distance = (latest.close - vwap) / vwap if vwap else 0.0
         if vwap_distance < self.settings.maha7_pullback_reclaim_vwap_min_distance_pct:
@@ -64,6 +74,8 @@ class Maha7PullbackReclaimStrategy(Strategy):
         flat_threshold = self.settings.maha7_pullback_reclaim_flat_slope_pct
         if abs(ma7_slope_pct) <= flat_threshold and abs(ma20_slope_pct) <= flat_threshold:
             return self._reject(state, "flat_ma", "flat MA7/MA20")
+        if 45 < latest_rsi < 55:
+            return self._reject(state, "rsi_chop", "RSI is in neutral 45-55 zone")
         if self._rsi_consolidated(closes, period):
             return self._reject(state, "rsi_chop", "RSI stayed between 45 and 55 too long")
         if not self._volume_confirmed(bars):
@@ -125,6 +137,10 @@ class Maha7PullbackReclaimStrategy(Strategy):
 
         if price >= position.entry_price + (risk * self.settings.maha7_pullback_reclaim_target_r):
             return ExitDecision(f"target {self.settings.maha7_pullback_reclaim_target_r:.1f}R")
+
+        elapsed_seconds = (state.last_event_ms - position.entry_ms) / 1000 if state.last_event_ms else 0
+        if elapsed_seconds < self.settings.maha7_pullback_reclaim_min_hold_seconds:
+            return None
 
         bars = self._regular_bars(state)
         if len(bars) < max(8, self.settings.maha7_pullback_reclaim_rsi_period + 1):
@@ -198,6 +214,28 @@ class Maha7PullbackReclaimStrategy(Strategy):
             return False
         highs = [bar.high for bar in bars[-6:]]
         return highs[-1] > highs[-2] > highs[-3]
+
+    def _bars_since_ma7_cross_above_ma20(self, closes: list[float]) -> int | None:
+        if len(closes) < 20:
+            return None
+
+        above_flags = []
+        for end_index in range(20, len(closes) + 1):
+            prefix = closes[:end_index]
+            ma7 = self._sma(prefix, 7)
+            ma20 = self._sma(prefix, 20)
+            above_flags.append(bool(ma7 is not None and ma20 is not None and ma7 > ma20))
+
+        if not above_flags or not above_flags[-1]:
+            return None
+
+        streak = 0
+        for is_above in reversed(above_flags):
+            if not is_above:
+                break
+            streak += 1
+
+        return max(0, streak - 1)
 
     def _recent_pullback_to_ma7(self, bars) -> bool:
         distance_limit = self.settings.maha7_pullback_reclaim_pullback_ma7_distance_pct
