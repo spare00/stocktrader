@@ -4,13 +4,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# If the caller exported SYMBOLS=... for this process, restore it after sourcing
-# .env / profile so it wins over duplicate SYMBOLS= lines in those files.
+# If SYMBOLS was already set when this script started (e.g. SYMBOLS=RIG ./run_paper.sh),
+# restore it after sourcing only when the tuning profile does *not* assign SYMBOLS.
+# Otherwise a shell inherited SYMBOLS=AAPL,... would overwrite RIG from profiles/test.env.
 _cmdline_symbols_set=0
 if [ -n "${SYMBOLS+x}" ]; then
   _cmdline_saved_symbols="$SYMBOLS"
   _cmdline_symbols_set=1
 fi
+
+_profile_defines_symbols() {
+  local f="$1"
+  [[ -f "$f" ]] && grep -qE '^[[:space:]]*(export[[:space:]]+)?SYMBOLS[[:space:]]*=' "$f"
+}
 
 load_env_file() {
   local file="$1"
@@ -49,7 +55,7 @@ else
 fi
 load_env_file "$_tuning_env" "$_tuning_example"
 
-if [ "$_cmdline_symbols_set" = 1 ]; then
+if [ "$_cmdline_symbols_set" = 1 ] && ! _profile_defines_symbols "$_tuning_env"; then
   export SYMBOLS="$_cmdline_saved_symbols"
 fi
 
