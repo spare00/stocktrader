@@ -2900,7 +2900,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_maha7_pullback_reclaim_partial_and_final_exit(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_hard_target_r_exit=True,
+        )
         strategy = Maha7PullbackReclaimStrategy(settings)
         position = Position(
             symbol="AAPL",
