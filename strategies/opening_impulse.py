@@ -3,9 +3,11 @@ from dataclasses import dataclass
 from datetime import datetime, time
 import logging
 from statistics import median
+from typing import Any, ClassVar
 
 from candle import SymbolState
 from config import Settings
+from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategies.base import Strategy
@@ -36,6 +38,99 @@ class OpeningRange:
 
 class OpeningImpulseStrategy(Strategy):
     name = "opening_impulse"
+    env_specs: ClassVar[tuple[EnvSpec, ...]] = (
+        ("opening_impulse_start_minute", "OPENING_IMPULSE_START_MINUTE", int_env, 0),
+        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", int_env, 150),
+        ("opening_impulse_last_entry_hour_et", "OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", int_env, 12),
+        ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", int_env, 30),
+        ("opening_impulse_min_quotes", "OPENING_IMPULSE_MIN_QUOTES", int_env, 10),
+        ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", float_env, 0.009),
+        ("opening_impulse_skip_extended_pct", "OPENING_IMPULSE_SKIP_EXTENDED_PCT", float_env, 0.03),
+        ("opening_impulse_volume_ratio", "OPENING_IMPULSE_VOLUME_RATIO", float_env, 1.5),
+        ("opening_impulse_min_quote_move_seconds", "OPENING_IMPULSE_MIN_QUOTE_MOVE_SECONDS", int_env, 20),
+        ("opening_impulse_max_entry_extension_pct", "OPENING_IMPULSE_MAX_ENTRY_EXTENSION_PCT", float_env, 0.02),
+        ("opening_impulse_bar_confirmation", "OPENING_IMPULSE_BAR_CONFIRMATION", bool_env, True),
+        ("opening_impulse_bar_window", "OPENING_IMPULSE_BAR_WINDOW", int_env, 3),
+        ("opening_impulse_bar_min_rising", "OPENING_IMPULSE_BAR_MIN_RISING", int_env, 2),
+        ("opening_impulse_bar_change_pct", "OPENING_IMPULSE_BAR_CHANGE_PCT", float_env, 0.003),
+        ("opening_impulse_bar_volume_ratio", "OPENING_IMPULSE_BAR_VOLUME_RATIO", float_env, 1.5),
+        ("opening_impulse_range_minutes", "OPENING_IMPULSE_RANGE_MINUTES", int_env, 5),
+        ("opening_impulse_enable_range_breakout", "OPENING_IMPULSE_ENABLE_RANGE_BREAKOUT", bool_env, True),
+        ("opening_impulse_enable_range_reversal", "OPENING_IMPULSE_ENABLE_RANGE_REVERSAL", bool_env, True),
+        ("opening_impulse_range_breakout_buffer_pct", "OPENING_IMPULSE_RANGE_BREAKOUT_BUFFER_PCT", float_env, 0.0005),
+        ("opening_impulse_range_reversal_min_drop_pct", "OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT", float_env, 0.005),
+        ("opening_impulse_range_reclaim_buffer_pct", "OPENING_IMPULSE_RANGE_RECLAIM_BUFFER_PCT", float_env, 0.0),
+        ("opening_impulse_range_volume_ratio", "OPENING_IMPULSE_RANGE_VOLUME_RATIO", float_env, 1.2),
+        ("opening_impulse_max_spread_bps", "OPENING_IMPULSE_MAX_SPREAD_BPS", float_env, 15.0),
+        ("opening_impulse_min_quote_size", "OPENING_IMPULSE_MIN_QUOTE_SIZE", int_env, 25),
+        ("opening_impulse_max_negative_steps", "OPENING_IMPULSE_MAX_NEGATIVE_STEPS", int_env, 1),
+        ("opening_impulse_exit_window_seconds", "OPENING_IMPULSE_EXIT_WINDOW_SECONDS", int_env, 10),
+        ("opening_impulse_exit_min_quotes", "OPENING_IMPULSE_EXIT_MIN_QUOTES", int_env, 4),
+        ("opening_impulse_exit_negative_steps", "OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", int_env, 4),
+        ("opening_impulse_min_hold_seconds", "OPENING_IMPULSE_MIN_HOLD_SECONDS", int_env, 15),
+        ("opening_impulse_winner_min_pnl_pct", "OPENING_IMPULSE_WINNER_MIN_PNL_PCT", float_env, 0.003),
+        ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", float_env, 0.0),
+        ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", float_env, 0.001),
+        ("opening_impulse_retrace_from_high_pct", "OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", float_env, 0.008),
+        ("opening_impulse_pullback_pct", "OPENING_IMPULSE_PULLBACK_PCT", float_env, 0.005),
+        ("opening_impulse_strong_volume_ratio", "OPENING_IMPULSE_STRONG_VOLUME_RATIO", float_env, 2.5),
+        ("opening_impulse_strong_pullback_pct", "OPENING_IMPULSE_STRONG_PULLBACK_PCT", float_env, 0.01),
+        ("opening_impulse_partial_take_profit_pct", "OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_PCT", float_env, 0.008),
+        ("opening_impulse_partial_take_profit_fraction", "OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_FRACTION", float_env, 0.5),
+        ("opening_impulse_runner_pullback_pct", "OPENING_IMPULSE_RUNNER_PULLBACK_PCT", float_env, 0.012),
+        ("opening_impulse_volume_collapse_ratio", "OPENING_IMPULSE_VOLUME_COLLAPSE_RATIO", float_env, 0.5),
+        ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", int_env, 60),
+    )
+    diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.opening_impulse",)
+    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_opening_impulse.py --top 12"
+
+    @classmethod
+    def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
+        if cls.name not in settings.strategy_names:
+            return None
+        return {
+            "start_minute": settings.opening_impulse_start_minute,
+            "end_minute": settings.opening_impulse_end_minute,
+            "last_entry_hour_et": settings.opening_impulse_last_entry_hour_et,
+            "window_seconds": settings.opening_impulse_window_seconds,
+            "min_quotes": settings.opening_impulse_min_quotes,
+            "min_quote_move_seconds": settings.opening_impulse_min_quote_move_seconds,
+            "max_entry_extension_pct": settings.opening_impulse_max_entry_extension_pct,
+            "change_pct": settings.opening_impulse_change_pct,
+            "skip_extended_pct": settings.opening_impulse_skip_extended_pct,
+            "volume_ratio": settings.opening_impulse_volume_ratio,
+            "bar_confirmation": settings.opening_impulse_bar_confirmation,
+            "bar_window": settings.opening_impulse_bar_window,
+            "bar_min_rising": settings.opening_impulse_bar_min_rising,
+            "bar_change_pct": settings.opening_impulse_bar_change_pct,
+            "bar_volume_ratio": settings.opening_impulse_bar_volume_ratio,
+            "range_minutes": settings.opening_impulse_range_minutes,
+            "range_breakout_enabled": settings.opening_impulse_enable_range_breakout,
+            "range_reversal_enabled": settings.opening_impulse_enable_range_reversal,
+            "range_breakout_buffer_pct": settings.opening_impulse_range_breakout_buffer_pct,
+            "range_reversal_min_drop_pct": settings.opening_impulse_range_reversal_min_drop_pct,
+            "range_reclaim_buffer_pct": settings.opening_impulse_range_reclaim_buffer_pct,
+            "range_volume_ratio": settings.opening_impulse_range_volume_ratio,
+            "max_spread_bps": settings.opening_impulse_max_spread_bps,
+            "min_quote_size": settings.opening_impulse_min_quote_size,
+            "max_negative_steps": settings.opening_impulse_max_negative_steps,
+            "exit_window_seconds": settings.opening_impulse_exit_window_seconds,
+            "exit_min_quotes": settings.opening_impulse_exit_min_quotes,
+            "exit_negative_steps": settings.opening_impulse_exit_negative_steps,
+            "min_hold_seconds": settings.opening_impulse_min_hold_seconds,
+            "winner_min_pnl_pct": settings.opening_impulse_winner_min_pnl_pct,
+            "early_loss_cut_pct": settings.opening_impulse_early_loss_cut_pct,
+            "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
+            "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
+            "pullback_pct": settings.opening_impulse_pullback_pct,
+            "strong_volume_ratio": settings.opening_impulse_strong_volume_ratio,
+            "strong_pullback_pct": settings.opening_impulse_strong_pullback_pct,
+            "partial_take_profit_pct": settings.opening_impulse_partial_take_profit_pct,
+            "partial_take_profit_fraction": settings.opening_impulse_partial_take_profit_fraction,
+            "runner_pullback_pct": settings.opening_impulse_runner_pullback_pct,
+            "volume_collapse_ratio": settings.opening_impulse_volume_collapse_ratio,
+            "price_stall_seconds": settings.opening_impulse_price_stall_seconds,
+        }
 
     def __init__(self, settings: Settings):
         self.settings = settings

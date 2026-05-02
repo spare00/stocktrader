@@ -1,0 +1,78 @@
+"""Single registration point for strategies — add a new strategy class to `_STRATEGY_CLASSES` only."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from strategies.base import Strategy
+from strategies.gap_and_go import GapAndGoStrategy
+from strategies.maha7_pullback_reclaim import Maha7PullbackReclaimStrategy
+from strategies.opening_impulse import OpeningImpulseStrategy
+from strategies.spike import SpikeStrategy
+
+# Order is stable for documentation / CLI; lookup is by `name`.
+_STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
+    SpikeStrategy,
+    GapAndGoStrategy,
+    OpeningImpulseStrategy,
+    Maha7PullbackReclaimStrategy,
+)
+
+STRATEGY_REGISTRY: dict[str, type[Strategy]] = {cls.name: cls for cls in _STRATEGY_CLASSES}
+
+
+def strategy_environment_specs() -> dict[str, tuple]:
+    """EnvVar tuples keyed by strategy `name` (used by config.load_settings)."""
+    return {cls.name: cls.env_specs for cls in _STRATEGY_CLASSES}
+
+
+def diagnostic_loggers_for(strategy_names: list[str]) -> tuple[str, ...]:
+    names: list[str] = []
+    for raw in strategy_names:
+        n = raw.strip().lower()
+        cls = STRATEGY_REGISTRY.get(n)
+        if cls and cls.diagnostic_loggers:
+            names.extend(cls.diagnostic_loggers)
+    return tuple(dict.fromkeys(names))
+
+
+def merge_strategy_runtime_snapshots(settings: "Settings") -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for n in settings.strategy_names:
+        cls = STRATEGY_REGISTRY.get(n.strip().lower())
+        if not cls:
+            continue
+        section = cls.runtime_settings_section(settings)
+        if section is not None:
+            out[cls.name] = section
+    return out
+
+
+def default_plan_path_for_strategy(strategy_name: str) -> Path:
+    cls = STRATEGY_REGISTRY.get(strategy_name.strip().lower())
+    if cls and cls.plan_file is not None:
+        return cls.plan_file
+    return Path(f"data/{strategy_name.strip().lower()}_plan.json")
+
+
+def selector_command_hint(strategy_name: str) -> str:
+    key = strategy_name.strip().lower()
+    cls = STRATEGY_REGISTRY.get(key)
+    if cls and cls.selector_command:
+        return cls.selector_command
+    return f".venv/bin/python scripts/select_{key}.py"
+
+
+def build_strategies(settings: "Settings"):
+    strategies = []
+    for name in settings.strategy_names:
+        try:
+            strategy_cls = STRATEGY_REGISTRY[name.strip().lower()]
+        except KeyError as exc:
+            raise ValueError(f"Unknown strategy: {name}") from exc
+        strategies.append(strategy_cls(settings))
+    return strategies
+
+
+def available_strategy_names() -> list[str]:
+    return sorted(STRATEGY_REGISTRY.keys())

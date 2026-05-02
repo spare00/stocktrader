@@ -24,12 +24,12 @@ from opening_plan import (
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown, manage_all_exits
 from strategies import available_strategy_names, build_strategies
+from strategies.registry import diagnostic_loggers_for, merge_strategy_runtime_snapshots
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "trader.log"
-DIAGNOSTIC_LOGGERS = ("strategies.opening_impulse", "strategies.gap_and_go", "strategies.maha7_pullback_reclaim")
 NOISY_LOGGERS = (
     "alpaca",
     "alpaca.data.live.websocket",
@@ -240,96 +240,7 @@ def runtime_settings_snapshot(settings) -> dict:
             "max_entry_chase_pct": settings.max_entry_chase_pct,
         },
     }
-
-    if "spike" in settings.strategy_names:
-        snapshot["spike"] = {
-            "start_minute": settings.spike_start_minute,
-            "end_minute": settings.spike_end_minute,
-            "lookback_seconds": settings.spike_lookback_seconds,
-            "change_pct": settings.spike_change_pct,
-            "volume_ratio": settings.volume_ratio,
-            "max_spread_bps": settings.max_spread_bps,
-        }
-
-    if "gap_and_go" in settings.strategy_names:
-        snapshot["gap_and_go"] = {
-            "start_minute": settings.gap_and_go_start_minute,
-            "end_minute": settings.gap_and_go_end_minute,
-            "min_gap_pct": settings.gap_and_go_min_gap_pct,
-            "premarket_volume_ratio": settings.gap_and_go_premarket_volume_ratio,
-            "max_spread_bps": settings.gap_and_go_max_spread_bps,
-            "min_price": settings.gap_and_go_min_price,
-            "breakout_buffer_pct": settings.gap_and_go_breakout_buffer_pct,
-            "exit_activation_delay_seconds": settings.gap_and_go_exit_activation_delay_seconds,
-            "trailing_retrace_pct": settings.gap_and_go_trailing_retrace_pct,
-            "bar_window": settings.gap_and_go_bar_window,
-        }
-
-    if "opening_impulse" in settings.strategy_names:
-        snapshot["opening_impulse"] = {
-            "start_minute": settings.opening_impulse_start_minute,
-            "end_minute": settings.opening_impulse_end_minute,
-            "last_entry_hour_et": settings.opening_impulse_last_entry_hour_et,
-            "window_seconds": settings.opening_impulse_window_seconds,
-            "min_quotes": settings.opening_impulse_min_quotes,
-            "min_quote_move_seconds": settings.opening_impulse_min_quote_move_seconds,
-            "max_entry_extension_pct": settings.opening_impulse_max_entry_extension_pct,
-            "change_pct": settings.opening_impulse_change_pct,
-            "skip_extended_pct": settings.opening_impulse_skip_extended_pct,
-            "volume_ratio": settings.opening_impulse_volume_ratio,
-            "bar_confirmation": settings.opening_impulse_bar_confirmation,
-            "bar_window": settings.opening_impulse_bar_window,
-            "bar_min_rising": settings.opening_impulse_bar_min_rising,
-            "bar_change_pct": settings.opening_impulse_bar_change_pct,
-            "bar_volume_ratio": settings.opening_impulse_bar_volume_ratio,
-            "range_minutes": settings.opening_impulse_range_minutes,
-            "range_breakout_enabled": settings.opening_impulse_enable_range_breakout,
-            "range_reversal_enabled": settings.opening_impulse_enable_range_reversal,
-            "range_breakout_buffer_pct": settings.opening_impulse_range_breakout_buffer_pct,
-            "range_reversal_min_drop_pct": settings.opening_impulse_range_reversal_min_drop_pct,
-            "range_reclaim_buffer_pct": settings.opening_impulse_range_reclaim_buffer_pct,
-            "range_volume_ratio": settings.opening_impulse_range_volume_ratio,
-            "max_spread_bps": settings.opening_impulse_max_spread_bps,
-            "min_quote_size": settings.opening_impulse_min_quote_size,
-            "max_negative_steps": settings.opening_impulse_max_negative_steps,
-            "exit_window_seconds": settings.opening_impulse_exit_window_seconds,
-            "exit_min_quotes": settings.opening_impulse_exit_min_quotes,
-            "exit_negative_steps": settings.opening_impulse_exit_negative_steps,
-            "min_hold_seconds": settings.opening_impulse_min_hold_seconds,
-            "winner_min_pnl_pct": settings.opening_impulse_winner_min_pnl_pct,
-            "early_loss_cut_pct": settings.opening_impulse_early_loss_cut_pct,
-            "stall_buffer_pct": settings.opening_impulse_stall_buffer_pct,
-            "retrace_from_high_pct": settings.opening_impulse_retrace_from_high_pct,
-            "pullback_pct": settings.opening_impulse_pullback_pct,
-            "strong_volume_ratio": settings.opening_impulse_strong_volume_ratio,
-            "strong_pullback_pct": settings.opening_impulse_strong_pullback_pct,
-            "partial_take_profit_pct": settings.opening_impulse_partial_take_profit_pct,
-            "partial_take_profit_fraction": settings.opening_impulse_partial_take_profit_fraction,
-            "runner_pullback_pct": settings.opening_impulse_runner_pullback_pct,
-            "volume_collapse_ratio": settings.opening_impulse_volume_collapse_ratio,
-            "price_stall_seconds": settings.opening_impulse_price_stall_seconds,
-        }
-
-    if "maha7_pullback_reclaim" in settings.strategy_names:
-        snapshot["maha7_pullback_reclaim"] = {
-            "start_minute": settings.maha7_pullback_reclaim_start_minute,
-            "end_minute": settings.maha7_pullback_reclaim_end_minute,
-            "rsi_period": settings.maha7_pullback_reclaim_rsi_period,
-            "rsi_above_min_bars": settings.maha7_pullback_reclaim_rsi_above_min_bars,
-            "flat_slope_pct": settings.maha7_pullback_reclaim_flat_slope_pct,
-            "consolidation_candles": settings.maha7_pullback_reclaim_consolidation_candles,
-            "vwap_min_distance_pct": settings.maha7_pullback_reclaim_vwap_min_distance_pct,
-            "pullback_ma7_distance_pct": settings.maha7_pullback_reclaim_pullback_ma7_distance_pct,
-            "volume_min_ratio": settings.maha7_pullback_reclaim_volume_min_ratio,
-            "min_minutes_after_opening_impulse": settings.maha7_pullback_reclaim_min_minutes_after_opening_impulse,
-            "reentry_cooldown_seconds": settings.maha7_pullback_reclaim_reentry_cooldown_seconds,
-            "trend_min_bars": settings.maha7_pullback_reclaim_trend_min_bars,
-            "min_hold_seconds": settings.maha7_pullback_reclaim_min_hold_seconds,
-            "max_trades_per_symbol_per_session": settings.maha7_pullback_reclaim_max_trades_per_symbol_per_session,
-            "partial_r": settings.maha7_pullback_reclaim_partial_r,
-            "target_r": settings.maha7_pullback_reclaim_target_r,
-        }
-
+    snapshot.update(merge_strategy_runtime_snapshots(settings))
     return snapshot
 
 def strategy_log_file(settings) -> Path:
@@ -340,7 +251,7 @@ def strategy_log_file(settings) -> Path:
     return LOG_DIR / f"trader_{suffix}.log"
 
 
-def setup_logging(log_file: Path | None = None) -> None:
+def setup_logging(log_file: Path | None = None, strategy_names: list[str] | None = None) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(LOG_FORMAT)
     console = logging.StreamHandler()
@@ -361,7 +272,7 @@ def setup_logging(log_file: Path | None = None) -> None:
     root.addHandler(console)
     root.addHandler(file_handler)
 
-    for logger_name in DIAGNOSTIC_LOGGERS:
+    for logger_name in diagnostic_loggers_for(strategy_names or []):
         logging.getLogger(logger_name).setLevel(logging.DEBUG)
     for logger_name in NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.INFO)
@@ -441,7 +352,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         raise SystemExit(2) from None
     settings = apply_opening_plan(settings, opening_plan_path)
     log_file = strategy_log_file(settings)
-    setup_logging(log_file)
+    setup_logging(log_file, settings.strategy_names)
     logging.info("Loaded opening plan from %s", opening_plan_path)
 
     settings_snapshot = runtime_settings_snapshot(settings)

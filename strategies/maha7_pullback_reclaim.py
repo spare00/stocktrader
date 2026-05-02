@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, time
 import logging
 from statistics import mean
+from typing import Any, ClassVar
 
 from candle import SymbolState
 from config import Settings
+from env_vars import EnvSpec, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategies.base import Strategy
@@ -23,6 +25,54 @@ class Maha7PullbackReclaimStrategy(Strategy):
     # - enforce minimum hold to avoid noise exits
     # - reduce overtrading via per-symbol cap
     name = "maha7_pullback_reclaim"
+    env_specs: ClassVar[tuple[EnvSpec, ...]] = (
+        ("maha7_pullback_reclaim_start_minute", "MAHA7_PULLBACK_RECLAIM_START_MINUTE", int_env, 30),
+        ("maha7_pullback_reclaim_end_minute", "MAHA7_PULLBACK_RECLAIM_END_MINUTE", int_env, 300),
+        ("maha7_pullback_reclaim_rsi_period", "MAHA7_PULLBACK_RECLAIM_RSI_PERIOD", int_env, 14),
+        ("maha7_pullback_reclaim_rsi_above_min_bars", "MAHA7_PULLBACK_RECLAIM_RSI_ABOVE_MIN_BARS", int_env, 2),
+        ("maha7_pullback_reclaim_flat_slope_pct", "MAHA7_PULLBACK_RECLAIM_FLAT_SLOPE_PCT", float_env, 0.0002),
+        ("maha7_pullback_reclaim_consolidation_candles", "MAHA7_PULLBACK_RECLAIM_CONSOLIDATION_CANDLES", int_env, 10),
+        ("maha7_pullback_reclaim_vwap_min_distance_pct", "MAHA7_PULLBACK_RECLAIM_VWAP_MIN_DISTANCE_PCT", float_env, 0.002),
+        ("maha7_pullback_reclaim_pullback_ma7_distance_pct", "MAHA7_PULLBACK_RECLAIM_PULLBACK_MA7_DISTANCE_PCT", float_env, 0.003),
+        ("maha7_pullback_reclaim_volume_min_ratio", "MAHA7_PULLBACK_RECLAIM_VOLUME_MIN_RATIO", float_env, 0.8),
+        ("maha7_pullback_reclaim_reentry_cooldown_seconds", "MAHA7_PULLBACK_RECLAIM_REENTRY_COOLDOWN_SECONDS", int_env, 600),
+        ("maha7_pullback_reclaim_min_minutes_after_opening_impulse", "MAHA7_PULLBACK_RECLAIM_MIN_MINUTES_AFTER_OPENING_IMPULSE", int_env, 5),
+        ("maha7_pullback_reclaim_trend_min_bars", "MAHA7_PULLBACK_RECLAIM_TREND_MIN_BARS", int_env, 4),
+        ("maha7_pullback_reclaim_min_hold_seconds", "MAHA7_PULLBACK_RECLAIM_MIN_HOLD_SECONDS", int_env, 120),
+        (
+            "maha7_pullback_reclaim_max_trades_per_symbol_per_session",
+            "MAHA7_PULLBACK_RECLAIM_MAX_TRADES_PER_SYMBOL_PER_SESSION",
+            int_env,
+            3,
+        ),
+        ("maha7_pullback_reclaim_partial_r", "MAHA7_PULLBACK_RECLAIM_PARTIAL_R", float_env, 0.5),
+        ("maha7_pullback_reclaim_target_r", "MAHA7_PULLBACK_RECLAIM_TARGET_R", float_env, 2.0),
+    )
+    diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.maha7_pullback_reclaim",)
+    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12"
+
+    @classmethod
+    def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
+        if cls.name not in settings.strategy_names:
+            return None
+        return {
+            "start_minute": settings.maha7_pullback_reclaim_start_minute,
+            "end_minute": settings.maha7_pullback_reclaim_end_minute,
+            "rsi_period": settings.maha7_pullback_reclaim_rsi_period,
+            "rsi_above_min_bars": settings.maha7_pullback_reclaim_rsi_above_min_bars,
+            "flat_slope_pct": settings.maha7_pullback_reclaim_flat_slope_pct,
+            "consolidation_candles": settings.maha7_pullback_reclaim_consolidation_candles,
+            "vwap_min_distance_pct": settings.maha7_pullback_reclaim_vwap_min_distance_pct,
+            "pullback_ma7_distance_pct": settings.maha7_pullback_reclaim_pullback_ma7_distance_pct,
+            "volume_min_ratio": settings.maha7_pullback_reclaim_volume_min_ratio,
+            "min_minutes_after_opening_impulse": settings.maha7_pullback_reclaim_min_minutes_after_opening_impulse,
+            "reentry_cooldown_seconds": settings.maha7_pullback_reclaim_reentry_cooldown_seconds,
+            "trend_min_bars": settings.maha7_pullback_reclaim_trend_min_bars,
+            "min_hold_seconds": settings.maha7_pullback_reclaim_min_hold_seconds,
+            "max_trades_per_symbol_per_session": settings.maha7_pullback_reclaim_max_trades_per_symbol_per_session,
+            "partial_r": settings.maha7_pullback_reclaim_partial_r,
+            "target_r": settings.maha7_pullback_reclaim_target_r,
+        }
 
     def __init__(self, settings: Settings):
         self.settings = settings

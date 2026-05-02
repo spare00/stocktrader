@@ -1,8 +1,10 @@
 from datetime import datetime, time
 from statistics import median
+from typing import Any, ClassVar
 
 from candle import SymbolState
 from config import Settings
+from env_vars import EnvSpec, float_env, int_env, optional_int_env
 from market_hours import MARKET_TZ
 from models import Bar, Signal
 from strategies.base import Strategy
@@ -13,6 +15,28 @@ MARKET_OPEN = time(9, 30)
 
 class SpikeStrategy(Strategy):
     name = "spike"
+    env_specs: ClassVar[tuple[EnvSpec, ...]] = (
+        ("spike_lookback_seconds", "SPIKE_LOOKBACK_SECONDS", int_env, 5),
+        ("spike_change_pct", "SPIKE_CHANGE_PCT", float_env, 0.0025),
+        ("spike_start_minute", "SPIKE_START_MINUTE", optional_int_env, None),
+        ("spike_end_minute", "SPIKE_END_MINUTE", optional_int_env, None),
+        ("volume_ratio", "VOLUME_RATIO", float_env, 2.0),
+        ("max_spread_bps", "MAX_SPREAD_BPS", float_env, 12.0),
+    )
+    diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.spike",)
+
+    @classmethod
+    def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
+        if cls.name not in settings.strategy_names:
+            return None
+        return {
+            "start_minute": settings.spike_start_minute,
+            "end_minute": settings.spike_end_minute,
+            "lookback_seconds": settings.spike_lookback_seconds,
+            "change_pct": settings.spike_change_pct,
+            "volume_ratio": settings.volume_ratio,
+            "max_spread_bps": settings.max_spread_bps,
+        }
 
     def __init__(self, settings: Settings):
         self.settings = settings

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 import logging
+from typing import Any, ClassVar
 
 from candle import SymbolState
 from config import Settings
+from env_vars import EnvSpec, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from scripts.select_gap_and_go import (
@@ -31,6 +33,37 @@ GAP_AND_GO_CONFIRM_BARS = 2
 
 class GapAndGoStrategy(Strategy):
     name = "gap_and_go"
+    env_specs: ClassVar[tuple[EnvSpec, ...]] = (
+        ("gap_and_go_start_minute", "GAP_AND_GO_START_MINUTE", int_env, 0),
+        ("gap_and_go_end_minute", "GAP_AND_GO_END_MINUTE", int_env, 30),
+        ("gap_and_go_min_gap_pct", "GAP_AND_GO_MIN_GAP_PCT", float_env, 0.02),
+        ("gap_and_go_premarket_volume_ratio", "GAP_AND_GO_PREMARKET_VOLUME_RATIO", float_env, 2.0),
+        ("gap_and_go_max_spread_bps", "GAP_AND_GO_MAX_SPREAD_BPS", float_env, 10.0),
+        ("gap_and_go_min_price", "GAP_AND_GO_MIN_PRICE", float_env, 5.0),
+        ("gap_and_go_breakout_buffer_pct", "GAP_AND_GO_BREAKOUT_BUFFER_PCT", float_env, 0.0),
+        ("gap_and_go_exit_activation_delay_seconds", "GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", int_env, 15),
+        ("gap_and_go_trailing_retrace_pct", "GAP_AND_GO_TRAILING_RETRACE_PCT", float_env, 0.008),
+        ("gap_and_go_bar_window", "GAP_AND_GO_BAR_WINDOW", int_env, 5),
+    )
+    diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.gap_and_go",)
+    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_gap_and_go.py --top 5"
+
+    @classmethod
+    def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
+        if cls.name not in settings.strategy_names:
+            return None
+        return {
+            "start_minute": settings.gap_and_go_start_minute,
+            "end_minute": settings.gap_and_go_end_minute,
+            "min_gap_pct": settings.gap_and_go_min_gap_pct,
+            "premarket_volume_ratio": settings.gap_and_go_premarket_volume_ratio,
+            "max_spread_bps": settings.gap_and_go_max_spread_bps,
+            "min_price": settings.gap_and_go_min_price,
+            "breakout_buffer_pct": settings.gap_and_go_breakout_buffer_pct,
+            "exit_activation_delay_seconds": settings.gap_and_go_exit_activation_delay_seconds,
+            "trailing_retrace_pct": settings.gap_and_go_trailing_retrace_pct,
+            "bar_window": settings.gap_and_go_bar_window,
+        }
 
     def __init__(self, settings: Settings):
         self.settings = settings

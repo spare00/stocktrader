@@ -7,17 +7,7 @@ from typing import Any
 from config import Settings
 
 
-DEFAULT_PLAN_FILES = {
-    "opening_impulse": Path("data/opening_impulse_plan.json"),
-    "gap_and_go": Path("data/gap_and_go_plan.json"),
-    "maha7_pullback_reclaim": Path("data/maha7_pullback_reclaim_plan.json"),
-}
-DEFAULT_OPENING_PLAN_FILE = DEFAULT_PLAN_FILES["opening_impulse"]
-SELECTOR_COMMANDS = {
-    "opening_impulse": ".venv/bin/python scripts/select_opening_impulse.py --top 12",
-    "gap_and_go": ".venv/bin/python scripts/select_gap_and_go.py --top 5",
-    "maha7_pullback_reclaim": ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
-}
+DEFAULT_OPENING_PLAN_FILE = Path("data/opening_impulse_plan.json")
 
 
 PLAN_SETTING_MAP = {
@@ -40,7 +30,9 @@ SETTING_BOUNDS = {
 
 
 def default_plan_file_for_strategy(strategy_name: str) -> Path:
-    return DEFAULT_PLAN_FILES.get(strategy_name, Path(f"data/{strategy_name}_plan.json"))
+    from strategies.registry import default_plan_path_for_strategy
+
+    return default_plan_path_for_strategy(strategy_name)
 
 
 def default_plan_file_for_settings(settings: Settings) -> Path:
@@ -50,7 +42,9 @@ def default_plan_file_for_settings(settings: Settings) -> Path:
 
 
 def selector_command_for_strategy(strategy_name: str) -> str:
-    return SELECTOR_COMMANDS.get(strategy_name, f".venv/bin/python scripts/select_{strategy_name}.py")
+    from strategies.registry import selector_command_hint
+
+    return selector_command_hint(strategy_name)
 
 
 def load_opening_plan(path: Path) -> dict[str, Any]:

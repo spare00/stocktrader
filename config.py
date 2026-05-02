@@ -1,38 +1,19 @@
-import os
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-
-def _csv_env(name: str, default: str) -> list[str]:
-    raw = os.getenv(name, default)
-    return [part.strip().upper() for part in raw.split(",") if part.strip()]
-
-
-def _float_env(name: str, default: float) -> float:
-    value = os.getenv(name)
-    return default if value is None else float(value)
-
-
-def _int_env(name: str, default: int) -> int:
-    value = os.getenv(name)
-    return default if value is None else int(value)
-
-
-def _optional_int_env(name: str, default: int | None = None) -> int | None:
-    value = os.getenv(name)
-    return default if value is None or value == "" else int(value)
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.lower() in {"1", "true", "yes", "on"}
-
-
-def _strategy_env(name: str, default: str) -> list[str]:
-    raw = os.getenv(name, default)
-    return [part.strip().lower() for part in raw.split(",") if part.strip()]
+from env_vars import (
+    EnvReader,
+    EnvSpec,
+    bool_env as _bool_env,
+    csv_env as _csv_env,
+    float_env as _float_env,
+    int_env as _int_env,
+    lower_env as _lower_env,
+    optional_int_env as _optional_int_env,
+    read_env as _read_env,
+    strategy_names_csv as _strategy_env,
+    str_env as _str_env,
+)
 
 
 @dataclass(frozen=True)
@@ -156,18 +137,6 @@ class Settings:
     ai_review: bool = False
 
 
-EnvReader = Callable[[str, Any], Any]
-EnvSpec = tuple[str, str, EnvReader, Any]
-
-
-def _str_env(name: str, default: str | None = None) -> str | None:
-    return os.getenv(name, default)
-
-
-def _lower_env(name: str, default: str) -> str:
-    return os.getenv(name, default).lower()
-
-
 COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_api_key", "ALPACA_API_KEY", _str_env, None),
     ("alpaca_secret_key", "ALPACA_SECRET_KEY", _str_env, None),
@@ -205,99 +174,6 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("ai_review", "AI_REVIEW", _bool_env, False),
 )
 
-STRATEGY_ENV: dict[str, tuple[EnvSpec, ...]] = {
-    "spike": (
-        ("spike_lookback_seconds", "SPIKE_LOOKBACK_SECONDS", _int_env, 5),
-        ("spike_change_pct", "SPIKE_CHANGE_PCT", _float_env, 0.0025),
-        ("spike_start_minute", "SPIKE_START_MINUTE", _optional_int_env, None),
-        ("spike_end_minute", "SPIKE_END_MINUTE", _optional_int_env, None),
-        ("volume_ratio", "VOLUME_RATIO", _float_env, 2.0),
-        ("max_spread_bps", "MAX_SPREAD_BPS", _float_env, 12.0),
-    ),
-    "gap_and_go": (
-        ("gap_and_go_start_minute", "GAP_AND_GO_START_MINUTE", _int_env, 0),
-        ("gap_and_go_end_minute", "GAP_AND_GO_END_MINUTE", _int_env, 30),
-        ("gap_and_go_min_gap_pct", "GAP_AND_GO_MIN_GAP_PCT", _float_env, 0.02),
-        ("gap_and_go_premarket_volume_ratio", "GAP_AND_GO_PREMARKET_VOLUME_RATIO", _float_env, 2.0),
-        ("gap_and_go_max_spread_bps", "GAP_AND_GO_MAX_SPREAD_BPS", _float_env, 10.0),
-        ("gap_and_go_min_price", "GAP_AND_GO_MIN_PRICE", _float_env, 5.0),
-        ("gap_and_go_breakout_buffer_pct", "GAP_AND_GO_BREAKOUT_BUFFER_PCT", _float_env, 0.0),
-        ("gap_and_go_exit_activation_delay_seconds", "GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", _int_env, 15),
-        ("gap_and_go_trailing_retrace_pct", "GAP_AND_GO_TRAILING_RETRACE_PCT", _float_env, 0.008),
-        ("gap_and_go_bar_window", "GAP_AND_GO_BAR_WINDOW", _int_env, 5),
-    ),
-    "opening_impulse": (
-        ("opening_impulse_start_minute", "OPENING_IMPULSE_START_MINUTE", _int_env, 0),
-        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", _int_env, 150),
-        ("opening_impulse_last_entry_hour_et", "OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", _int_env, 12),
-        ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", _int_env, 30),
-        ("opening_impulse_min_quotes", "OPENING_IMPULSE_MIN_QUOTES", _int_env, 10),
-        ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", _float_env, 0.009),
-        ("opening_impulse_skip_extended_pct", "OPENING_IMPULSE_SKIP_EXTENDED_PCT", _float_env, 0.03),
-        ("opening_impulse_volume_ratio", "OPENING_IMPULSE_VOLUME_RATIO", _float_env, 1.5),
-        ("opening_impulse_min_quote_move_seconds", "OPENING_IMPULSE_MIN_QUOTE_MOVE_SECONDS", _int_env, 20),
-        ("opening_impulse_max_entry_extension_pct", "OPENING_IMPULSE_MAX_ENTRY_EXTENSION_PCT", _float_env, 0.02),
-        ("opening_impulse_bar_confirmation", "OPENING_IMPULSE_BAR_CONFIRMATION", _bool_env, True),
-        ("opening_impulse_bar_window", "OPENING_IMPULSE_BAR_WINDOW", _int_env, 3),
-        ("opening_impulse_bar_min_rising", "OPENING_IMPULSE_BAR_MIN_RISING", _int_env, 2),
-        ("opening_impulse_bar_change_pct", "OPENING_IMPULSE_BAR_CHANGE_PCT", _float_env, 0.003),
-        ("opening_impulse_bar_volume_ratio", "OPENING_IMPULSE_BAR_VOLUME_RATIO", _float_env, 1.5),
-        ("opening_impulse_range_minutes", "OPENING_IMPULSE_RANGE_MINUTES", _int_env, 5),
-        ("opening_impulse_enable_range_breakout", "OPENING_IMPULSE_ENABLE_RANGE_BREAKOUT", _bool_env, True),
-        ("opening_impulse_enable_range_reversal", "OPENING_IMPULSE_ENABLE_RANGE_REVERSAL", _bool_env, True),
-        ("opening_impulse_range_breakout_buffer_pct", "OPENING_IMPULSE_RANGE_BREAKOUT_BUFFER_PCT", _float_env, 0.0005),
-        ("opening_impulse_range_reversal_min_drop_pct", "OPENING_IMPULSE_RANGE_REVERSAL_MIN_DROP_PCT", _float_env, 0.005),
-        ("opening_impulse_range_reclaim_buffer_pct", "OPENING_IMPULSE_RANGE_RECLAIM_BUFFER_PCT", _float_env, 0.0),
-        ("opening_impulse_range_volume_ratio", "OPENING_IMPULSE_RANGE_VOLUME_RATIO", _float_env, 1.2),
-        ("opening_impulse_max_spread_bps", "OPENING_IMPULSE_MAX_SPREAD_BPS", _float_env, 15.0),
-        ("opening_impulse_min_quote_size", "OPENING_IMPULSE_MIN_QUOTE_SIZE", _int_env, 25),
-        ("opening_impulse_max_negative_steps", "OPENING_IMPULSE_MAX_NEGATIVE_STEPS", _int_env, 1),
-        ("opening_impulse_exit_window_seconds", "OPENING_IMPULSE_EXIT_WINDOW_SECONDS", _int_env, 10),
-        ("opening_impulse_exit_min_quotes", "OPENING_IMPULSE_EXIT_MIN_QUOTES", _int_env, 4),
-        ("opening_impulse_exit_negative_steps", "OPENING_IMPULSE_EXIT_NEGATIVE_STEPS", _int_env, 4),
-        ("opening_impulse_min_hold_seconds", "OPENING_IMPULSE_MIN_HOLD_SECONDS", _int_env, 15),
-        ("opening_impulse_winner_min_pnl_pct", "OPENING_IMPULSE_WINNER_MIN_PNL_PCT", _float_env, 0.003),
-        ("opening_impulse_early_loss_cut_pct", "OPENING_IMPULSE_EARLY_LOSS_CUT_PCT", _float_env, 0.0),
-        ("opening_impulse_stall_buffer_pct", "OPENING_IMPULSE_STALL_BUFFER_PCT", _float_env, 0.001),
-        ("opening_impulse_retrace_from_high_pct", "OPENING_IMPULSE_RETRACE_FROM_HIGH_PCT", _float_env, 0.008),
-        ("opening_impulse_pullback_pct", "OPENING_IMPULSE_PULLBACK_PCT", _float_env, 0.005),
-        ("opening_impulse_strong_volume_ratio", "OPENING_IMPULSE_STRONG_VOLUME_RATIO", _float_env, 2.5),
-        ("opening_impulse_strong_pullback_pct", "OPENING_IMPULSE_STRONG_PULLBACK_PCT", _float_env, 0.01),
-        ("opening_impulse_partial_take_profit_pct", "OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_PCT", _float_env, 0.008),
-        ("opening_impulse_partial_take_profit_fraction", "OPENING_IMPULSE_PARTIAL_TAKE_PROFIT_FRACTION", _float_env, 0.5),
-        ("opening_impulse_runner_pullback_pct", "OPENING_IMPULSE_RUNNER_PULLBACK_PCT", _float_env, 0.012),
-        ("opening_impulse_volume_collapse_ratio", "OPENING_IMPULSE_VOLUME_COLLAPSE_RATIO", _float_env, 0.5),
-        ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", _int_env, 60),
-    ),
-    "maha7_pullback_reclaim": (
-        ("maha7_pullback_reclaim_start_minute", "MAHA7_PULLBACK_RECLAIM_START_MINUTE", _int_env, 30),
-        ("maha7_pullback_reclaim_end_minute", "MAHA7_PULLBACK_RECLAIM_END_MINUTE", _int_env, 300),
-        ("maha7_pullback_reclaim_rsi_period", "MAHA7_PULLBACK_RECLAIM_RSI_PERIOD", _int_env, 14),
-        ("maha7_pullback_reclaim_rsi_above_min_bars", "MAHA7_PULLBACK_RECLAIM_RSI_ABOVE_MIN_BARS", _int_env, 2),
-        ("maha7_pullback_reclaim_flat_slope_pct", "MAHA7_PULLBACK_RECLAIM_FLAT_SLOPE_PCT", _float_env, 0.0002),
-        ("maha7_pullback_reclaim_consolidation_candles", "MAHA7_PULLBACK_RECLAIM_CONSOLIDATION_CANDLES", _int_env, 10),
-        ("maha7_pullback_reclaim_vwap_min_distance_pct", "MAHA7_PULLBACK_RECLAIM_VWAP_MIN_DISTANCE_PCT", _float_env, 0.002),
-        ("maha7_pullback_reclaim_pullback_ma7_distance_pct", "MAHA7_PULLBACK_RECLAIM_PULLBACK_MA7_DISTANCE_PCT", _float_env, 0.003),
-        ("maha7_pullback_reclaim_volume_min_ratio", "MAHA7_PULLBACK_RECLAIM_VOLUME_MIN_RATIO", _float_env, 0.8),
-        ("maha7_pullback_reclaim_reentry_cooldown_seconds", "MAHA7_PULLBACK_RECLAIM_REENTRY_COOLDOWN_SECONDS", _int_env, 600),
-        ("maha7_pullback_reclaim_min_minutes_after_opening_impulse", "MAHA7_PULLBACK_RECLAIM_MIN_MINUTES_AFTER_OPENING_IMPULSE", _int_env, 5),
-        ("maha7_pullback_reclaim_trend_min_bars", "MAHA7_PULLBACK_RECLAIM_TREND_MIN_BARS", _int_env, 4),
-        ("maha7_pullback_reclaim_min_hold_seconds", "MAHA7_PULLBACK_RECLAIM_MIN_HOLD_SECONDS", _int_env, 120),
-        (
-            "maha7_pullback_reclaim_max_trades_per_symbol_per_session",
-            "MAHA7_PULLBACK_RECLAIM_MAX_TRADES_PER_SYMBOL_PER_SESSION",
-            _int_env,
-            3,
-        ),
-        ("maha7_pullback_reclaim_partial_r", "MAHA7_PULLBACK_RECLAIM_PARTIAL_R", _float_env, 0.5),
-        ("maha7_pullback_reclaim_target_r", "MAHA7_PULLBACK_RECLAIM_TARGET_R", _float_env, 2.0),
-    ),
-}
-
-
-def _read_env(specs: tuple[EnvSpec, ...]) -> dict[str, Any]:
-    return {field_name: reader(env_name, default) for field_name, env_name, reader, default in specs}
-
 
 def load_settings(strategy_names: list[str] | None = None, validate: bool = True) -> Settings:
     active_strategy_names = _strategy_env("STRATEGIES", "opening_impulse") if strategy_names is None else strategy_names
@@ -305,8 +181,11 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
     values["strategy_names"] = active_strategy_names
     values["target_profit_pct"] = min(values["target_profit_pct"], 0.02)
 
+    from strategies.registry import strategy_environment_specs
+
+    strategy_env = strategy_environment_specs()
     for strategy_name in active_strategy_names:
-        values.update(_read_env(STRATEGY_ENV.get(strategy_name, ())))
+        values.update(_read_env(strategy_env.get(strategy_name, ())))
 
     settings = Settings(**values)
     if not validate:
