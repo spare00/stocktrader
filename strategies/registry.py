@@ -10,12 +10,12 @@ from strategies.maha7_pullback_reclaim import Maha7PullbackReclaimStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
-# Order is stable for documentation / CLI; lookup is by `name`.
+# Registration order (used by available_strategy_names); lookup is by `name`.
 _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
-    SpikeStrategy,
     GapAndGoStrategy,
-    OpeningImpulseStrategy,
     Maha7PullbackReclaimStrategy,
+    SpikeStrategy,
+    OpeningImpulseStrategy,
 )
 
 STRATEGY_REGISTRY: dict[str, type[Strategy]] = {cls.name: cls for cls in _STRATEGY_CLASSES}
@@ -75,4 +75,4 @@ def build_strategies(settings: "Settings"):
 
 
 def available_strategy_names() -> list[str]:
-    return sorted(STRATEGY_REGISTRY.keys())
+    return [cls.name for cls in _STRATEGY_CLASSES]

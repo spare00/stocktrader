@@ -28,11 +28,17 @@ SETTING_BOUNDS = {
     "stop_loss_pct": (0.002, 0.02),
 }
 
+# Kept local (no strategies.registry import) so scripts can call this while the
+# registry is still importing strategy modules that depend on this file.
+_SELECTOR_COMMAND_HINTS: dict[str, str] = {
+    "opening_impulse": ".venv/bin/python scripts/select_opening_impulse.py --top 12",
+    "gap_and_go": ".venv/bin/python scripts/select_gap_and_go.py --top 5",
+    "maha7_pullback_reclaim": ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
+}
+
 
 def default_plan_file_for_strategy(strategy_name: str) -> Path:
-    from strategies.registry import default_plan_path_for_strategy
-
-    return default_plan_path_for_strategy(strategy_name)
+    return Path(f"data/{strategy_name.strip().lower()}_plan.json")
 
 
 def default_plan_file_for_settings(settings: Settings) -> Path:
@@ -42,9 +48,8 @@ def default_plan_file_for_settings(settings: Settings) -> Path:
 
 
 def selector_command_for_strategy(strategy_name: str) -> str:
-    from strategies.registry import selector_command_hint
-
-    return selector_command_hint(strategy_name)
+    key = strategy_name.strip().lower()
+    return _SELECTOR_COMMAND_HINTS.get(key, f".venv/bin/python scripts/select_{key}.py")
 
 
 def load_opening_plan(path: Path) -> dict[str, Any]:

@@ -272,7 +272,13 @@ def setup_logging(log_file: Path | None = None, strategy_names: list[str] | None
     root.addHandler(console)
     root.addHandler(file_handler)
 
-    for logger_name in diagnostic_loggers_for(strategy_names or []):
+    # When unset (e.g. tests), match previous hard-coded diagnostic set (spike excluded).
+    diagnostic_names = (
+        strategy_names
+        if strategy_names is not None
+        else ["opening_impulse", "gap_and_go", "maha7_pullback_reclaim"]
+    )
+    for logger_name in diagnostic_loggers_for(diagnostic_names):
         logging.getLogger(logger_name).setLevel(logging.DEBUG)
     for logger_name in NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.INFO)
