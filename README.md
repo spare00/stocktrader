@@ -174,6 +174,16 @@ To test a different paper profile without editing the default one:
 TUNING_PROFILE=profiles/paper_aggressive.env scripts/run_paper.sh
 ```
 
+For a **local Alpaca-compatible mock** (see `profiles/test.env.example`), use either a full path or the short **`PROFILE`** name (`profiles/<PROFILE>.env`):
+
+```bash
+PROFILE=test scripts/run_paper.sh
+# same as:
+TUNING_PROFILE=profiles/test.env scripts/run_paper.sh
+```
+
+Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clients still use the Alpaca SDK against your mock base URLs (`ALPACA_*_BASE_URL`). Use **`EXECUTION_MODE=local`** only when you want in-app simulated fills; profile switching is separate (`TUNING_PROFILE` / `PROFILE`), not tied to `EXECUTION_MODE`.
+
 If you want `main.py` to trade the selector output directly, run the selector first, then start the bot with the strategy you want:
 
 ```bash
