@@ -2931,6 +2931,111 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(final.reason, "target 2.0R")
 
+    def test_maha7_pullback_reclaim_no_hard_target_without_flag(self):
+        """v2.1: full R target is opt-in; default lets the runner / soft exits manage the rest."""
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        strategy = Maha7PullbackReclaimStrategy(settings)
+        position = Position(
+            symbol="AAPL",
+            strategy="maha7_pullback_reclaim",
+            shares=10,
+            entry_price=112.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 9),
+            target_price=120.0,
+            stop_price=104.0,
+            partial_exit_taken=True,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=128.05,
+                ask=128.15,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 4, 24, 10, 20),
+            )
+        )
+        self.assertIsNone(strategy.should_exit(state, position))
+
+    def test_maha7_pullback_reclaim_stall_weak_progress_exits(self):
+        """v2.1: time stop fires when MFE in the last N bars is below stall_min_progress_r * R."""
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_min_hold_seconds=0,
+            maha7_pullback_reclaim_immediate_failed_ma7_exit=False,
+            maha7_pullback_reclaim_stall_exit_bars=8,
+            maha7_pullback_reclaim_stall_min_progress_r=0.2,
+        )
+        strategy = Maha7PullbackReclaimStrategy(settings)
+        sym = "AAPL"
+        base = market_ms(2026, 4, 24, 9, 30)
+        state = SymbolState(sym)
+        for i in range(15):
+            end = base + (i + 1) * 60_000
+            c = 100.0 + i * 0.05
+            state.add_bar(Bar(sym, c - 0.1, c + 0.15, c - 0.15, c, 1_000, c, end - 60_000, end))
+        entry_ms = base + 15 * 60_000
+        for i in range(15, 24):
+            end = base + (i + 1) * 60_000
+            if i == 15:
+                c, h = 104.0, 105.0
+            else:
+                c, h = 111.0, 111.0
+            state.add_bar(Bar(sym, c - 0.1, h, c - 0.15, c, 1_000, c, end - 60_000, end))
+        state.update_quote(
+            Quote(sym, bid=110.95, ask=111.05, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms)
+        )
+        position = Position(
+            symbol=sym,
+            strategy="maha7_pullback_reclaim",
+            shares=10,
+            entry_price=110.0,
+            entry_ms=entry_ms,
+            target_price=130.0,
+            stop_price=100.0,
+        )
+        decision = strategy.should_exit(state, position)
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "time stop: stall or weak progress")
+
+    def test_maha7_pullback_reclaim_runner_ignores_quote_dip_below_ma7(self):
+        """v2.1: after partial, a quote below MA7 alone does not exit if closes are still holding MA7."""
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_min_hold_seconds=0,
+            maha7_pullback_reclaim_immediate_failed_ma7_exit=False,
+        )
+        strategy = Maha7PullbackReclaimStrategy(settings)
+        sym = "AAPL"
+        base = market_ms(2026, 4, 24, 9, 30)
+        state = SymbolState(sym)
+        entry_ms = base + 6 * 60_000 + 1
+        for i in range(50):
+            end = base + (i + 1) * 60_000
+            c = 95.0 + i * 0.95
+            state.add_bar(Bar(sym, c - 0.1, c + 0.2, c - 0.2, c, 1_200, c, end - 60_000, end))
+        state.update_quote(
+            Quote(sym, bid=129.95, ask=130.05, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms)
+        )
+        position = Position(
+            symbol=sym,
+            strategy="maha7_pullback_reclaim",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=entry_ms,
+            target_price=130.0,
+            stop_price=90.0,
+            partial_exit_taken=True,
+            # Keep quote 130 above peak * (1 - runner_peak_pullback_pct) so we only test MA7 quote dip.
+            max_price=131.0,
+        )
+        self.assertIsNone(strategy.should_exit(state, position))
+
     def test_maha7_pullback_reclaim_min_hold_blocks_soft_exit(self):
         settings = Settings(
             alpaca_api_key="test",
