@@ -184,6 +184,8 @@ TUNING_PROFILE=profiles/test.env scripts/run_paper.sh
 
 Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clients still use the Alpaca SDK against your mock base URLs (`ALPACA_*_BASE_URL`). Use **`EXECUTION_MODE=local`** only when you want in-app simulated fills; profile switching is separate (`TUNING_PROFILE` / `PROFILE`), not tied to `EXECUTION_MODE`.
 
+**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. When the plan includes `symbols`, it used to replace **`SYMBOLS`** unconditionally. Now, if **`SYMBOLS` is set in the environment** (including in `.env` or a profile), that list wins and the plan does not override it. For one-off overrides, `PROFILE=test SYMBOLS=RIG scripts/run_paper.sh` works: the wrapper saves `SYMBOLS` before sourcing files and reapplies it afterward so it beats duplicate `SYMBOLS=` lines in `.env` / `profiles/test.env`.
+
 If you want `main.py` to trade the selector output directly, run the selector first, then start the bot with the strategy you want:
 
 ```bash

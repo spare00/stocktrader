@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# If the caller exported SYMBOLS=... for this process, restore it after sourcing
+# .env / profile so it wins over duplicate SYMBOLS= lines in those files.
+_cmdline_symbols_set=0
+if [ -n "${SYMBOLS+x}" ]; then
+  _cmdline_saved_symbols="$SYMBOLS"
+  _cmdline_symbols_set=1
+fi
+
 load_env_file() {
   local file="$1"
   local example="$2"
@@ -40,6 +48,10 @@ else
   _tuning_example="profiles/paper.env.example"
 fi
 load_env_file "$_tuning_env" "$_tuning_example"
+
+if [ "$_cmdline_symbols_set" = 1 ]; then
+  export SYMBOLS="$_cmdline_saved_symbols"
+fi
 
 : "${EXECUTION_MODE:=alpaca_paper}"
 if [[ "$EXECUTION_MODE" != "alpaca_paper" ]]; then

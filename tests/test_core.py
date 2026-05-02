@@ -320,6 +320,20 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(updated.max_open_positions, 8)
         self.assertEqual(updated.opening_impulse_change_pct, 0.012)
 
+    def test_opening_plan_does_not_override_symbols_when_symbols_env_set(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["RIG"])
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ",
+            {"SYMBOLS": "RIG"},
+            clear=False,
+        ):
+            path = Path(tmpdir) / "opening_plan.json"
+            path.write_text('{"symbols":["INTC","PANW"],"settings":{}}')
+
+            updated = apply_opening_plan(settings, path)
+
+        self.assertEqual(updated.symbols, ["RIG"])
+
     def test_default_opening_plan_path_is_strategy_specific(self):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))

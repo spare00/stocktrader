@@ -79,7 +79,8 @@ def bounded_int(value: Any, low: int, high: int) -> int:
 def plan_overrides(settings: Settings, plan: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     symbols = parse_plan_symbols(plan)
-    if symbols:
+    # Match PLAN_SETTING_MAP: explicit SYMBOLS env wins over stale plan tickers.
+    if symbols and os.getenv("SYMBOLS") is None:
         overrides["symbols"] = symbols
 
     plan_settings = plan.get("settings") or {}
