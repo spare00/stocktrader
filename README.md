@@ -14,7 +14,7 @@ cp .env.example .env
 cp profiles/paper.env.example profiles/paper.env
 ```
 
-Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and local machine overrides; the profile files are for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
+Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and local machine overrides; the profile files are for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. **`SYMBOLS` is optional in `profiles/paper.env`:** if unset, `main.py` uses tickers from `data/<strategy>_plan.json` (run the selector first). Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
 
 For Alpaca paper mode, run:
 
@@ -102,8 +102,11 @@ The default opening-impulse tuning is intentionally stricter than before: shorte
 
 ## Run
 
+After the strategy plan exists under `data/`, start the monitor (symbols come from the plan unless you set `SYMBOLS` in the environment):
+
 ```bash
-export SYMBOLS=AAPL,MSFT,NVDA,TSLA,META
+scripts/run_paper.sh
+# or, with venv activated:
 .venv/bin/python main.py
 ```
 
@@ -184,7 +187,7 @@ TUNING_PROFILE=profiles/test.env scripts/run_paper.sh
 
 Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clients still use the Alpaca SDK against your mock base URLs (`ALPACA_*_BASE_URL`). Use **`EXECUTION_MODE=local`** only when you want in-app simulated fills; profile switching is separate (`TUNING_PROFILE` / `PROFILE`), not tied to `EXECUTION_MODE`.
 
-**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. When the plan includes `symbols`, it used to replace **`SYMBOLS`** unconditionally. Now, if **`SYMBOLS` is set in the environment** (including in `.env` or a profile), that list wins and the plan does not override it.
+**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. If **`SYMBOLS` is not set** in the environment, those plan symbols become the watch list. If **`SYMBOLS` is set** (in `.env` or a profile), that list wins and the plan does not override it.
 
 **`scripts/run_paper.sh` and `SYMBOLS`:** If your shell already exports `SYMBOLS` (e.g. from a previous `export`), that value used to be reapplied *after* sourcing and could wipe `SYMBOLS=RIG` from `profiles/test.env`. The wrapper only reapplies the pre-source `SYMBOLS` when the **active tuning profile file** does not define `SYMBOLS`. If you still see the wrong list, run `unset SYMBOLS` once, or use `SYMBOLS=RIG PROFILE=test scripts/run_paper.sh` so the prefix wins when the profile omits `SYMBOLS`.
 
@@ -197,7 +200,7 @@ scripts/run_paper.sh --strategy gap_and_go
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
 
-The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not used inside `main.py`, so order handling stays focused on the final `SYMBOLS` list you choose to trade.
+The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not used inside `main.py`, so at runtime the watch list is normally the **`symbols`** written into `data/<strategy>_plan.json`, unless **`SYMBOLS`** is set in the environment to override that list.
 
 The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default and write their own strategy plan files, such as `data/opening_impulse_plan.json` and `data/gap_and_go_plan.json`.
 
