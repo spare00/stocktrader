@@ -76,10 +76,12 @@ def make_clients(settings: Settings) -> AlpacaClients:
         api_key=settings.alpaca_api_key,
         secret_key=settings.alpaca_secret_key,
         paper=settings.alpaca_paper,
+        url_override=settings.alpaca_trading_base_url or None,
     )
     historical = StockHistoricalDataClient(
         api_key=settings.alpaca_api_key,
         secret_key=settings.alpaca_secret_key,
+        url_override=settings.alpaca_data_base_url or None,
     )
     stream = StockDataStream(
         api_key=settings.alpaca_api_key,
