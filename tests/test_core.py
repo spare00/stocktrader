@@ -2932,6 +2932,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_pullback_reclaim_min_hold_seconds=120,
+            maha7_pullback_reclaim_immediate_failed_ma7_exit=False,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()
