@@ -76,6 +76,7 @@ class Settings:
     alpaca_fill_timeout_seconds: float = 5.0
     alpaca_fill_poll_seconds: float = 0.25
     max_entry_chase_pct: float = 0.003
+    replay_market_data: bool = False
 
     opening_impulse_start_minute: int = 0
     opening_impulse_end_minute: int = 150
@@ -192,6 +193,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_fill_timeout_seconds", "ALPACA_FILL_TIMEOUT_SECONDS", _float_env, 5.0),
     ("alpaca_fill_poll_seconds", "ALPACA_FILL_POLL_SECONDS", _float_env, 0.25),
     ("max_entry_chase_pct", "MAX_ENTRY_CHASE_PCT", _float_env, 0.003),
+    ("replay_market_data", "REPLAY_MARKET_DATA", _bool_env, False),
     ("ai_review", "AI_REVIEW", _bool_env, False),
 )
 

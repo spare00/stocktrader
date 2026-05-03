@@ -13,6 +13,10 @@ def manage_all_exits(executor, states: dict[str, SymbolState], strategies_by_nam
 
 
 def flatten_on_shutdown(settings, executor, states: dict[str, SymbolState], strategies_by_name: dict, now_ms: int | None = None) -> None:
+    if settings.replay_market_data:
+        logging.info("Replay market data mode active; skipping wall-clock shutdown flatten")
+        return
+
     timestamp_ms = now_ms or int(time.time() * 1000)
     if not should_flatten_before_close(timestamp_ms, settings.flatten_before_close_minutes):
         return

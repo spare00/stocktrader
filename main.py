@@ -213,6 +213,7 @@ def runtime_settings_snapshot(settings) -> dict:
         "alpaca_api_key_fingerprint": credential_fingerprint(settings.alpaca_api_key),
         "alpaca_market_data_mode": settings.alpaca_market_data_mode,
         "regular_market_only": settings.regular_market_only,
+        "replay_market_data": settings.replay_market_data,
         "ai_review": settings.ai_review,
         "openai_model": settings.openai_model if settings.ai_review else None,
         "risk": {
@@ -242,6 +243,11 @@ def runtime_settings_snapshot(settings) -> dict:
     }
     snapshot.update(merge_strategy_runtime_snapshots(settings))
     return snapshot
+
+
+def should_manage_exits_on_heartbeat(settings) -> bool:
+    return not settings.replay_market_data
+
 
 def strategy_log_file(settings) -> Path:
     strategies = [name.strip().lower().replace(" ", "_") for name in settings.strategy_names if name.strip()]
@@ -386,7 +392,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
         async for event in stream.events():
             if isinstance(event, Heartbeat):
                 heartbeat.record_heartbeat()
-                manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms, risk)
+                if should_manage_exits_on_heartbeat(settings):
+                    manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms, risk)
                 heartbeat.emit(settings, states, executor)
                 continue
 

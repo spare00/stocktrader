@@ -1578,6 +1578,47 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.reason, "end-of-day flatten")
         self.assertEqual(fill.timestamp_ms, market_ms(2026, 4, 24, 15, 55))
 
+    def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            replay_market_data=True,
+            flatten_before_close_minutes=5,
+            max_hold_seconds=3600,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="spike",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 15, 30),
+            target_price=101.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(
+            Quote(
+                "AAPL",
+                bid=100.19,
+                ask=100.21,
+                bid_size=20,
+                ask_size=20,
+                timestamp_ms=market_ms(2026, 4, 24, 15, 40),
+            )
+        )
+
+        flatten_on_shutdown(
+            settings,
+            broker,
+            {"AAPL": state},
+            {"spike": SpikeStrategy(settings)},
+            now_ms=market_ms(2026, 4, 24, 15, 55),
+        )
+
+        self.assertIn("AAPL", broker.tracker.positions)
+
     def test_paper_broker_does_not_flatten_too_early(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -3239,6 +3280,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
         self.assertEqual(snapshot["alpaca_api_key_fingerprint"], trading_main.credential_fingerprint("test"))
         self.assertEqual(snapshot["alpaca_market_data_mode"], "stream")
+        self.assertFalse(snapshot["replay_market_data"])
         self.assertEqual(snapshot["stream"]["alpaca_market_data_poll_seconds"], 5.0)
         self.assertEqual(snapshot["stream"]["alpaca_fill_timeout_seconds"], 5.0)
         self.assertEqual(snapshot["stream"]["max_entry_chase_pct"], 0.003)
@@ -3257,6 +3299,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["spike"]["start_minute"], settings.spike_start_minute)
         self.assertEqual(snapshot["spike"]["end_minute"], settings.spike_end_minute)
         self.assertEqual(snapshot["spike"]["lookback_seconds"], settings.spike_lookback_seconds)
+
+    def test_replay_market_data_skips_heartbeat_exit_clock(self):
+        replay_settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", replay_market_data=True)
+        live_settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", replay_market_data=False)
+
+        self.assertFalse(trading_main.should_manage_exits_on_heartbeat(replay_settings))
+        self.assertTrue(trading_main.should_manage_exits_on_heartbeat(live_settings))
 
     def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):
         log_filter = trading_main.FriendlyAlpacaStreamErrorFilter(min_interval_seconds=60)
