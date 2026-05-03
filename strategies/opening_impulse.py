@@ -41,7 +41,6 @@ class OpeningImpulseStrategy(Strategy):
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("opening_impulse_start_minute", "OPENING_IMPULSE_START_MINUTE", int_env, 0),
         ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", int_env, 150),
-        ("opening_impulse_last_entry_hour_et", "OPENING_IMPULSE_LAST_ENTRY_HOUR_ET", int_env, 12),
         ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", int_env, 30),
         ("opening_impulse_min_quotes", "OPENING_IMPULSE_MIN_QUOTES", int_env, 10),
         ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", float_env, 0.009),
@@ -91,7 +90,6 @@ class OpeningImpulseStrategy(Strategy):
         return {
             "start_minute": settings.opening_impulse_start_minute,
             "end_minute": settings.opening_impulse_end_minute,
-            "last_entry_hour_et": settings.opening_impulse_last_entry_hour_et,
             "window_seconds": settings.opening_impulse_window_seconds,
             "min_quotes": settings.opening_impulse_min_quotes,
             "min_quote_move_seconds": settings.opening_impulse_min_quote_move_seconds,
@@ -347,8 +345,6 @@ class OpeningImpulseStrategy(Strategy):
         if timestamp_ms is None:
             return False
         current = datetime.fromtimestamp(timestamp_ms / 1000, tz=self.market_tz)
-        if current.hour >= self.settings.opening_impulse_last_entry_hour_et:
-            return False
         minutes = current.hour * 60 + current.minute
         market_open = 9 * 60 + 30
         elapsed = minutes - market_open

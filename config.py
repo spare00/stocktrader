@@ -80,7 +80,6 @@ class Settings:
 
     opening_impulse_start_minute: int = 0
     opening_impulse_end_minute: int = 150
-    opening_impulse_last_entry_hour_et: int = 12
     opening_impulse_window_seconds: int = 30
     opening_impulse_min_quotes: int = 10
     opening_impulse_change_pct: float = 0.009

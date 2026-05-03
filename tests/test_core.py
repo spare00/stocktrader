@@ -2797,14 +2797,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
         self.assertIn("quotes 1 < 10", "\n".join(captured.output))
 
-    def test_opening_impulse_skips_entries_after_noon(self):
+    def test_opening_impulse_skips_entries_after_end_minute(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
             opening_impulse_start_minute=0,
-            opening_impulse_end_minute=180,
-            opening_impulse_last_entry_hour_et=12,
+            opening_impulse_end_minute=150,
             opening_impulse_min_quotes=1,
         )
         state = SymbolState("AAPL")
@@ -3268,7 +3267,6 @@ class CoreTradingTests(unittest.TestCase):
             stop_loss_pct=0.005,
             max_hold_seconds=120,
             gap_and_go_min_gap_pct=0.02,
-            opening_impulse_last_entry_hour_et=12,
             opening_impulse_min_hold_seconds=15,
             opening_impulse_exit_negative_steps=4,
             opening_impulse_winner_min_pnl_pct=0.003,
@@ -3289,7 +3287,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["risk"]["max_trade_loss_r"], 1.2)
         self.assertEqual(snapshot["risk"]["consecutive_loss_stop_count"], 5)
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
-        self.assertEqual(snapshot["opening_impulse"]["last_entry_hour_et"], 12)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
         self.assertEqual(snapshot["opening_impulse"]["winner_min_pnl_pct"], 0.003)
