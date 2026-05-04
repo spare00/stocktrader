@@ -368,12 +368,11 @@ async def main(args: argparse.Namespace | None = None) -> None:
     log_file = strategy_log_file(settings)
     setup_logging(log_file, settings.strategy_names)
     logging.info("Loaded opening plan from %s", opening_plan_path)
-    sym_env = os.getenv("SYMBOLS")
-    logging.info(
-        "Watchlist source: SYMBOLS env is %s; env overrides plan tickers=%s",
-        "unset" if sym_env is None else repr(sym_env.strip()),
-        symbols_env_blocks_plan(),
-    )
+    if symbols_env_blocks_plan():
+        logging.info(
+            "Watchlist: SYMBOLS from environment overrides strategy plan (%s)",
+            os.getenv("SYMBOLS", "").strip(),
+        )
 
     settings_snapshot = runtime_settings_snapshot(settings)
     states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
