@@ -189,9 +189,11 @@ Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clien
 
 Set **`REPLAY_MARKET_DATA=true`** when the mock serves historical bars/quotes. Replay mode keeps the mocked event timestamps as the trading clock, so wall-clock heartbeats do not trigger max-hold, min-hold, cooldown, or shutdown flatten behavior.
 
-**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. If **`SYMBOLS` is not set** in the environment, those plan symbols become the watch list. If **`SYMBOLS` is set** (in `.env` or a profile), that list wins and the plan does not override it.
+**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. If **`SYMBOLS` is not set** in the process environment, those plan symbols become the watch list. If **`SYMBOLS` is set** (in `.env`, a profile, or a **shell export** from an old session), that can override the plan.
 
-**`scripts/run_paper.sh` and `SYMBOLS`:** If your shell already exports `SYMBOLS` (e.g. from a previous `export`), that value used to be reapplied *after* sourcing and could wipe `SYMBOLS=RIG` from `profiles/test.env`. The wrapper only reapplies the pre-source `SYMBOLS` when the **active tuning profile file** does not define `SYMBOLS`. If you still see the wrong list, run `unset SYMBOLS` once, or use `SYMBOLS=RIG PROFILE=test scripts/run_paper.sh` so the prefix wins when the profile omits `SYMBOLS`.
+**Do not `export SYMBOLS=...` from selector output:** Selectors print a `SYMBOLS=...` line for pasting into `profiles/*.env` or `.env` only. Exporting it in the shell leaves the variable in your session (and tmux panes), which is easy to miss. Use `unset SYMBOLS` if the watch list looks like the default megacap list. The JSON field is `symbols_env_line` (the old `export` key is removed).
+
+**`scripts/run_paper.sh` and `SYMBOLS`:** The wrapper may restore `SYMBOLS` from the command line when the active profile does not define `SYMBOLS`. If you still see the wrong list, run `unset SYMBOLS` once, or use `SYMBOLS=RIG PROFILE=test scripts/run_paper.sh` so the prefix wins when the profile omits `SYMBOLS`.
 
 If you want `main.py` to trade the selector output directly, run the selector first, then start the bot with the strategy you want:
 

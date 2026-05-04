@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import Settings, load_settings
+from env_vars import format_symbols_env_line
 from models import Bar, Quote
 from scripts.select_opening_impulse import usable_quote
 
@@ -210,7 +211,7 @@ def build_universe(args: argparse.Namespace) -> dict:
 
     return {
         "selected_symbols": selected_symbols,
-        "export": f"export SYMBOLS={','.join(selected_symbols)}",
+        "symbols_env_line": format_symbols_env_line(selected_symbols),
         "output": str(args.output) if args.output else None,
         "candidates": selected,
         "screened": len(symbols),
@@ -245,7 +246,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     result = build_universe(parse_args())
     print(json.dumps(result, indent=2, sort_keys=True))
-    print(result["export"])
+    line = result.get("symbols_env_line") or ""
+    if line:
+        print(
+            "# Paste into profiles/*.env or `.env` — do not `export` (pollutes shell/tmux).",
+            file=sys.stderr,
+        )
+        print(line)
 
 
 if __name__ == "__main__":

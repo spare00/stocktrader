@@ -17,6 +17,7 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca_client import get_bars_between, get_latest_quotes, make_clients
 from candle import SymbolState
 from config import Settings, load_settings
+from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
 from opening_plan import default_plan_file_for_strategy
 
@@ -615,7 +616,7 @@ def main() -> None:
         "strategy": "gap_and_go",
         "selection_stage": "pre_market",
         "selected_symbols": [candidate.symbol for candidate in candidates],
-        "export": f"export SYMBOLS={','.join(candidate.symbol for candidate in candidates)}",
+        "symbols_env_line": format_symbols_env_line([candidate.symbol for candidate in candidates]),
         "candidates": [asdict(candidate) for candidate in candidates],
         "selection_plan": deterministic_plan,
         "ai_enabled": args.use_ai,
@@ -633,7 +634,7 @@ def main() -> None:
             result["ai_selection"] = validated
             result["selection_plan"] = validated
             result["selected_symbols"] = validated["symbols"]
-            result["export"] = f"export SYMBOLS={','.join(validated['symbols'])}"
+            result["symbols_env_line"] = format_symbols_env_line(validated["symbols"])
             if args.plan_output:
                 args.plan_output.parent.mkdir(parents=True, exist_ok=True)
                 args.plan_output.write_text(json.dumps(validated, indent=2, sort_keys=True) + "\n")

@@ -1,10 +1,16 @@
 """Environment variable readers shared by config and strategy plugins (no strategy imports)."""
 
 import os
+from collections.abc import Sequence
 from typing import Any, Callable
 
 EnvReader = Callable[[str, Any], Any]
 EnvSpec = tuple[str, str, EnvReader, Any]
+
+
+def format_symbols_env_line(symbols: Sequence[str]) -> str:
+    """One line for `.env` / profiles — not a shell `export` (avoids leaking into tmux/subshells)."""
+    return "SYMBOLS=" + ",".join(s.strip().upper() for s in symbols if str(s).strip())
 
 
 def csv_env(name: str, default: str) -> list[str]:

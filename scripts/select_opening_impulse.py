@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from ai_client import request_json_response
 from config import Settings, load_settings
+from env_vars import format_symbols_env_line
 from models import Bar, Quote
 from opening_plan import default_plan_file_for_strategy
 
@@ -547,7 +548,7 @@ def screen(args: argparse.Namespace) -> dict:
     selected = candidates[: args.top]
     return {
         "selected_symbols": [item["symbol"] for item in selected],
-        "export": f"export SYMBOLS={','.join(item['symbol'] for item in selected)}",
+        "symbols_env_line": format_symbols_env_line([item["symbol"] for item in selected]),
         "candidates": selected,
         "screened": len(universe),
         "session_dates": [value.isoformat() for value in session_dates],
@@ -690,7 +691,7 @@ def maybe_apply_ai_selection(result: dict[str, Any], args: argparse.Namespace, s
     validated = validated_opening_plan(plan, result, args.top)
     selected_symbols = validated["symbols"]
     result["selected_symbols"] = selected_symbols
-    result["export"] = f"export SYMBOLS={','.join(selected_symbols)}"
+    result["symbols_env_line"] = format_symbols_env_line(selected_symbols)
     result["ai_enabled"] = True
     result["ai_plan"] = validated
     result["selection_plan"] = validated
@@ -791,7 +792,13 @@ def main() -> None:
     universe = load_universe(args.universe_file, args.symbols)
     result = maybe_apply_ai_selection(result, args, settings, universe)
     print(json.dumps(result, indent=2, sort_keys=True))
-    print(result["export"])
+    line = result.get("symbols_env_line") or ""
+    if line:
+        print(
+            "# Paste into profiles/*.env or `.env` — do not `export` (pollutes shell/tmux).",
+            file=sys.stderr,
+        )
+        print(line)
 
 
 if __name__ == "__main__":
