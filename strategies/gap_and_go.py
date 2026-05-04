@@ -10,7 +10,6 @@ from env_vars import EnvSpec, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from scripts.select_gap_and_go import (
-    inspect_gap_and_go_candidate,
     latest_valid_quote,
     premarket_high_price,
     premarket_volume_ratio,
@@ -26,8 +25,8 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 
-# --- Breakout confirmation (Change #6) ---
-GAP_AND_GO_CONFIRM_BREAKOUT = True
+# --- Breakout confirmation (disabled: selector handles screening) ---
+GAP_AND_GO_CONFIRM_BREAKOUT = False
 GAP_AND_GO_CONFIRM_BARS = 2
 
 
@@ -120,31 +119,43 @@ class GapAndGoStrategy(Strategy):
             )
 
     def evaluate(self, state: SymbolState) -> Signal | None:
+        # Only trade symbols chosen by the selector (plan / SYMBOLS watchlist).
+        if state.symbol not in self.settings.symbols:
+            return None
         if state.last_event_kind not in {"quote", "bar"}:
             return None
         if not self._within_entry_window(state.last_event_ms):
             return None
 
-        prev_close = self._previous_close.get(state.symbol) or self._infer_previous_close(state)
-        decision = inspect_gap_and_go_candidate(state, self.settings, previous_close=prev_close)
-        if decision.candidate is None:
-            return self._reject(state, decision.code, decision.detail)
-
         last = latest_valid_quote(state)
-        assert last is not None
-        gap_pct = decision.candidate.gap_pct
-        premarket_high = decision.candidate.premarket_high
-        premarket_volume = decision.candidate.premarket_volume_ratio
+        if last is None:
+            return self._reject(state, "quote", "invalid or missing latest quote")
 
-        # --- Change #1: Relaxed breakout level (-0.2% below premarket high) ---
-        breakout_level = premarket_high * (1 - 0.002)
+        prev_close = self._previous_close.get(state.symbol) or self._infer_previous_close(state)
+        if not prev_close:
+            return self._reject(state, "prev_close", "missing previous close")
 
-        # --- Change #2: Reclaim entry logic ---
-        reclaim_level = premarket_high * 0.98
+        premarket_high = self._premarket_high(state)
+        if not premarket_high or premarket_high <= 0:
+            return self._reject(state, "premarket", "missing premarket high")
+
+        premarket_volume = self._premarket_volume_ratio(state)
+        gap_pct = (last.ask - prev_close) / prev_close
+
+        breakout_level = premarket_high * 0.995
+        reclaim_level = premarket_high * 0.95
+        LOG.debug(
+            "GNG %s ask=%.2f pm_high=%.2f breakout=%.2f reclaim=%.2f",
+            state.symbol,
+            last.ask,
+            premarket_high,
+            breakout_level,
+            reclaim_level,
+        )
         if last.ask >= reclaim_level:
             breakout_ok = True
             entry_type = "reclaim"
-        elif last.ask > breakout_level:
+        elif last.ask >= breakout_level:
             breakout_ok = True
             entry_type = "breakout"
         else:
