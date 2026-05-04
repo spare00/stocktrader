@@ -309,9 +309,10 @@ class Maha7PullbackReclaimStrategy(Strategy):
         if elapsed_seconds < self.settings.maha7_pullback_reclaim_min_hold_seconds:
             return None
 
+        # No immediate single-bar MA7 cross — require sustained breakdown + non-rising MA7.
         breakdown_n = max(1, self.settings.maha7_pullback_reclaim_ma7_breakdown_bars)
-        if ma7 is not None and self._ma7_slope_negative(closes) and self._trailing_closes_below_ma7(
-            bars, breakdown_n
+        if ma7 is not None and self._last_n_bars_below_ma7(bars, breakdown_n) and self._ma7_slope_not_positive(
+            closes
         ):
             return ExitDecision("MA7 confirmed breakdown")
 
@@ -467,22 +468,23 @@ class Maha7PullbackReclaimStrategy(Strategy):
         weak_gain = (tail_max - entry_price) / risk < min_progress_r
         return no_new_high or weak_gain
 
-    def _ma7_slope_negative(self, closes: list[float]) -> bool:
-        """True when MA7(now) < MA7(prev bar), i.e. MA7 is declining at the last close."""
+    def _ma7_slope_not_positive(self, closes: list[float]) -> bool:
+        """True when MA7 slope <= 0 (flat or down): SMA7(now) <= SMA7(previous bar)."""
         if len(closes) < 8:
             return False
         ma7_now = self._sma(closes, 7)
         ma7_prev = self._sma(closes[:-1], 7)
         if ma7_now is None or ma7_prev is None:
             return False
-        return ma7_now < ma7_prev
+        return ma7_now <= ma7_prev
 
-    def _trailing_closes_below_ma7(self, bars, confirm_n: int) -> bool:
-        if confirm_n <= 0 or len(bars) < confirm_n + 7:
+    def _last_n_bars_below_ma7(self, bars, n: int) -> bool:
+        """Each of the last ``n`` completed bars closes below that bar's SMA7 (point-in-time)."""
+        if n <= 0 or len(bars) < n + 7:
             return False
         closes_all = [b.close for b in bars]
-        for k in range(confirm_n):
-            idx = len(bars) - confirm_n + k
+        for k in range(n):
+            idx = len(bars) - n + k
             ma = self._sma(closes_all[: idx + 1], 7)
             if ma is None or bars[idx].close >= ma:
                 return False

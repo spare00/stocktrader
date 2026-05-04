@@ -3107,22 +3107,38 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_pullback_reclaim_min_hold_seconds=120,
-            maha7_pullback_reclaim_ma7_breakdown_bars=1,
+            maha7_pullback_reclaim_ma7_breakdown_bars=2,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()
         last_bar = state.bars[-1]
+        t0 = last_bar.end_ms
+        # Two consecutive closes below each bar's MA7; second bar also enforces non-rising MA7 for breakdown.
         state.add_bar(
             Bar(
                 "AAPL",
                 open=114.0,
-                high=114.2,
+                high=114.1,
+                low=110.0,
+                close=110.5,
+                volume=1_500,
+                vwap=110.5,
+                start_ms=t0,
+                end_ms=t0 + 60_000,
+            )
+        )
+        t1 = state.bars[-1].end_ms
+        state.add_bar(
+            Bar(
+                "AAPL",
+                open=110.0,
+                high=110.3,
                 low=104.5,
                 close=105.0,
                 volume=1_500,
                 vwap=105.0,
-                start_ms=last_bar.end_ms,
-                end_ms=last_bar.end_ms + 60_000,
+                start_ms=t1,
+                end_ms=t1 + 60_000,
             )
         )
         position = Position(
