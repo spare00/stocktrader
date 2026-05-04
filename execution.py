@@ -185,7 +185,10 @@ class PositionTracker:
             position.shares -= shares
             if mark_partial:
                 position.partial_exit_taken = True
-                if position.strategy == "maha7_pullback_reclaim":
+                if (
+                    position.strategy == "maha7_pullback_reclaim"
+                    and self.settings.maha7_move_stop_to_entry_after_partial
+                ):
                     position.stop_price = position.entry_price
 
         trade_type = "winner" if pnl > 0 else "loser"

@@ -39,8 +39,10 @@ class Maha7PullbackReclaimStrategy(Strategy):
             int_env,
             3,
         ),
-        ("maha7_pullback_reclaim_partial_r", "MAHA7_PULLBACK_RECLAIM_PARTIAL_R", float_env, 0.5),
-        ("maha7_pullback_reclaim_target_r", "MAHA7_PULLBACK_RECLAIM_TARGET_R", float_env, 2.0),
+        ("maha7_pullback_reclaim_partial_r", "MAHA7_PARTIAL_R", float_env, 0.5),
+        ("maha7_partial_size", "MAHA7_PARTIAL_SIZE", float_env, 0.5),
+        ("maha7_pullback_reclaim_target_r", "MAHA7_TARGET_R", float_env, 2.0),
+        ("maha7_move_stop_to_entry_after_partial", "MAHA7_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL", bool_env, True),
         ("maha7_pullback_reclaim_hard_target_r_exit", "MAHA7_HARD_TARGET_R_EXIT", bool_env, True),
         ("maha7_pullback_reclaim_trend_quality_enabled", "MAHA7_PULLBACK_RECLAIM_TREND_QUALITY_ENABLED", bool_env, True),
         ("maha7_pullback_reclaim_min_30m_range_pct", "MAHA7_PULLBACK_RECLAIM_MIN_30M_RANGE_PCT", float_env, 0.01),
@@ -68,16 +70,13 @@ class Maha7PullbackReclaimStrategy(Strategy):
             int_env,
             15,
         ),
-        ("maha7_pullback_reclaim_stall_exit_bars", "MAHA7_STALL_EXIT_BARS", int_env, 8),
-        ("maha7_pullback_reclaim_stall_min_progress_r", "MAHA7_STALL_MIN_PROGRESS_R", float_env, 0.2),
-        ("maha7_pullback_reclaim_ma7_breakdown_bars", "MAHA7_MA7_BREAKDOWN_BARS", int_env, 2),
+        ("maha7_runner_confirm_break_bars", "MAHA7_RUNNER_CONFIRM_BREAK_BARS", int_env, 2),
         (
             "maha7_pullback_reclaim_runner_peak_pullback_pct",
             "MAHA7_RUNNER_PEAK_PULLBACK_PCT",
             float_env,
             0.012,
         ),
-        ("maha7_pullback_reclaim_runner_lower_high_steps", "MAHA7_RUNNER_LOWER_HIGH_STEPS", int_env, 2),
         ("maha7_pullback_reclaim_swing_lookback", "MAHA7_SWING_LOOKBACK", int_env, 5),
         ("maha7_pullback_reclaim_stop_anchor_buffer_pct", "MAHA7_STOP_ANCHOR_BUFFER_PCT", float_env, 0.001),
         ("maha7_pullback_reclaim_min_r_pct", "MAHA7_MIN_R_PCT", float_env, 0.003),
@@ -86,6 +85,7 @@ class Maha7PullbackReclaimStrategy(Strategy):
         ("maha7_pullback_reclaim_max_chase_pct", "MAHA7_MAX_CHASE_PCT", float_env, 0.01),
         ("maha7_pullback_reclaim_recent_high_lookback", "MAHA7_RECENT_HIGH_LOOKBACK", int_env, 20),
         ("maha7_pullback_reclaim_momentum_green_bars", "MAHA7_MOMENTUM_GREEN_BARS", int_env, 2),
+        ("maha7_disable_ma7_exit", "MAHA7_DISABLE_MA7_EXIT", bool_env, False),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.maha7_pullback_reclaim",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12"
@@ -111,7 +111,9 @@ class Maha7PullbackReclaimStrategy(Strategy):
             "min_hold_seconds": s.maha7_pullback_reclaim_min_hold_seconds,
             "max_trades_per_symbol_per_session": s.maha7_pullback_reclaim_max_trades_per_symbol_per_session,
             "partial_r": s.maha7_pullback_reclaim_partial_r,
+            "partial_size": s.maha7_partial_size,
             "target_r": s.maha7_pullback_reclaim_target_r,
+            "move_stop_to_entry_after_partial": s.maha7_move_stop_to_entry_after_partial,
             "hard_target_r_exit": s.maha7_pullback_reclaim_hard_target_r_exit,
             "trend_quality_enabled": s.maha7_pullback_reclaim_trend_quality_enabled,
             "min_30m_range_pct": s.maha7_pullback_reclaim_min_30m_range_pct,
@@ -124,11 +126,8 @@ class Maha7PullbackReclaimStrategy(Strategy):
             "reclaim_buffer_pct": s.maha7_pullback_reclaim_reclaim_buffer_pct,
             "allow_early_trend_entry": s.maha7_pullback_reclaim_allow_early_trend_entry,
             "early_trend_max_bars_since_cross": s.maha7_pullback_reclaim_early_trend_max_bars_since_cross,
-            "stall_exit_bars": s.maha7_pullback_reclaim_stall_exit_bars,
-            "stall_min_progress_r": s.maha7_pullback_reclaim_stall_min_progress_r,
-            "ma7_breakdown_bars": s.maha7_pullback_reclaim_ma7_breakdown_bars,
+            "runner_confirm_break_bars": s.maha7_runner_confirm_break_bars,
             "runner_peak_pullback_pct": s.maha7_pullback_reclaim_runner_peak_pullback_pct,
-            "runner_lower_high_steps": s.maha7_pullback_reclaim_runner_lower_high_steps,
             "swing_lookback": s.maha7_pullback_reclaim_swing_lookback,
             "stop_anchor_buffer_pct": s.maha7_pullback_reclaim_stop_anchor_buffer_pct,
             "min_r_pct": s.maha7_pullback_reclaim_min_r_pct,
@@ -137,6 +136,7 @@ class Maha7PullbackReclaimStrategy(Strategy):
             "max_chase_pct": s.maha7_pullback_reclaim_max_chase_pct,
             "recent_high_lookback": s.maha7_pullback_reclaim_recent_high_lookback,
             "momentum_green_bars": s.maha7_pullback_reclaim_momentum_green_bars,
+            "disable_ma7_exit": s.maha7_disable_ma7_exit,
         }
 
     def __init__(self, settings: Settings):
@@ -259,6 +259,11 @@ class Maha7PullbackReclaimStrategy(Strategy):
         )
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
+        """MAHA7 exits (in order): -1R stop; partial at MAHA7_PARTIAL_R / MAHA7_PARTIAL_SIZE; +MAHA7_TARGET_R
+        if MAHA7_HARD_TARGET_R_EXIT; runner pullback vs MAHA7_RUNNER_PEAK_PULLBACK_PCT (after partial);
+        after MAHA7_PULLBACK_RECLAIM_MIN_HOLD_SECONDS, MA7 confirmed breakdown unless MAHA7_DISABLE_MA7_EXIT
+        (MAHA7_RUNNER_CONFIRM_BREAK_BARS consecutive closes below bar SMA7 and MA7 slope <= 0). No single-bar
+        MA7 or RSI-based exits. Breakeven stop after partial is in execution (MAHA7_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL)."""
         if state.last_event_kind not in {"quote", "bar"} or position.strategy != self.name:
             return None
 
@@ -275,17 +280,21 @@ class Maha7PullbackReclaimStrategy(Strategy):
 
         bars = self._regular_bars(state)
         closes = [bar.close for bar in bars] if bars else []
-        ma7 = self._sma(closes, 7) if len(closes) >= 7 else None
+        skip_ma7_exit = self.settings.maha7_disable_ma7_exit
 
         floor_1r = position.entry_price - r_initial
         if price <= floor_1r:
             return ExitDecision("stop loss -1R")
 
-        if not position.partial_exit_taken and price >= position.entry_price + (
-            r_initial * self.settings.maha7_pullback_reclaim_partial_r
+        partial_r = self.settings.maha7_pullback_reclaim_partial_r
+        if (
+            not position.partial_exit_taken
+            and position.shares > 1
+            and price >= position.entry_price + (r_initial * partial_r)
         ):
-            shares = max(1, position.shares // 2)
-            return ExitDecision("partial 0.5R", shares=shares, mark_partial=True)
+            frac = min(1.0, max(0.0, self.settings.maha7_partial_size))
+            shares = max(1, min(position.shares - 1, int(position.shares * frac)))
+            return ExitDecision(f"partial {partial_r}R", shares=shares, mark_partial=True)
 
         if self.settings.maha7_pullback_reclaim_hard_target_r_exit and price >= position.entry_price + (
             r_initial * self.settings.maha7_pullback_reclaim_target_r
@@ -298,34 +307,20 @@ class Maha7PullbackReclaimStrategy(Strategy):
             peak = position.max_price if position.max_price > 0 else position.entry_price
             pull_pct = self.settings.maha7_pullback_reclaim_runner_peak_pullback_pct
             pullback_hit = peak > 0 and price <= peak * (1 - pull_pct)
-            steps = max(1, self.settings.maha7_pullback_reclaim_runner_lower_high_steps)
-            lower_high = len(bars) >= steps + 1 and self._strict_lower_high_chain(bars, steps)
-            # Lower-high chain never exits alone — only with runner peak pullback context.
-            if pullback_hit and lower_high:
-                return ExitDecision("trend break")
             if pullback_hit:
-                return ExitDecision("runner peak pullback")
+                return ExitDecision("runner pullback")
 
         if elapsed_seconds < self.settings.maha7_pullback_reclaim_min_hold_seconds:
             return None
 
-        # No immediate single-bar MA7 cross — require sustained breakdown + non-rising MA7.
-        breakdown_n = max(1, self.settings.maha7_pullback_reclaim_ma7_breakdown_bars)
-        if ma7 is not None and self._last_n_bars_below_ma7(bars, breakdown_n) and self._ma7_slope_not_positive(
-            closes
-        ):
-            return ExitDecision("MA7 confirmed breakdown")
-
-        if len(bars) >= max(8, self.settings.maha7_pullback_reclaim_rsi_period + 1):
-            if self._stall_exit_trigger(
-                bars,
-                position.entry_ms,
-                position.entry_price,
-                r_initial,
-                self.settings.maha7_pullback_reclaim_stall_exit_bars,
-                self.settings.maha7_pullback_reclaim_stall_min_progress_r,
+        if not skip_ma7_exit:
+            # Sustained closes below SMA7 + MA7 slope <= 0 (no single-bar MA7 cross).
+            breakdown_n = max(1, self.settings.maha7_runner_confirm_break_bars)
+            ma7 = self._sma(closes, 7) if len(closes) >= 7 else None
+            if ma7 is not None and self._last_n_bars_below_ma7(bars, breakdown_n) and self._ma7_slope_not_positive(
+                closes
             ):
-                return ExitDecision("time stop: stall or weak progress")
+                return ExitDecision("MA7 confirmed breakdown")
 
         return None
 
@@ -452,22 +447,6 @@ class Maha7PullbackReclaimStrategy(Strategy):
         threshold_prev = ma7_prev * (1 + buffer_pct)
         return prev <= threshold_prev and last > threshold_now
 
-    def _stall_exit_trigger(
-        self, bars, entry_ms: int, entry_price: float, risk: float, stall_n: int, min_progress_r: float
-    ) -> bool:
-        sub = [b for b in bars if b.end_ms > entry_ms]
-        if len(sub) < stall_n + 1:
-            return False
-        prior = sub[:-stall_n]
-        tail = sub[-stall_n:]
-        prior_max = max(b.high for b in prior) if prior else entry_price
-        tail_max = max(b.high for b in tail)
-        no_new_high = tail_max <= prior_max * 1.00005
-        if risk <= 0:
-            return no_new_high
-        weak_gain = (tail_max - entry_price) / risk < min_progress_r
-        return no_new_high or weak_gain
-
     def _ma7_slope_not_positive(self, closes: list[float]) -> bool:
         """True when MA7 slope <= 0 (flat or down): SMA7(now) <= SMA7(previous bar)."""
         if len(closes) < 8:
@@ -487,17 +466,6 @@ class Maha7PullbackReclaimStrategy(Strategy):
             idx = len(bars) - n + k
             ma = self._sma(closes_all[: idx + 1], 7)
             if ma is None or bars[idx].close >= ma:
-                return False
-        return True
-
-    @staticmethod
-    def _strict_lower_high_chain(bars, steps: int) -> bool:
-        """Last ``steps + 1`` bars have strictly decreasing highs (trend break)."""
-        if steps <= 0 or len(bars) < steps + 1:
-            return False
-        tail = bars[-(steps + 1) :]
-        for index in range(1, len(tail)):
-            if tail[index].high >= tail[index - 1].high:
                 return False
         return True
 

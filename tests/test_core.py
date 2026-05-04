@@ -3022,48 +3022,57 @@ class CoreTradingTests(unittest.TestCase):
         )
         self.assertIsNone(strategy.should_exit(state, position))
 
-    def test_maha7_pullback_reclaim_stall_weak_progress_exits(self):
-        """v2.1: time stop fires when MFE in the last N bars is below stall_min_progress_r * R."""
+    def test_maha7_disable_ma7_exit_skips_confirmed_breakdown(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
+            maha7_disable_ma7_exit=True,
             maha7_pullback_reclaim_min_hold_seconds=0,
-            maha7_pullback_reclaim_stall_exit_bars=8,
-            maha7_pullback_reclaim_stall_min_progress_r=0.2,
+            maha7_runner_confirm_break_bars=2,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
-        sym = "AAPL"
-        base = market_ms(2026, 4, 24, 9, 30)
-        state = SymbolState(sym)
-        for i in range(15):
-            end = base + (i + 1) * 60_000
-            c = 100.0 + i * 0.05
-            state.add_bar(Bar(sym, c - 0.1, c + 0.15, c - 0.15, c, 1_000, c, end - 60_000, end))
-        entry_ms = base + 15 * 60_000
-        for i in range(15, 24):
-            end = base + (i + 1) * 60_000
-            if i == 15:
-                c, h = 104.0, 105.0
-            else:
-                c, h = 111.0, 111.0
-            state.add_bar(Bar(sym, c - 0.1, h, c - 0.15, c, 1_000, c, end - 60_000, end))
-        state.update_quote(
-            Quote(sym, bid=110.95, ask=111.05, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms)
+        state = self._maha7_reclaim_state()
+        last_bar = state.bars[-1]
+        t0 = last_bar.end_ms
+        state.add_bar(
+            Bar(
+                "AAPL",
+                open=114.0,
+                high=114.1,
+                low=110.0,
+                close=110.5,
+                volume=1_500,
+                vwap=110.5,
+                start_ms=t0,
+                end_ms=t0 + 60_000,
+            )
+        )
+        t1 = state.bars[-1].end_ms
+        state.add_bar(
+            Bar(
+                "AAPL",
+                open=110.0,
+                high=110.3,
+                low=104.5,
+                close=105.0,
+                volume=1_500,
+                vwap=105.0,
+                start_ms=t1,
+                end_ms=t1 + 60_000,
+            )
         )
         position = Position(
-            symbol=sym,
+            symbol="AAPL",
             strategy="maha7_pullback_reclaim",
             shares=10,
-            entry_price=110.0,
-            entry_ms=entry_ms,
-            target_price=130.0,
-            stop_price=100.0,
-            initial_stop_price=100.0,
+            entry_price=112.0,
+            entry_ms=state.last_event_ms - 300_000,
+            target_price=120.0,
+            stop_price=104.0,
+            initial_stop_price=104.0,
         )
-        decision = strategy.should_exit(state, position)
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "time stop: stall or weak progress")
+        self.assertIsNone(strategy.should_exit(state, position))
 
     def test_maha7_pullback_reclaim_runner_ignores_quote_dip_below_ma7(self):
         """v2.1: after partial, a quote below MA7 alone does not exit if closes are still holding MA7."""
@@ -3107,7 +3116,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_pullback_reclaim_min_hold_seconds=120,
-            maha7_pullback_reclaim_ma7_breakdown_bars=2,
+            maha7_runner_confirm_break_bars=2,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()

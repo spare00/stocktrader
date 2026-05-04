@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -134,7 +135,9 @@ class Settings:
     maha7_pullback_reclaim_min_hold_seconds: int = 120
     maha7_pullback_reclaim_max_trades_per_symbol_per_session: int = 3
     maha7_pullback_reclaim_partial_r: float = 0.5
+    maha7_partial_size: float = 0.5
     maha7_pullback_reclaim_target_r: float = 2.0
+    maha7_move_stop_to_entry_after_partial: bool = True
     maha7_pullback_reclaim_hard_target_r_exit: bool = True
     maha7_pullback_reclaim_trend_quality_enabled: bool = True
     maha7_pullback_reclaim_min_30m_range_pct: float = 0.01
@@ -147,11 +150,8 @@ class Settings:
     maha7_pullback_reclaim_reclaim_buffer_pct: float = 0.0005
     maha7_pullback_reclaim_allow_early_trend_entry: bool = True
     maha7_pullback_reclaim_early_trend_max_bars_since_cross: int = 15
-    maha7_pullback_reclaim_stall_exit_bars: int = 8
-    maha7_pullback_reclaim_stall_min_progress_r: float = 0.2
-    maha7_pullback_reclaim_ma7_breakdown_bars: int = 2
+    maha7_runner_confirm_break_bars: int = 2
     maha7_pullback_reclaim_runner_peak_pullback_pct: float = 0.012
-    maha7_pullback_reclaim_runner_lower_high_steps: int = 2
     maha7_pullback_reclaim_swing_lookback: int = 5
     maha7_pullback_reclaim_stop_anchor_buffer_pct: float = 0.001
     maha7_pullback_reclaim_min_r_pct: float = 0.003
@@ -160,6 +160,7 @@ class Settings:
     maha7_pullback_reclaim_max_chase_pct: float = 0.01
     maha7_pullback_reclaim_recent_high_lookback: int = 20
     maha7_pullback_reclaim_momentum_green_bars: int = 2
+    maha7_disable_ma7_exit: bool = False
 
     ai_review: bool = False
 
@@ -216,6 +217,12 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
     strategy_env = strategy_environment_specs()
     for strategy_name in active_strategy_names:
         values.update(_read_env(strategy_env.get(strategy_name, ())))
+
+    if "maha7_pullback_reclaim" in active_strategy_names:
+        legacy_ma7_bars = os.getenv("MAHA7_MA7_BREAKDOWN_BARS")
+        new_ma7_bars = os.getenv("MAHA7_RUNNER_CONFIRM_BREAK_BARS")
+        if legacy_ma7_bars is not None and new_ma7_bars is None:
+            values["maha7_runner_confirm_break_bars"] = int(legacy_ma7_bars)
 
     settings = Settings(**values)
     if not validate:
