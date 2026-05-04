@@ -26,6 +26,7 @@ class Position:
     entry_ms: int
     target_price: float
     stop_price: float
+    initial_stop_price: float | None = None
     max_price: float = 0.0
     last_high_ts: int = 0
     partial_exit_taken: bool = False
@@ -103,6 +104,7 @@ class PositionTracker:
     ) -> Fill:
         self.cash -= shares * fill_price
         slippage_pct = (fill_price - signal.price) / signal.price if signal.price > 0 else None
+        stop_px = signal.stop_price or fill_price * (1 - self.settings.stop_loss_pct)
         self.positions[signal.symbol] = Position(
             symbol=signal.symbol,
             strategy=signal.strategy,
@@ -110,7 +112,8 @@ class PositionTracker:
             entry_price=fill_price,
             entry_ms=signal.timestamp_ms,
             target_price=fill_price * (1 + self.settings.target_profit_pct),
-            stop_price=signal.stop_price or fill_price * (1 - self.settings.stop_loss_pct),
+            stop_price=stop_px,
+            initial_stop_price=stop_px,
             max_price=fill_price,
             last_high_ts=signal.timestamp_ms,
             original_shares=shares,
@@ -136,6 +139,7 @@ class PositionTracker:
         return fill
 
     def record_reconciled_position(self, symbol: str, shares: int, entry_price: float, timestamp_ms: int) -> None:
+        recon_stop = entry_price * (1 - self.settings.stop_loss_pct)
         self.positions[symbol] = Position(
             symbol=symbol,
             strategy="reconciled",
@@ -143,7 +147,8 @@ class PositionTracker:
             entry_price=entry_price,
             entry_ms=timestamp_ms,
             target_price=entry_price * (1 + self.settings.target_profit_pct),
-            stop_price=entry_price * (1 - self.settings.stop_loss_pct),
+            stop_price=recon_stop,
+            initial_stop_price=recon_stop,
             max_price=entry_price,
             last_high_ts=timestamp_ms,
             original_shares=shares,
@@ -180,6 +185,8 @@ class PositionTracker:
             position.shares -= shares
             if mark_partial:
                 position.partial_exit_taken = True
+                if position.strategy == "maha7_pullback_reclaim":
+                    position.stop_price = position.entry_price
 
         trade_type = "winner" if pnl > 0 else "loser"
         hold_seconds = (timestamp_ms - position.entry_ms) / 1000

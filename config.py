@@ -135,7 +135,7 @@ class Settings:
     maha7_pullback_reclaim_max_trades_per_symbol_per_session: int = 3
     maha7_pullback_reclaim_partial_r: float = 0.5
     maha7_pullback_reclaim_target_r: float = 2.0
-    maha7_pullback_reclaim_hard_target_r_exit: bool = False
+    maha7_pullback_reclaim_hard_target_r_exit: bool = True
     maha7_pullback_reclaim_trend_quality_enabled: bool = True
     maha7_pullback_reclaim_min_30m_range_pct: float = 0.01
     maha7_pullback_reclaim_chop_max_ma_spacing_pct: float = 0.002
@@ -149,9 +149,17 @@ class Settings:
     maha7_pullback_reclaim_early_trend_max_bars_since_cross: int = 15
     maha7_pullback_reclaim_stall_exit_bars: int = 8
     maha7_pullback_reclaim_stall_min_progress_r: float = 0.2
-    maha7_pullback_reclaim_immediate_failed_ma7_exit: bool = True
+    maha7_pullback_reclaim_ma7_breakdown_bars: int = 2
     maha7_pullback_reclaim_runner_peak_pullback_pct: float = 0.012
-    maha7_pullback_reclaim_runner_confirm_break_bars: int = 2
+    maha7_pullback_reclaim_runner_lower_high_steps: int = 2
+    maha7_pullback_reclaim_swing_lookback: int = 5
+    maha7_pullback_reclaim_stop_anchor_buffer_pct: float = 0.001
+    maha7_pullback_reclaim_min_r_pct: float = 0.003
+    maha7_pullback_reclaim_max_r_pct: float = 0.012
+    maha7_pullback_reclaim_continuation_volume_ratio: float = 1.2
+    maha7_pullback_reclaim_max_chase_pct: float = 0.01
+    maha7_pullback_reclaim_recent_high_lookback: int = 20
+    maha7_pullback_reclaim_momentum_green_bars: int = 2
 
     ai_review: bool = False
 

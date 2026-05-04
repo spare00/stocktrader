@@ -2878,26 +2878,30 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.strategy, "maha7_pullback_reclaim")
         self.assertEqual(signal.side, "BUY")
-        self.assertAlmostEqual(signal.stop_price, 104.4)
-        self.assertIn("RSI", signal.reason)
+        self.assertAlmostEqual(signal.stop_price, 113.13675, places=3)
+        self.assertIn("optimized entry", signal.reason)
 
     def test_maha7_pullback_reclaim_skips_rsi_chop(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()
 
-        with patch.object(strategy, "_rsi", side_effect=[50.0] * 20):
+        with patch.object(strategy, "_last_n_green_bars", return_value=False):
             signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
 
     def test_maha7_pullback_reclaim_skips_current_neutral_rsi(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_min_r_pct=0.02,
+        )
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()
 
-        with patch.object(strategy, "_rsi", side_effect=[50.0, 56.0]):
-            signal = strategy.evaluate(state)
+        signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
 
@@ -2915,11 +2919,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_maha7_pullback_reclaim_requires_rsi_duration(self):
+        """Deprecated name: entry now uses min R% band — too-small R rejects."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_rsi_above_min_bars=3,
+            maha7_pullback_reclaim_min_r_pct=0.02,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
 
@@ -2928,11 +2933,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_maha7_pullback_reclaim_requires_vwap_distance(self):
+        """Late chase: entry must not be within max_chase_pct of recent high."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_vwap_min_distance_pct=0.20,
+            maha7_pullback_reclaim_max_chase_pct=0.05,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
 
@@ -2941,11 +2947,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_maha7_pullback_reclaim_requires_volume_confirmation(self):
+        """No entry when neither shallow pullback nor continuation (volume) qualifies."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_volume_min_ratio=2.0,
+            maha7_pullback_reclaim_pullback_ma7_distance_pct=0.0005,
+            maha7_pullback_reclaim_continuation_volume_ratio=5.0,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
 
@@ -2954,12 +2962,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_maha7_pullback_reclaim_partial_and_final_exit(self):
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            symbols=["AAPL"],
-            maha7_pullback_reclaim_hard_target_r_exit=True,
-        )
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         strategy = Maha7PullbackReclaimStrategy(settings)
         position = Position(
             symbol="AAPL",
@@ -2969,6 +2972,7 @@ class CoreTradingTests(unittest.TestCase):
             entry_ms=market_ms(2026, 4, 24, 10, 9),
             target_price=120.0,
             stop_price=104.0,
+            initial_stop_price=104.0,
         )
         state = SymbolState("AAPL")
         state.update_quote(Quote("AAPL", bid=116.05, ask=116.15, bid_size=100, ask_size=100, timestamp_ms=market_ms(2026, 4, 24, 10, 15)))
@@ -2986,8 +2990,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(final.reason, "target 2.0R")
 
     def test_maha7_pullback_reclaim_no_hard_target_without_flag(self):
-        """v2.1: full R target is opt-in; default lets the runner / soft exits manage the rest."""
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        """With hard 2R target off, a quote at 2R+ does not force a full exit (runner path)."""
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            maha7_pullback_reclaim_hard_target_r_exit=False,
+        )
         strategy = Maha7PullbackReclaimStrategy(settings)
         position = Position(
             symbol="AAPL",
@@ -2997,6 +3006,7 @@ class CoreTradingTests(unittest.TestCase):
             entry_ms=market_ms(2026, 4, 24, 10, 9),
             target_price=120.0,
             stop_price=104.0,
+            initial_stop_price=104.0,
             partial_exit_taken=True,
         )
         state = SymbolState("AAPL")
@@ -3019,7 +3029,6 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_pullback_reclaim_min_hold_seconds=0,
-            maha7_pullback_reclaim_immediate_failed_ma7_exit=False,
             maha7_pullback_reclaim_stall_exit_bars=8,
             maha7_pullback_reclaim_stall_min_progress_r=0.2,
         )
@@ -3050,6 +3059,7 @@ class CoreTradingTests(unittest.TestCase):
             entry_ms=entry_ms,
             target_price=130.0,
             stop_price=100.0,
+            initial_stop_price=100.0,
         )
         decision = strategy.should_exit(state, position)
         self.assertIsNotNone(decision)
@@ -3062,7 +3072,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_pullback_reclaim_min_hold_seconds=0,
-            maha7_pullback_reclaim_immediate_failed_ma7_exit=False,
+            maha7_pullback_reclaim_hard_target_r_exit=False,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
         sym = "AAPL"
@@ -3084,8 +3094,9 @@ class CoreTradingTests(unittest.TestCase):
             entry_ms=entry_ms,
             target_price=130.0,
             stop_price=90.0,
+            initial_stop_price=90.0,
             partial_exit_taken=True,
-            # Keep quote 130 above peak * (1 - runner_peak_pullback_pct) so we only test MA7 quote dip.
+            # Mid ~130: above runner peak-pullback floor vs max 131; still below last bars' MA7; 2R off via settings.
             max_price=131.0,
         )
         self.assertIsNone(strategy.should_exit(state, position))
@@ -3096,7 +3107,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_pullback_reclaim_min_hold_seconds=120,
-            maha7_pullback_reclaim_immediate_failed_ma7_exit=False,
+            maha7_pullback_reclaim_ma7_breakdown_bars=1,
         )
         strategy = Maha7PullbackReclaimStrategy(settings)
         state = self._maha7_reclaim_state()
@@ -3106,10 +3117,10 @@ class CoreTradingTests(unittest.TestCase):
                 "AAPL",
                 open=114.0,
                 high=114.2,
-                low=105.8,
-                close=106.0,
+                low=104.5,
+                close=105.0,
                 volume=1_500,
-                vwap=106.0,
+                vwap=105.0,
                 start_ms=last_bar.end_ms,
                 end_ms=last_bar.end_ms + 60_000,
             )
@@ -3122,6 +3133,7 @@ class CoreTradingTests(unittest.TestCase):
             entry_ms=state.last_event_ms - 60_000,
             target_price=120.0,
             stop_price=104.0,
+            initial_stop_price=104.0,
         )
 
         self.assertIsNone(strategy.should_exit(state, position))
@@ -3130,7 +3142,7 @@ class CoreTradingTests(unittest.TestCase):
         decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "close below MA7")
+        self.assertEqual(decision.reason, "MA7 confirmed breakdown")
 
     def test_opening_impulse_min_hold_delays_structure_exit(self):
         settings = Settings(
@@ -3690,36 +3702,13 @@ class CoreTradingTests(unittest.TestCase):
 
     @staticmethod
     def _maha7_reclaim_state() -> SymbolState:
+        """Synthetic session satisfying optimized MAHA7 entry (R band, reclaim, chase, momentum)."""
         state = SymbolState("AAPL")
         start_ms = market_ms(2026, 4, 24, 9, 30)
-        closes = [100 + index * 0.35 for index in range(25)] + [
-            109.0,
-            108.0,
-            107.0,
-            106.2,
-            105.7,
-            105.3,
-            105.0,
-            104.8,
-            105.4,
-            106.0,
-            106.6,
-            107.2,
-            107.8,
-            112.0,
-            114.0,
-        ]
-        for index, close in enumerate(closes):
-            open_price = closes[index - 1] if index else close - 0.1
-            if index == len(closes) - 1:
-                open_price = 108.0
-            high = max(open_price, close) + 0.2
-            low = min(open_price, close) - 0.2
-            if index == 32:
-                low = 104.4
-            volume = 1_000 + (index % 5) * 100
-            if index >= len(closes) - 4:
-                volume = [1_200, 1_300, 1_500, 1_600][index - (len(closes) - 4)]
+        bar_index = 0
+
+        def add_bar(open_price: float, high: float, low: float, close: float, volume: int = 1_400) -> None:
+            nonlocal bar_index
             state.add_bar(
                 Bar(
                     "AAPL",
@@ -3729,10 +3718,33 @@ class CoreTradingTests(unittest.TestCase):
                     close=close,
                     volume=volume,
                     vwap=close,
-                    start_ms=start_ms + index * 60_000,
-                    end_ms=start_ms + (index + 1) * 60_000,
+                    start_ms=start_ms + bar_index * 60_000,
+                    end_ms=start_ms + (bar_index + 1) * 60_000,
                 )
             )
+            bar_index += 1
+
+        price = 100.0
+        for _ in range(24):
+            close = price + 0.38
+            add_bar(price, close + 0.15, price - 0.12, close)
+            price = close
+        add_bar(price, 119.0, price - 0.5, 111.0, 2_500)
+        ramp = [111.5, 112.0, 112.4, 112.8, 113.1, 113.4, 113.6, 113.85, 113.95]
+        for index, close in enumerate(ramp):
+            open_price = ramp[index - 1] if index else 111.0
+            low = min(open_price, close) - 0.08
+            high = max(open_price, close) + 0.12
+            add_bar(open_price, high, low, close, 1_500 + index * 20)
+        for row in (
+            (113.9, 114.05, 113.25, 113.55),
+            (113.55, 113.95, 113.35, 113.75),
+            (113.75, 114.05, 113.45, 113.92),
+            (113.92, 114.12, 113.65, 114.02),
+            (114.02, 114.18, 113.80, 114.10),
+            (114.08, 114.35, 113.95, 114.26, 2_200),
+        ):
+            add_bar(*row)
         return state
 
     @staticmethod
