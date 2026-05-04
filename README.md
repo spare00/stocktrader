@@ -189,11 +189,11 @@ Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clien
 
 Set **`REPLAY_MARKET_DATA=true`** when the mock serves historical bars/quotes. Replay mode keeps the mocked event timestamps as the trading clock, so wall-clock heartbeats do not trigger max-hold, min-hold, cooldown, or shutdown flatten behavior.
 
-**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. If **`SYMBOLS` is not set** in the process environment, those plan symbols become the watch list. If **`SYMBOLS` is set** (in `.env`, a profile, or a **shell export** from an old session), that can override the plan.
+**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. If **`SYMBOLS` is not set** after loading config files, those plan symbols become the watch list. If **`SYMBOLS` is set** in `.env` or `profiles/*.env`, that list can override the plan (see `opening_plan.symbols_env_blocks_plan()`).
 
-**Do not `export SYMBOLS=...` from selector output:** Selectors print a `SYMBOLS=...` line for pasting into `profiles/*.env` or `.env` only. Exporting it in the shell leaves the variable in your session (and tmux panes), which is easy to miss. Use `unset SYMBOLS` if the watch list looks like the default megacap list. The JSON field is `symbols_env_line` (the old `export` key is removed).
+**Configure tickers only in files:** Put `SYMBOLS=...` in `.env` or `profiles/<name>.env`. Do not rely on shell exports — **`scripts/run_paper.sh` begins with `unset SYMBOLS`** so a stray export from tmux or an old session never reaches `main.py`. Selectors print a `SYMBOLS=...` line for pasting into those files only (JSON field `symbols_env_line`). Running `.venv/bin/python main.py` directly still inherits the shell; prefer `scripts/run_paper.sh` or clear exports first.
 
-**`scripts/run_paper.sh` and `SYMBOLS`:** The wrapper may restore `SYMBOLS` from the command line when the active profile does not define `SYMBOLS`. If you still see the wrong list, run `unset SYMBOLS` once, or use `SYMBOLS=RIG PROFILE=test scripts/run_paper.sh` so the prefix wins when the profile omits `SYMBOLS`.
+**If you run `main.py` without the wrapper:** Run `unset SYMBOLS` when the watch list looks wrong, or align your shell with the same rule as the wrapper.
 
 If you want `main.py` to trade the selector output directly, run the selector first, then start the bot with the strategy you want:
 

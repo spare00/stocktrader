@@ -4,19 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# If SYMBOLS was already set when this script started (e.g. SYMBOLS=RIG ./run_paper.sh),
-# restore it after sourcing only when the tuning profile does *not* assign SYMBOLS.
-# Otherwise a shell inherited SYMBOLS=AAPL,... would overwrite RIG from profiles/test.env.
-_cmdline_symbols_set=0
-if [ -n "${SYMBOLS+x}" ]; then
-  _cmdline_saved_symbols="$SYMBOLS"
-  _cmdline_symbols_set=1
-fi
-
-_profile_defines_symbols() {
-  local f="$1"
-  [[ -f "$f" ]] && grep -qE '^[[:space:]]*(export[[:space:]]+)?SYMBOLS[[:space:]]*=' "$f"
-}
+# Watch list and other tunables come only from `.env` and `profiles/*.env` (sourced below).
+# Never inherit SYMBOLS from a parent shell or tmux — that caused stale exports to override
+# strategy plan files. To set SYMBOLS, add it to a profile or `.env`, not `export` in the shell.
+unset SYMBOLS
 
 load_env_file() {
   local file="$1"
@@ -54,10 +45,6 @@ else
   _tuning_example="profiles/paper.env.example"
 fi
 load_env_file "$_tuning_env" "$_tuning_example"
-
-if [ "$_cmdline_symbols_set" = 1 ] && ! _profile_defines_symbols "$_tuning_env"; then
-  export SYMBOLS="$_cmdline_saved_symbols"
-fi
 
 : "${EXECUTION_MODE:=alpaca_paper}"
 if [[ "$EXECUTION_MODE" != "alpaca_paper" ]]; then
