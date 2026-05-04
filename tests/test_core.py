@@ -334,6 +334,27 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(updated.symbols, ["RIG"])
 
+    def test_opening_plan_applies_when_symbols_env_is_default_placeholder_list(self):
+        """Copied .env often sets SYMBOLS to the same default CSV as config — plan should still win."""
+        from config import DEFAULT_SYMBOLS_CSV
+
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ",
+            {"SYMBOLS": DEFAULT_SYMBOLS_CSV},
+            clear=False,
+        ):
+            path = Path(tmpdir) / "opening_plan.json"
+            path.write_text('{"symbols":["INTC","PANW"],"settings":{}}')
+
+            updated = apply_opening_plan(settings, path)
+
+        self.assertEqual(updated.symbols, ["INTC", "PANW"])
+
     def test_default_opening_plan_path_is_strategy_specific(self):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))

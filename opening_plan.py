@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from config import Settings
+from config import DEFAULT_SYMBOLS_SET, Settings
 
 
 DEFAULT_OPENING_PLAN_FILE = Path("data/opening_impulse_plan.json")
@@ -56,6 +56,19 @@ def load_opening_plan(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def symbols_env_blocks_plan() -> bool:
+    """True when SYMBOLS was set to an explicit non-default list (overrides plan tickers)."""
+    raw = os.getenv("SYMBOLS")
+    if raw is None or not raw.strip():
+        return False
+    tickers = frozenset(part.strip().upper() for part in raw.split(",") if part.strip())
+    if not tickers:
+        return False
+    if tickers == DEFAULT_SYMBOLS_SET:
+        return False
+    return True
+
+
 def parse_plan_symbols(plan: dict[str, Any]) -> list[str]:
     raw_symbols = plan.get("symbols") or plan.get("selected_symbols") or []
     symbols = []
@@ -79,8 +92,8 @@ def bounded_int(value: Any, low: int, high: int) -> int:
 def plan_overrides(settings: Settings, plan: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     symbols = parse_plan_symbols(plan)
-    # Match PLAN_SETTING_MAP: explicit SYMBOLS env wins over stale plan tickers.
-    if symbols and os.getenv("SYMBOLS") is None:
+    # Plan tickers apply unless SYMBOLS names a non-default list (see symbols_env_blocks_plan).
+    if symbols and not symbols_env_blocks_plan():
         overrides["symbols"] = symbols
 
     plan_settings = plan.get("settings") or {}
