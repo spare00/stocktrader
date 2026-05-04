@@ -122,5 +122,10 @@ def apply_opening_plan(settings: Settings, path: Path) -> Settings:
     plan = load_opening_plan(path)
     overrides = plan_overrides(settings, plan)
     if not overrides:
+        # Safety net: plan tickers alone must still apply when SYMBOLS does not block the plan
+        # (avoids returning unchanged settings if overrides dict was unexpectedly empty).
+        plan_syms = parse_plan_symbols(plan)
+        if plan_syms and not symbols_env_blocks_plan():
+            return replace(settings, symbols=plan_syms)
         return settings
     return replace(settings, **overrides)
