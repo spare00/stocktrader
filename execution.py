@@ -425,6 +425,17 @@ class AlpacaPaperExecutor:
         from alpaca_client import make_clients
 
         self.clients = make_clients(self.settings)
+        try:
+            clk = self.clients.trading.get_clock()
+            LOG.info(
+                "Alpaca trading clock: is_open=%s timestamp=%s next_open=%s next_close=%s",
+                clk.is_open,
+                getattr(clk, "timestamp", None),
+                clk.next_open,
+                clk.next_close,
+            )
+        except Exception as exc:
+            LOG.warning("Could not read Alpaca trading clock (buys may be skipped if regular_market_only): %s", exc)
         self._sync_account_cash()
         self._reconcile_target_positions()
         self._cancel_target_open_orders()
