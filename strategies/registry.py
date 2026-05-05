@@ -6,6 +6,7 @@ from pathlib import Path
 
 from strategies.base import Strategy
 from strategies.gap_and_go import GapAndGoStrategy
+from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
@@ -14,6 +15,7 @@ from strategies.spike import SpikeStrategy
 # Registration order (used by available_strategy_names); lookup is by `name`.
 _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     GapAndGoStrategy,
+    MACDEarlyImpulseStrategy,
     Maha7Strategy,
     SpikeStrategy,
     OpeningImpulseStrategy,

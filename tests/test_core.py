@@ -3805,7 +3805,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go", "maha7"])
 
     def test_available_strategy_names_lists_registry_order(self):
-        self.assertEqual(available_strategy_names(), ["gap_and_go", "maha7", "spike", "opening_impulse", "news_impulse"])
+        self.assertEqual(
+            available_strategy_names(),
+            ["gap_and_go", "macd_early_impulse", "maha7", "spike", "opening_impulse", "news_impulse"],
+        )
 
     def test_build_strategies_can_build_news_impulse(self):
         settings = Settings(

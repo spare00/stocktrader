@@ -179,6 +179,16 @@ class Settings:
     maha7_momentum_green_bars: int = 2
     maha7_disable_ma7_exit: bool = False
 
+    macd_start_minute: int = 0
+    macd_end_minute: int = 180
+    macd_hist_threshold: float = 0.001
+    macd_volume_ratio: float = 1.3
+    macd_target_profit_pct: float = 0.012
+    macd_stop_loss_pct: float = 0.004
+    macd_trailing_stop_pct: float = 0.005
+    macd_chop_range_pct: float = 0.0035
+    macd_skip_midday: bool = True
+
     ai_review: bool = False
     news_hot_positive_only: bool = True
     news_hot_min_sentiment_score: float = 0.5
