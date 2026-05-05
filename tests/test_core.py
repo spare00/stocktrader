@@ -541,6 +541,105 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(summary["by_day_strategy"]["2026-04-29"]["gap_and_go"]["trades"], 1)
         self.assertEqual(summary["best_trade"]["trade_day"], "2026-04-28")
 
+    def test_trade_journal_analyzer_win_rate_by_entry_noon_et(self):
+        day = 2026, 4, 28
+        y, m, d = day
+        events = [
+            # Before noon: win
+            analyze_trade_journal.TradeEvent(
+                "buy", "AAPL", market_ms(y, m, d, 9, 45), 10, 100.0, 0.0, "opening_impulse", "entry", "buy-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "AAPL", market_ms(y, m, d, 10, 0), 10, 101.0, 10.0, "opening_impulse", "target", "sell-1"
+            ),
+            # After noon: loss
+            analyze_trade_journal.TradeEvent(
+                "buy", "MSFT", market_ms(y, m, d, 12, 15), 5, 200.0, 0.0, "opening_impulse", "entry", "buy-2"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "MSFT", market_ms(y, m, d, 12, 20), 5, 199.0, -5.0, "opening_impulse", "stop", "sell-2"
+            ),
+            # Exactly 12:00 ET: counts as "from 12:00"
+            analyze_trade_journal.TradeEvent(
+                "buy", "NVDA", market_ms(y, m, d, 12, 0), 1, 50.0, 0.0, "opening_impulse", "entry", "buy-3"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "NVDA", market_ms(y, m, d, 12, 5), 1, 51.0, 1.0, "opening_impulse", "target", "sell-3"
+            ),
+        ]
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        self.assertEqual(unmatched, [])
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+        b = summary["by_entry_time_et"]["before_12_00_et"]
+        a = summary["by_entry_time_et"]["from_12_00_et"]
+        self.assertEqual(b["trades"], 1)
+        self.assertEqual(b["wins"], 1)
+        self.assertEqual(b["win_rate"], 1.0)
+        self.assertEqual(a["trades"], 2)
+        self.assertEqual(a["wins"], 1)
+        self.assertEqual(a["losses"], 1)
+        self.assertEqual(a["win_rate"], 0.5)
+
+    def test_trade_journal_analyze_filters_by_strategy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal = Path(tmpdir) / "trade_journal.jsonl"
+            y, m, d = 2026, 4, 28
+            rows = [
+                {
+                    "event": "buy",
+                    "symbol": "AAPL",
+                    "strategy": "opening_impulse",
+                    "shares": 10,
+                    "price": 100.0,
+                    "pnl": 0,
+                    "reason": "entry",
+                    "timestamp_ms": market_ms(y, m, d, 9, 31),
+                    "order_id": "b1",
+                },
+                {
+                    "event": "sell",
+                    "symbol": "AAPL",
+                    "strategy": "opening_impulse",
+                    "shares": 10,
+                    "price": 101.0,
+                    "pnl": 10.0,
+                    "reason": "tp",
+                    "timestamp_ms": market_ms(y, m, d, 9, 40),
+                    "order_id": "s1",
+                },
+                {
+                    "event": "buy",
+                    "symbol": "MSFT",
+                    "strategy": "gap_and_go",
+                    "shares": 5,
+                    "price": 200.0,
+                    "pnl": 0,
+                    "reason": "entry",
+                    "timestamp_ms": market_ms(y, m, d, 10, 0),
+                    "order_id": "b2",
+                },
+                {
+                    "event": "sell",
+                    "symbol": "MSFT",
+                    "strategy": "gap_and_go",
+                    "shares": 5,
+                    "price": 198.0,
+                    "pnl": -10.0,
+                    "reason": "sl",
+                    "timestamp_ms": market_ms(y, m, d, 10, 10),
+                    "order_id": "s2",
+                },
+            ]
+            journal.write_text("\n".join(json.dumps(row) for row in rows))
+
+            all_summary = analyze_trade_journal.analyze(journal)
+            self.assertEqual(all_summary["trades"], 2)
+
+            oi = analyze_trade_journal.analyze(journal, strategy="opening_impulse")
+            self.assertEqual(oi["trades"], 1)
+            self.assertAlmostEqual(oi["total_pnl"], 10.0)
+            self.assertEqual(list(oi["by_strategy"].keys()), ["opening_impulse"])
+
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
 

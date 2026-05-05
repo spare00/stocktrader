@@ -257,6 +257,7 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "by_strategy": summarize_groups(by_strategy),
         "by_day": summarize_groups(by_day),
         "by_day_strategy": summarize_nested_groups(by_day_strategy),
+        "by_entry_time_et": summarize_entry_time_noon_et(round_trips),
         "exit_reason_counts": dict(Counter(trade.reason or "unknown" for trade in round_trips)),
         "unmatched_events": unmatched,
     }
@@ -293,6 +294,36 @@ def summarize_nested_groups(groups: dict[str, dict[str, list[RoundTrip]]]) -> di
 
 def trade_day(trade: RoundTrip) -> str:
     return datetime.fromtimestamp(trade.sell_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
+
+
+def entry_before_noon_et(buy_timestamp_ms: int) -> bool:
+    """True when the entry (buy) instant is strictly before 12:00:00 in America/New_York."""
+    dt = datetime.fromtimestamp(buy_timestamp_ms / 1000, tz=TRADING_TZ)
+    noon = dt.replace(hour=12, minute=0, second=0, microsecond=0)
+    return dt < noon
+
+
+def summarize_entry_time_noon_et(trades: list[RoundTrip]) -> dict[str, dict]:
+    before = [t for t in trades if entry_before_noon_et(t.buy_timestamp_ms)]
+    after = [t for t in trades if not entry_before_noon_et(t.buy_timestamp_ms)]
+
+    def bucket_stats(bucket: list[RoundTrip]) -> dict:
+        if not bucket:
+            return {"trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "total_pnl": 0.0}
+        wins = sum(1 for t in bucket if t.pnl > 0)
+        losses = sum(1 for t in bucket if t.pnl < 0)
+        return {
+            "trades": len(bucket),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / len(bucket), 4),
+            "total_pnl": round(sum(t.pnl for t in bucket), 4),
+        }
+
+    return {
+        "before_12_00_et": bucket_stats(before),
+        "from_12_00_et": bucket_stats(after),
+    }
 
 
 def trade_summary(trade: RoundTrip) -> dict:
@@ -371,6 +402,19 @@ def print_text(summary: dict) -> None:
         for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True):
             print(f"- {strategy}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
 
+    if summary.get("by_entry_time_et"):
+        b = summary["by_entry_time_et"]["before_12_00_et"]
+        a = summary["by_entry_time_et"]["from_12_00_et"]
+        print("\nWin rate by entry time (America/New_York vs 12:00)")
+        print(
+            f"- Before 12:00: {b['trades']} trades, win rate {b['win_rate']:.1%}, "
+            f"P/L {b['total_pnl']:.2f} (wins {b['wins']}, losses {b['losses']})"
+        )
+        print(
+            f"- From 12:00:   {a['trades']} trades, win rate {a['win_rate']:.1%}, "
+            f"P/L {a['total_pnl']:.2f} (wins {a['wins']}, losses {a['losses']})"
+        )
+
     if summary["by_day"]:
         print("\nTrading Days")
         for day, item in sorted(summary["by_day"].items()):
@@ -389,21 +433,30 @@ def print_text(summary: dict) -> None:
         print(f"\nUnmatched events: {len(summary['unmatched_events'])}")
 
 
-def analyze(path: Path) -> dict:
+def analyze(path: Path, strategy: str | None = None) -> dict:
     round_trips, unmatched = build_round_trips(load_events(path))
+    if strategy:
+        needle = strategy.strip().lower()
+        round_trips = [t for t in round_trips if (t.strategy or "").lower() == needle]
     return summarize(round_trips, unmatched)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze confirmed buy/sell events from logs/trade_journal.jsonl.")
     parser.add_argument("--journal", type=Path, default=DEFAULT_JOURNAL_FILE, help="Path to trade_journal.jsonl.")
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="",
+        help="Only include round-trips for this strategy (e.g. opening_impulse). Matches journal strategy name.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON summary.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    summary = analyze(args.journal)
+    summary = analyze(args.journal, strategy=args.strategy or None)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
