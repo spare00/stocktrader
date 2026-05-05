@@ -18,6 +18,7 @@ MARKET_OPEN = time(9, 30)
 
 class NewsImpulseStrategy(Strategy):
     name = "news_impulse"
+    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_news_impulse.py --top 12"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("news_impulse_enabled", "NEWS_IMPULSE_ENABLED", bool_env, True),
         ("news_impulse_start_minute", "NEWS_IMPULSE_START_MINUTE", int_env, 0),
