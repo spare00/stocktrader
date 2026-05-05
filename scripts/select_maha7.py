@@ -27,6 +27,15 @@ DEFAULT_OUTPUT_FILE = default_plan_file_for_strategy("maha7")
 MARKET_OPEN = time(9, 30)
 
 
+def extract_json_object(text: str) -> dict[str, object]:
+    decoder = json.JSONDecoder()
+    stripped = text.lstrip()
+    result, _ = decoder.raw_decode(stripped)
+    if not isinstance(result, dict):
+        raise ValueError("Expected a JSON object.")
+    return result
+
+
 @dataclass(frozen=True)
 class Maha7Candidate:
     symbol: str

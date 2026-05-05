@@ -2714,6 +2714,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(validated["ranked"][0]["score"], 7.4)
         self.assertEqual(validated["ranked"][0]["ai_reason"], "Cleaner reclaim context")
 
+    def test_maha7_ai_selection_parses_json_response(self):
+        ranked = [{"symbol": "AAPL", "score": 7.2, "selection_stage": "intraday"}]
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        with patch("scripts.select_maha7.request_json_response", return_value='{"strategy":"maha7","adjustments":{}}'):
+            result = select_maha7.ai_maha7_selection(settings, ranked, limit=1)
+        self.assertEqual(result["strategy"], "maha7")
+
     def test_gap_and_go_selector_scores_weak_candidates_instead_of_dropping_them(self):
         settings = Settings(
             alpaca_api_key="test",
