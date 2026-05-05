@@ -79,6 +79,11 @@ class OpeningImpulseStrategy(Strategy):
         ("opening_impulse_runner_pullback_pct", "OPENING_IMPULSE_RUNNER_PULLBACK_PCT", float_env, 0.012),
         ("opening_impulse_volume_collapse_ratio", "OPENING_IMPULSE_VOLUME_COLLAPSE_RATIO", float_env, 0.5),
         ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", int_env, 60),
+        ("opening_impulse_news_hot_minutes", "OPENING_IMPULSE_NEWS_HOT_MINUTES", int_env, 10),
+        ("opening_impulse_news_change_pct", "OPENING_IMPULSE_NEWS_CHANGE_PCT", float_env, 0.003),
+        ("opening_impulse_news_min_volume_ratio", "OPENING_IMPULSE_NEWS_MIN_VOLUME_RATIO", float_env, 1.1),
+        ("opening_impulse_news_tight_pullback_pct", "OPENING_IMPULSE_NEWS_TIGHT_PULLBACK_PCT", float_env, 0.003),
+        ("opening_impulse_news_max_hold_seconds", "OPENING_IMPULSE_NEWS_MAX_HOLD_SECONDS", int_env, 90),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.opening_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_opening_impulse.py --top 12"
@@ -128,6 +133,11 @@ class OpeningImpulseStrategy(Strategy):
             "runner_pullback_pct": settings.opening_impulse_runner_pullback_pct,
             "volume_collapse_ratio": settings.opening_impulse_volume_collapse_ratio,
             "price_stall_seconds": settings.opening_impulse_price_stall_seconds,
+            "news_hot_minutes": settings.opening_impulse_news_hot_minutes,
+            "news_change_pct": settings.opening_impulse_news_change_pct,
+            "news_min_volume_ratio": settings.opening_impulse_news_min_volume_ratio,
+            "news_tight_pullback_pct": settings.opening_impulse_news_tight_pullback_pct,
+            "news_max_hold_seconds": settings.opening_impulse_news_max_hold_seconds,
         }
 
     def __init__(self, settings: Settings):
@@ -147,6 +157,7 @@ class OpeningImpulseStrategy(Strategy):
             return self._reject(state, "quote", "invalid or missing latest quote")
 
         spread_bps = last.spread_bps
+        has_news = self._has_hot_news(state, last.timestamp_ms)
         if spread_bps > self.settings.opening_impulse_max_spread_bps:
             return self._reject(
                 state,
@@ -186,6 +197,22 @@ class OpeningImpulseStrategy(Strategy):
                 kind="quote_impulse",
             )
 
+        if (
+            candidate is None
+            and has_news
+            and quote_change_pct >= self.settings.opening_impulse_news_change_pct
+            and volume_ratio >= self.settings.opening_impulse_news_min_volume_ratio
+        ):
+            candidate = EntryCandidate(
+                change_pct=quote_change_pct,
+                volume_ratio=volume_ratio,
+                reason=(
+                    f"news_early_impulse {quote_change_pct:.3%}, "
+                    f"volume {volume_ratio:.1f}x baseline"
+                ),
+                kind="news_early_impulse",
+            )
+
         if candidate is None:
             quote_detail = (
                 f"quotes {len(quotes)} < {self.settings.opening_impulse_min_quotes}"
@@ -196,13 +223,18 @@ class OpeningImpulseStrategy(Strategy):
 
         if candidate.volume_ratio <= 0:
             return self._reject(state, "volume", "volume ratio is zero")
-        if candidate.volume_ratio < self.settings.opening_impulse_volume_ratio:
+        min_volume_ratio = (
+            self.settings.opening_impulse_news_min_volume_ratio
+            if has_news
+            else self.settings.opening_impulse_volume_ratio
+        )
+        if candidate.volume_ratio < min_volume_ratio:
             return self._reject(
                 state,
                 "volume",
-                f"volume {candidate.volume_ratio:.2f}x < {self.settings.opening_impulse_volume_ratio:.2f}x",
+                f"volume {candidate.volume_ratio:.2f}x < {min_volume_ratio:.2f}x",
             )
-        if not self._higher_high_structure(state):
+        if not has_news and not self._higher_high_structure(state):
             return self._reject(state, "structure", "missing higher-high bar structure")
 
         session_open_price = self._session_open_price(state)
@@ -246,6 +278,8 @@ class OpeningImpulseStrategy(Strategy):
 
         reason = candidate.reason
         reason = f"{reason} | entry_vs_open {entry_open_pct:.3%}"
+        if has_news:
+            reason = f"{reason} | hot_news"
         if warnings:
             reason = f"{reason} | entry_warnings penalty={penalty:.1f}: {', '.join(warnings)}"
 
@@ -273,6 +307,9 @@ class OpeningImpulseStrategy(Strategy):
 
         event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
+        has_news = self._has_hot_news(state, event_ms)
+        if has_news and age_seconds >= self.settings.opening_impulse_news_max_hold_seconds:
+            return ExitDecision("news max hold")
         if age_seconds < self.exit_activation_delay_seconds(position):
             return None
 
@@ -284,7 +321,10 @@ class OpeningImpulseStrategy(Strategy):
 
             pullback_pct = (position.max_price - price) / position.max_price if position.max_price > 0 else 0.0
             if position.partial_exit_taken:
-                if pullback_pct >= self.settings.opening_impulse_runner_pullback_pct:
+                runner_limit = self.settings.opening_impulse_runner_pullback_pct
+                if has_news:
+                    runner_limit = min(runner_limit, self.settings.opening_impulse_news_tight_pullback_pct)
+                if pullback_pct >= runner_limit:
                     return ExitDecision("runner pullback")
                 return None
 
@@ -296,7 +336,7 @@ class OpeningImpulseStrategy(Strategy):
                 shares = min(position.shares - 1, shares)
                 return ExitDecision("partial take profit", shares=shares, mark_partial=True)
 
-            pullback_limit = self._pullback_limit(state)
+            pullback_limit = self._pullback_limit(state, has_news=has_news)
             if pullback_pct >= pullback_limit:
                 return ExitDecision("pullback from high")
 
@@ -520,11 +560,19 @@ class OpeningImpulseStrategy(Strategy):
         confirmation = bars[-1].high <= bars[-2].high and bars[-1].close <= bars[-2].close
         return first_weak and confirmation
 
-    def _pullback_limit(self, state: SymbolState) -> float:
+    def _pullback_limit(self, state: SymbolState, *, has_news: bool = False) -> float:
+        if has_news:
+            return self.settings.opening_impulse_news_tight_pullback_pct
         volume_ratio = self._volume_ratio(state)
         if volume_ratio >= self.settings.opening_impulse_strong_volume_ratio:
             return self.settings.opening_impulse_strong_pullback_pct
         return self.settings.opening_impulse_pullback_pct
+
+    def _has_hot_news(self, state: SymbolState, timestamp_ms: int) -> bool:
+        if state.last_news_ms is None:
+            return False
+        hot_window_ms = max(1, self.settings.opening_impulse_news_hot_minutes) * 60_000
+        return (timestamp_ms - state.last_news_ms) <= hot_window_ms
 
     def _session_open_price(self, state: SymbolState) -> float | None:
         for bar in state.bars:

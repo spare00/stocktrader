@@ -119,6 +119,11 @@ class Settings:
     opening_impulse_runner_pullback_pct: float = 0.012
     opening_impulse_volume_collapse_ratio: float = 0.5
     opening_impulse_price_stall_seconds: int = 60
+    opening_impulse_news_hot_minutes: int = 10
+    opening_impulse_news_change_pct: float = 0.003
+    opening_impulse_news_min_volume_ratio: float = 1.1
+    opening_impulse_news_tight_pullback_pct: float = 0.003
+    opening_impulse_news_max_hold_seconds: int = 90
 
     maha7_start_minute: int = 30
     maha7_end_minute: int = 300
@@ -163,6 +168,8 @@ class Settings:
     maha7_disable_ma7_exit: bool = False
 
     ai_review: bool = False
+    news_hot_positive_only: bool = True
+    news_hot_min_sentiment_score: float = 0.5
 
 
 # Used by load_settings and opening_plan: same list must stay in sync.
@@ -208,6 +215,8 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("max_entry_chase_pct", "MAX_ENTRY_CHASE_PCT", _float_env, 0.003),
     ("replay_market_data", "REPLAY_MARKET_DATA", _bool_env, False),
     ("ai_review", "AI_REVIEW", _bool_env, False),
+    ("news_hot_positive_only", "NEWS_HOT_POSITIVE_ONLY", _bool_env, True),
+    ("news_hot_min_sentiment_score", "NEWS_HOT_MIN_SENTIMENT_SCORE", _float_env, 0.5),
 )
 
 

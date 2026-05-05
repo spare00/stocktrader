@@ -15,7 +15,7 @@ from alpaca.data.timeframe import TimeFrame
 
 from alpaca_client import AlpacaConfigError, get_bars_between, make_clients, to_bar, to_quote
 from config import Settings
-from models import Bar, Heartbeat, Quote
+from models import Bar, Heartbeat, NewsEvent, Quote
 
 
 class AlpacaStreamAuthError(RuntimeError):
@@ -89,8 +89,8 @@ class AlpacaStockStream:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote]:
-        queue: asyncio.Queue[Bar | Heartbeat | Quote | BaseException | None] = asyncio.Queue()
+    async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote | NewsEvent]:
+        queue: asyncio.Queue[Bar | Heartbeat | Quote | NewsEvent | BaseException | None] = asyncio.Queue()
         stream_lock = AlpacaStreamLock(self.settings)
         stream_lock.acquire()
         clients = make_clients(self.settings)
@@ -101,6 +101,39 @@ class AlpacaStockStream:
         async def on_quote(raw_quote) -> None:
             await queue.put(to_quote(raw_quote))
 
+        async def on_news(raw_news) -> None:
+            symbols_raw = getattr(raw_news, "symbols", None)
+            if isinstance(symbols_raw, str):
+                symbols = tuple(part.strip().upper() for part in symbols_raw.replace(",", " ").split() if part.strip())
+            elif isinstance(symbols_raw, (list, tuple, set)):
+                symbols = tuple(str(part).strip().upper() for part in symbols_raw if str(part).strip())
+            else:
+                symbol = str(getattr(raw_news, "symbol", "")).strip().upper()
+                symbols = (symbol,) if symbol else ()
+
+            timestamp = (
+                getattr(raw_news, "updated_at", None)
+                or getattr(raw_news, "created_at", None)
+                or getattr(raw_news, "timestamp", None)
+            )
+            timestamp_ms = int(time.time() * 1000)
+            if timestamp is not None:
+                try:
+                    timestamp_ms = int(timestamp.timestamp() * 1000)
+                except Exception:
+                    timestamp_ms = int(time.time() * 1000)
+
+            await queue.put(
+                NewsEvent(
+                    symbols=symbols,
+                    timestamp_ms=timestamp_ms,
+                    headline=str(getattr(raw_news, "headline", "") or ""),
+                    summary=str(getattr(raw_news, "summary", "") or ""),
+                    source=str(getattr(raw_news, "source", "") or ""),
+                    url=str(getattr(raw_news, "url", "") or ""),
+                )
+            )
+
         async def heartbeat() -> None:
             while self.settings.heartbeat_seconds > 0:
                 await asyncio.sleep(self.settings.heartbeat_seconds)
@@ -109,6 +142,8 @@ class AlpacaStockStream:
         for symbol in self.settings.symbols:
             clients.stream.subscribe_bars(on_bar, symbol)
             clients.stream.subscribe_quotes(on_quote, symbol)
+            if hasattr(clients.stream, "subscribe_news"):
+                clients.stream.subscribe_news(on_news, symbol)
 
         stream_task = asyncio.create_task(clients.stream._run_forever())
 

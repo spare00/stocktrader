@@ -14,7 +14,7 @@ from alpaca_stream import AlpacaStreamAuthError, AlpacaStreamConnectionLimitErro
 from candle import SymbolState
 from config import load_settings
 from execution import build_executor
-from models import Bar, Heartbeat, Quote
+from models import Bar, Heartbeat, NewsEvent, Quote
 from opening_plan import (
     apply_opening_plan,
     default_plan_file_for_settings,
@@ -39,6 +39,38 @@ NOISY_LOGGERS = (
     "websockets.client",
 )
 ALPACA_STREAM_LOGGER = "alpaca.data.live.websocket"
+POSITIVE_NEWS_TERMS = (
+    "beats",
+    "beat",
+    "raises guidance",
+    "upgrades",
+    "upgrade",
+    "surge",
+    "jumps",
+    "soars",
+    "acquisition",
+    "contract win",
+    "approval",
+    "launches",
+    "strong earnings",
+    "record revenue",
+)
+NEGATIVE_NEWS_TERMS = (
+    "misses",
+    "miss",
+    "cuts guidance",
+    "downgrade",
+    "downgrades",
+    "offering",
+    "dilution",
+    "investigation",
+    "lawsuit",
+    "recall",
+    "bankruptcy",
+    "plunges",
+    "falls",
+    "weak earnings",
+)
 
 
 class FriendlyAlpacaStreamErrorFilter(logging.Filter):
@@ -140,6 +172,9 @@ class HeartbeatReporter:
     def record_heartbeat(self) -> None:
         self._events["heartbeats"] += 1
 
+    def record_news(self) -> None:
+        self._events["news"] = self._events.get("news", 0) + 1
+
     def record_signal(self, strategy: str) -> None:
         self._signals[strategy] = self._signals.get(strategy, 0) + 1
 
@@ -186,7 +221,7 @@ class HeartbeatReporter:
             }
 
         logging.info("Heartbeat %s", json.dumps(payload, sort_keys=True))
-        self._events = {"quotes": 0, "bars": 0, "heartbeats": 0}
+        self._events = {"quotes": 0, "bars": 0, "heartbeats": 0, "news": 0}
         self._signals.clear()
         self._entries.clear()
         self._rejections.clear()
@@ -195,6 +230,23 @@ class HeartbeatReporter:
 
 def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
+
+
+def news_sentiment_score(event: NewsEvent) -> float:
+    text = f"{event.headline} {event.summary}".lower()
+    if not text.strip():
+        return 0.0
+    positive_hits = sum(1 for term in POSITIVE_NEWS_TERMS if term in text)
+    negative_hits = sum(1 for term in NEGATIVE_NEWS_TERMS if term in text)
+    return float(positive_hits - negative_hits)
+
+
+def should_mark_hot_from_news(settings, event: NewsEvent) -> bool:
+    score = news_sentiment_score(event)
+    threshold = max(0.0, settings.news_hot_min_sentiment_score)
+    if settings.news_hot_positive_only:
+        return score >= threshold
+    return abs(score) >= threshold
 
 
 def credential_fingerprint(value: str | None) -> str | None:
@@ -217,6 +269,8 @@ def runtime_settings_snapshot(settings) -> dict:
         "regular_market_only": settings.regular_market_only,
         "replay_market_data": settings.replay_market_data,
         "ai_review": settings.ai_review,
+        "news_hot_positive_only": settings.news_hot_positive_only,
+        "news_hot_min_sentiment_score": settings.news_hot_min_sentiment_score,
         "openai_model": settings.openai_model if settings.ai_review else None,
         "risk": {
             "target_profit_pct": settings.target_profit_pct,
@@ -402,6 +456,14 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 if should_manage_exits_on_heartbeat(settings):
                     manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms, risk)
                 heartbeat.emit(settings, states, executor)
+                continue
+            if isinstance(event, NewsEvent):
+                heartbeat.record_news()
+                if should_mark_hot_from_news(settings, event):
+                    for symbol in event.symbols:
+                        state = states.get(symbol)
+                        if state is not None:
+                            state.mark_news(event.timestamp_ms)
                 continue
 
             state = states.get(event.symbol)

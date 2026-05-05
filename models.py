@@ -38,6 +38,16 @@ class Heartbeat:
 
 
 @dataclass(frozen=True)
+class NewsEvent:
+    symbols: tuple[str, ...]
+    timestamp_ms: int
+    headline: str = ""
+    summary: str = ""
+    source: str = ""
+    url: str = ""
+
+
+@dataclass(frozen=True)
 class ExitDecision:
     reason: str
     shares: int | None = None

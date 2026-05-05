@@ -25,7 +25,7 @@ from alpaca_stream import (
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
-from models import Bar, Quote, Signal
+from models import Bar, NewsEvent, Quote, Signal
 from opening_plan import (
     DEFAULT_OPENING_PLAN_FILE,
     PLAN_SETTING_MAP,
@@ -2369,6 +2369,77 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
         self.assertIn("higher-high", "\n".join(captured.output))
 
+    def test_opening_impulse_hot_news_allows_early_entry_without_strict_structure(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_window_seconds=30,
+            opening_impulse_min_quotes=10,
+            opening_impulse_change_pct=0.02,
+            opening_impulse_volume_ratio=2.5,
+            opening_impulse_news_hot_minutes=10,
+            opening_impulse_news_change_pct=0.003,
+            opening_impulse_news_min_volume_ratio=1.1,
+            opening_impulse_max_spread_bps=15.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        base_ms = 1777037400000
+        # Non-higher-high bars on purpose; news path should allow early entry.
+        state.add_bar(Bar("AAPL", open=100.0, high=100.3, low=99.9, close=100.1, volume=100, vwap=100.1, start_ms=base_ms, end_ms=base_ms + 60_000))
+        state.add_bar(Bar("AAPL", open=100.1, high=100.25, low=100.0, close=100.2, volume=100, vwap=100.2, start_ms=base_ms + 60_000, end_ms=base_ms + 120_000))
+        state.add_bar(Bar("AAPL", open=100.2, high=100.2, low=100.1, close=100.3, volume=120, vwap=100.2, start_ms=base_ms + 120_000, end_ms=base_ms + 180_000))
+        for index in range(10):
+            bid = 100.00 + (index * 0.04)
+            ask = bid + 0.015
+            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=30, ask_size=30, timestamp_ms=base_ms + 180_000 + (index * 3_000)))
+        state.mark_news(base_ms + 180_000)
+
+        signal = OpeningImpulseStrategy(settings).evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("news_early_impulse", signal.reason)
+        self.assertIn("hot_news", signal.reason)
+
+    def test_opening_impulse_hot_news_uses_tighter_trailing_and_max_hold(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            opening_impulse_min_hold_seconds=0,
+            opening_impulse_news_hot_minutes=10,
+            opening_impulse_news_tight_pullback_pct=0.002,
+            opening_impulse_news_max_hold_seconds=90,
+            opening_impulse_runner_pullback_pct=0.01,
+            opening_impulse_exit_negative_steps=99,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.8, low=99.9, close=100.6, volume=100, vwap=100.4, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.6, high=101.1, low=100.5, close=101.0, volume=120, vwap=100.8, start_ms=61_000, end_ms=121_000))
+        state.add_bar(Bar("AAPL", open=101.0, high=101.1, low=100.6, close=100.7, volume=300, vwap=100.8, start_ms=121_000, end_ms=181_000))
+        state.update_quote(Quote("AAPL", bid=100.69, ask=100.71, bid_size=20, ask_size=20, timestamp_ms=181_000))
+        state.mark_news(160_000)
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=80_000,
+            target_price=101.0,
+            stop_price=99.5,
+            max_price=101.1,
+            last_high_ts=120_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "news max hold")
+
     def test_opening_impulse_rejects_late_entry_extension(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -3492,6 +3563,21 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn('"gap_and_go"', captured.output[0])
         self.assertIn('"maha7"', captured.output[0])
         self.assertIn('"open_positions": ["AAPL"]', captured.output[0])
+
+    def test_news_sentiment_scoring_promotes_positive_and_blocks_negative(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            news_hot_positive_only=True,
+            news_hot_min_sentiment_score=1.0,
+        )
+        positive = NewsEvent(symbols=("AAPL",), timestamp_ms=1_000, headline="AAPL beats earnings and raises guidance")
+        negative = NewsEvent(symbols=("AAPL",), timestamp_ms=1_000, headline="AAPL misses earnings and cuts guidance")
+
+        self.assertGreaterEqual(trading_main.news_sentiment_score(positive), 1.0)
+        self.assertLessEqual(trading_main.news_sentiment_score(negative), -1.0)
+        self.assertTrue(trading_main.should_mark_hot_from_news(settings, positive))
+        self.assertFalse(trading_main.should_mark_hot_from_news(settings, negative))
 
     def test_runtime_settings_snapshot_includes_tuning_parameters(self):
         settings = Settings(
