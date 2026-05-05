@@ -579,6 +579,36 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(a["wins"], 1)
         self.assertEqual(a["losses"], 1)
         self.assertEqual(a["win_rate"], 0.5)
+        self.assertEqual(list(summary["by_day_entry_time_et"].keys()), ["2026-04-28"])
+        d0 = summary["by_day_entry_time_et"]["2026-04-28"]
+        self.assertEqual(d0["before_12_00_et"]["trades"], 1)
+        self.assertEqual(d0["from_12_00_et"]["trades"], 2)
+
+    def test_trade_journal_analyzer_win_rate_by_entry_noon_et_splits_multiple_days(self):
+        """Per-day noon buckets use entry date in ET."""
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy", "AAPL", market_ms(2026, 4, 28, 9, 31), 10, 100.0, 0.0, "opening_impulse", "entry", "b1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "AAPL", market_ms(2026, 4, 28, 9, 40), 10, 101.0, 5.0, "opening_impulse", "tp", "s1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy", "MSFT", market_ms(2026, 4, 29, 14, 0), 5, 200.0, 0.0, "opening_impulse", "entry", "b2"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "MSFT", market_ms(2026, 4, 29, 14, 10), 5, 199.0, -5.0, "opening_impulse", "sl", "s2"
+            ),
+        ]
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        self.assertEqual(unmatched, [])
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+        byd = summary["by_day_entry_time_et"]
+        self.assertEqual(list(byd.keys()), ["2026-04-28", "2026-04-29"])
+        self.assertEqual(byd["2026-04-28"]["before_12_00_et"]["trades"], 1)
+        self.assertEqual(byd["2026-04-28"]["from_12_00_et"]["trades"], 0)
+        self.assertEqual(byd["2026-04-29"]["before_12_00_et"]["trades"], 0)
+        self.assertEqual(byd["2026-04-29"]["from_12_00_et"]["trades"], 1)
 
     def test_trade_journal_analyze_filters_by_strategy(self):
         with tempfile.TemporaryDirectory() as tmpdir:
