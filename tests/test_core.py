@@ -2688,6 +2688,32 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(validated["ranked"][0]["score"], 7.4)
         self.assertEqual(validated["ranked"][0]["ai_reason"], "Tighter premarket setup")
 
+    def test_maha7_ai_selection_is_bounded_to_ranked_candidates(self):
+        ranked = [
+            {"symbol": "AAPL", "score": 7.2, "selection_stage": "intraday"},
+            {"symbol": "MSFT", "score": 6.4, "selection_stage": "intraday"},
+        ]
+
+        validated = select_maha7.validated_maha7_selection(
+            {
+                "adjustments": {
+                    "MSFT": {"ai_score_delta": 1.0, "ai_reason": "Cleaner reclaim context"},
+                    "GONE": {"ai_score_delta": 2.0, "ai_reason": "ignored"},
+                },
+                "rejected": ["GONE"],
+                "risk_note": "test",
+            },
+            ranked,
+            limit=2,
+        )
+
+        self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
+        self.assertEqual(validated["ranked"][0]["symbol"], "MSFT")
+        self.assertEqual(validated["ranked"][0]["base_score"], 6.4)
+        self.assertEqual(validated["ranked"][0]["ai_score_delta"], 1.0)
+        self.assertEqual(validated["ranked"][0]["score"], 7.4)
+        self.assertEqual(validated["ranked"][0]["ai_reason"], "Cleaner reclaim context")
+
     def test_gap_and_go_selector_scores_weak_candidates_instead_of_dropping_them(self):
         settings = Settings(
             alpaca_api_key="test",

@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from ai_client import request_json_response
 from config import Settings, load_settings
+from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
 from models import Bar, Quote
 from opening_plan import default_plan_file_for_strategy
@@ -336,6 +338,73 @@ def deterministic_plan(candidates: list[Maha7Candidate], top: int) -> dict:
     }
 
 
+def ai_maha7_selection(settings: Settings, ranked: list[dict[str, object]], limit: int) -> dict[str, object] | None:
+    payload = {
+        "strategy": "maha7",
+        "selection_rules": {
+            "focus": "MA7/MA20 pullback reclaim continuation quality",
+            "must_choose_from_ranked": True,
+            "prefer": [
+                "clean reclaim context",
+                "strong trend quality",
+                "better liquidity and spread",
+                "less extension from MA7",
+            ],
+        },
+        "ranked": ranked,
+        "limit": limit,
+    }
+    response_text = request_json_response(
+        settings,
+        (
+            "Review the maha7 ranked candidates and return only JSON. "
+            "Choose only from ranked symbols. Do not invent symbols. "
+            "Include keys: strategy, adjustments, rejected, risk_note. "
+            "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
+            "Keep ai_score_delta bounded between -2.0 and 2.0, and use 0 when no adjustment is needed."
+        ),
+        payload,
+    )
+    if response_text is None:
+        return None
+    return extract_json_object(response_text)
+
+
+def validated_maha7_selection(plan: dict[str, object], ranked: list[dict[str, object]], limit: int) -> dict[str, object]:
+    available = {str(item.get("symbol", "")).upper() for item in ranked}
+    raw_adjustments = plan.get("adjustments") if isinstance(plan.get("adjustments"), dict) else {}
+    normalized_ranked: list[dict[str, object]] = []
+    for item in ranked:
+        symbol = str(item.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        adjustment = raw_adjustments.get(symbol) or raw_adjustments.get(symbol.lower()) or {}
+        if not isinstance(adjustment, dict):
+            adjustment = {}
+        ai_delta = max(-2.0, min(2.0, float(adjustment.get("ai_score_delta", 0.0) or 0.0)))
+        ai_reason = str(adjustment.get("ai_reason", "")).strip()
+        ranked_item = dict(item)
+        ranked_item["symbol"] = symbol
+        ranked_item["base_score"] = float(ranked_item.get("score", 0.0) or 0.0)
+        ranked_item["ai_score_delta"] = round(ai_delta, 3)
+        ranked_item["score"] = round(float(ranked_item["base_score"]) + float(ranked_item["ai_score_delta"]), 3)
+        if ai_reason:
+            ranked_item["ai_reason"] = ai_reason
+        normalized_ranked.append(ranked_item)
+
+    normalized_ranked.sort(key=lambda row: float(row.get("score", 0.0) or 0.0), reverse=True)
+    selected = [str(item.get("symbol", "")) for item in normalized_ranked[:limit] if str(item.get("symbol", ""))]
+    return {
+        "strategy": "maha7",
+        "selection_stage": str(plan.get("selection_stage") or "daily"),
+        "symbols": selected,
+        "ranked": normalized_ranked[:limit],
+        "rejected": [item for item in (plan.get("rejected") or []) if str(item).upper() in available],
+        "settings": plan.get("settings") if isinstance(plan.get("settings"), dict) else {},
+        "risk_note": str(plan.get("risk_note") or "Embedded AI ranking over deterministic maha7 candidates."),
+    }
+
+
 def get_recent_daily_bars(settings: Settings, symbols: list[str], lookback_days: int) -> dict[str, list[Bar]]:
     from alpaca.data.timeframe import TimeFrame
     from alpaca_client import get_bars_between, make_clients
@@ -418,6 +487,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-dollar-volume", type=float, default=5_000_000.0)
     parser.add_argument("--pullback-max-distance-pct", type=float, default=0.03)
     parser.add_argument("--max-extension-pct", type=float, default=0.08)
+    parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
     parser.add_argument(
         "--force-daily",
         action="store_true",
@@ -461,9 +531,30 @@ def main(argv: list[str] | None = None) -> dict:
         pullback_max_distance_pct=args.pullback_max_distance_pct,
         max_extension_pct=args.max_extension_pct,
     )
+    result: dict[str, object] = {
+        "selected_symbols": plan["symbols"],
+        "symbols_env_line": format_symbols_env_line(plan["symbols"]),
+        "selection_stage": stage,
+        "ranked": plan["ranked"],
+        "selection_plan": plan,
+        "ai_enabled": args.use_ai,
+    }
+
     write_plan(plan, args.output)
-    print(json.dumps({"selected_symbols": plan["symbols"], "selection_stage": stage, "ranked": plan["ranked"]}, indent=2, sort_keys=True))
-    return plan
+    if args.use_ai:
+        ai_plan = ai_maha7_selection(settings, plan["ranked"], args.top)
+        if ai_plan is None:
+            result["ai_selection"] = None
+            result["ai_error"] = "OpenAI not configured or client unavailable."
+        else:
+            validated = validated_maha7_selection(ai_plan, plan["ranked"], args.top)
+            result["ai_selection"] = validated
+            result["selection_plan"] = validated
+            result["selected_symbols"] = validated["symbols"]
+            result["symbols_env_line"] = format_symbols_env_line(validated["symbols"])
+            write_plan(validated, args.output)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return result
 
 
 if __name__ == "__main__":
