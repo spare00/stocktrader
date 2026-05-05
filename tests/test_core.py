@@ -1,3 +1,5 @@
+import contextlib
+import os
 import unittest
 import sys
 import types
@@ -26,23 +28,34 @@ import main as trading_main
 from models import Bar, Quote, Signal
 from opening_plan import (
     DEFAULT_OPENING_PLAN_FILE,
+    PLAN_SETTING_MAP,
     apply_opening_plan,
     default_plan_file_for_strategy,
     plan_overrides,
     selector_command_for_strategy,
 )
+
+
+@contextlib.contextmanager
+def _without_plan_setting_env():
+    """Drop PLAN_SETTING_MAP env vars so plan_overrides is not masked by the shell."""
+    saved = {k: os.environ.pop(k) for k in PLAN_SETTING_MAP if k in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
 import scripts.select_market_universe as select_market_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
 import scripts.select_gap_and_go as select_gap_and_go
-import scripts.select_maha7_pullback_reclaim as select_maha7_pullback_reclaim
+import scripts.select_maha7 as select_maha7
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
 from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
-from strategies.maha7_pullback_reclaim import Maha7PullbackReclaimStrategy
+from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
@@ -170,7 +183,10 @@ class CoreTradingTests(unittest.TestCase):
             },
         }
 
-        overrides = plan_overrides(settings, plan)
+        # plan_overrides defers to os.environ for PLAN_SETTING_MAP keys; clear so the test is
+        # independent of the developer shell (e.g. MAX_OPEN_POSITIONS exported globally).
+        with _without_plan_setting_env():
+            overrides = plan_overrides(settings, plan)
 
         self.assertEqual(overrides["symbols"], ["INTC", "PANW"])
         self.assertEqual(overrides["max_open_positions"], 2)
@@ -287,7 +303,8 @@ class CoreTradingTests(unittest.TestCase):
                 '{"symbols":["INTC"],"settings":{"MAX_OPEN_POSITIONS":1,"OPENING_IMPULSE_CHANGE_PCT":0.008}}'
             )
 
-            updated = apply_opening_plan(settings, path)
+            with _without_plan_setting_env():
+                updated = apply_opening_plan(settings, path)
 
         self.assertEqual(updated.symbols, ["INTC"])
         self.assertEqual(updated.max_open_positions, 1)
@@ -358,14 +375,14 @@ class CoreTradingTests(unittest.TestCase):
     def test_default_opening_plan_path_is_strategy_specific(self):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))
-        self.assertEqual(default_plan_file_for_strategy("maha7_pullback_reclaim"), Path("data/maha7_pullback_reclaim_plan.json"))
+        self.assertEqual(default_plan_file_for_strategy("maha7"), Path("data/maha7_plan.json"))
         self.assertEqual(
             selector_command_for_strategy("gap_and_go"),
             ".venv/bin/python scripts/select_gap_and_go.py --top 5",
         )
         self.assertEqual(
-            selector_command_for_strategy("maha7_pullback_reclaim"),
-            ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
+            selector_command_for_strategy("maha7"),
+            ".venv/bin/python scripts/select_maha7.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -1090,17 +1107,17 @@ class CoreTradingTests(unittest.TestCase):
                 "NVDA": Quote("NVDA", bid=107.8, ask=108.0, bid_size=100, ask_size=100, timestamp_ms=start_ms),
             }
 
-            plan = select_maha7_pullback_reclaim.build_plan(
-                select_maha7_pullback_reclaim.load_universe(universe),
+            plan = select_maha7.build_plan(
+                select_maha7.load_universe(universe),
                 2,
                 bars_by_symbol=bars_by_symbol,
                 quotes=quotes,
                 settings=settings,
                 min_dollar_volume=1_000_000,
             )
-            select_maha7_pullback_reclaim.write_plan(plan, output)
+            select_maha7.write_plan(plan, output)
 
-            self.assertEqual(plan["strategy"], "maha7_pullback_reclaim")
+            self.assertEqual(plan["strategy"], "maha7")
             self.assertEqual(plan["symbols"][0], "AAPL")
             self.assertEqual(len(plan["ranked"]), 2)
             self.assertEqual(json.loads(output.read_text())["symbols"][0], "AAPL")
@@ -1110,7 +1127,7 @@ class CoreTradingTests(unittest.TestCase):
         start_ms = market_ms(2026, 4, 1, 9, 30)
         bars = self._maha7_reclaim_selector_bars("AAPL", start_ms)
 
-        candidate = select_maha7_pullback_reclaim.score_maha7_candidate(
+        candidate = select_maha7.score_maha7_candidate(
             "AAPL",
             bars,
             Quote("AAPL", bid=103.45, ask=103.55, bid_size=100, ask_size=100, timestamp_ms=start_ms),
@@ -1134,7 +1151,7 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_maha7_selector_keeps_symbols_with_short_history_as_penalty_rows(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
-        ranked = select_maha7_pullback_reclaim.rank_candidates(
+        ranked = select_maha7.rank_candidates(
             ["AAPL"],
             {"AAPL": []},
             {"AAPL": Quote("AAPL", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0)},
@@ -1169,7 +1186,7 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         premarket = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
 
-        bars = select_maha7_pullback_reclaim.get_today_minute_bars(settings, ["AAPL"], now=premarket)
+        bars = select_maha7.get_today_minute_bars(settings, ["AAPL"], now=premarket)
 
         self.assertEqual(bars, {"AAPL": []})
 
@@ -3013,27 +3030,27 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertIn("momentum", decision.reason)
 
-    def test_maha7_pullback_reclaim_emits_buy_after_rsi_reclaim(self):
+    def test_maha7_emits_buy_after_rsi_reclaim(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_trend_min_bars=1,
+            maha7_trend_min_bars=1,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         state = self._maha7_reclaim_state()
 
         signal = strategy.evaluate(state)
 
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.strategy, "maha7_pullback_reclaim")
+        self.assertEqual(signal.strategy, "maha7")
         self.assertEqual(signal.side, "BUY")
         self.assertAlmostEqual(signal.stop_price, 113.13675, places=3)
         self.assertIn("optimized entry", signal.reason)
 
-    def test_maha7_pullback_reclaim_skips_rsi_chop(self):
+    def test_maha7_skips_rsi_chop(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         state = self._maha7_reclaim_state()
 
         with patch.object(strategy, "_last_n_green_bars", return_value=False):
@@ -3041,82 +3058,82 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_maha7_pullback_reclaim_skips_current_neutral_rsi(self):
+    def test_maha7_skips_current_neutral_rsi(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_min_r_pct=0.02,
+            maha7_min_r_pct=0.02,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         state = self._maha7_reclaim_state()
 
         signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
 
-    def test_maha7_pullback_reclaim_requires_stabilized_ma_cross(self):
+    def test_maha7_requires_stabilized_ma_cross(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_trend_min_bars=99,
+            maha7_trend_min_bars=99,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
 
         signal = strategy.evaluate(self._maha7_reclaim_state())
 
         self.assertIsNone(signal)
 
-    def test_maha7_pullback_reclaim_requires_rsi_duration(self):
+    def test_maha7_requires_rsi_duration(self):
         """Deprecated name: entry now uses min R% band — too-small R rejects."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_min_r_pct=0.02,
+            maha7_min_r_pct=0.02,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
 
         signal = strategy.evaluate(self._maha7_reclaim_state())
 
         self.assertIsNone(signal)
 
-    def test_maha7_pullback_reclaim_requires_vwap_distance(self):
+    def test_maha7_requires_vwap_distance(self):
         """Late chase: entry must not be within max_chase_pct of recent high."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_max_chase_pct=0.05,
+            maha7_max_chase_pct=0.05,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
 
         signal = strategy.evaluate(self._maha7_reclaim_state())
 
         self.assertIsNone(signal)
 
-    def test_maha7_pullback_reclaim_requires_volume_confirmation(self):
+    def test_maha7_requires_volume_confirmation(self):
         """No entry when neither shallow pullback nor continuation (volume) qualifies."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_pullback_ma7_distance_pct=0.0005,
-            maha7_pullback_reclaim_continuation_volume_ratio=5.0,
+            maha7_pullback_ma7_distance_pct=0.0005,
+            maha7_continuation_volume_ratio=5.0,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
 
         signal = strategy.evaluate(self._maha7_reclaim_state())
 
         self.assertIsNone(signal)
 
-    def test_maha7_pullback_reclaim_partial_and_final_exit(self):
+    def test_maha7_partial_and_final_exit(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         position = Position(
             symbol="AAPL",
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             shares=10,
             entry_price=112.0,
             entry_ms=market_ms(2026, 4, 24, 10, 9),
@@ -3139,18 +3156,18 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(final.reason, "target 2.0R")
 
-    def test_maha7_pullback_reclaim_no_hard_target_without_flag(self):
+    def test_maha7_no_hard_target_without_flag(self):
         """With hard 2R target off, a quote at 2R+ does not force a full exit (runner path)."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_hard_target_r_exit=False,
+            maha7_hard_target_r_exit=False,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         position = Position(
             symbol="AAPL",
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             shares=10,
             entry_price=112.0,
             entry_ms=market_ms(2026, 4, 24, 10, 9),
@@ -3178,10 +3195,10 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             maha7_disable_ma7_exit=True,
-            maha7_pullback_reclaim_min_hold_seconds=0,
+            maha7_min_hold_seconds=0,
             maha7_runner_confirm_break_bars=2,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         state = self._maha7_reclaim_state()
         last_bar = state.bars[-1]
         t0 = last_bar.end_ms
@@ -3214,7 +3231,7 @@ class CoreTradingTests(unittest.TestCase):
         )
         position = Position(
             symbol="AAPL",
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             shares=10,
             entry_price=112.0,
             entry_ms=state.last_event_ms - 300_000,
@@ -3224,16 +3241,16 @@ class CoreTradingTests(unittest.TestCase):
         )
         self.assertIsNone(strategy.should_exit(state, position))
 
-    def test_maha7_pullback_reclaim_runner_ignores_quote_dip_below_ma7(self):
+    def test_maha7_runner_ignores_quote_dip_below_ma7(self):
         """v2.1: after partial, a quote below MA7 alone does not exit if closes are still holding MA7."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_min_hold_seconds=0,
-            maha7_pullback_reclaim_hard_target_r_exit=False,
+            maha7_min_hold_seconds=0,
+            maha7_hard_target_r_exit=False,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         sym = "AAPL"
         base = market_ms(2026, 4, 24, 9, 30)
         state = SymbolState(sym)
@@ -3247,7 +3264,7 @@ class CoreTradingTests(unittest.TestCase):
         )
         position = Position(
             symbol=sym,
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             shares=10,
             entry_price=100.0,
             entry_ms=entry_ms,
@@ -3260,15 +3277,15 @@ class CoreTradingTests(unittest.TestCase):
         )
         self.assertIsNone(strategy.should_exit(state, position))
 
-    def test_maha7_pullback_reclaim_min_hold_blocks_soft_exit(self):
+    def test_maha7_min_hold_blocks_soft_exit(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            maha7_pullback_reclaim_min_hold_seconds=120,
+            maha7_min_hold_seconds=120,
             maha7_runner_confirm_break_bars=2,
         )
-        strategy = Maha7PullbackReclaimStrategy(settings)
+        strategy = Maha7Strategy(settings)
         state = self._maha7_reclaim_state()
         last_bar = state.bars[-1]
         t0 = last_bar.end_ms
@@ -3302,7 +3319,7 @@ class CoreTradingTests(unittest.TestCase):
         )
         position = Position(
             symbol="AAPL",
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             shares=10,
             entry_price=112.0,
             entry_ms=state.last_event_ms - 60_000,
@@ -3409,7 +3426,7 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
-            strategy_names=["gap_and_go", "maha7_pullback_reclaim"],
+            strategy_names=["gap_and_go", "maha7"],
             symbols=["AAPL", "MSFT"],
         )
         states = {
@@ -3433,14 +3450,14 @@ class CoreTradingTests(unittest.TestCase):
         reporter.record_heartbeat()
         reporter.record_signal("gap_and_go")
         reporter.record_entry("gap_and_go")
-        reporter.record_rejection("maha7_pullback_reclaim", "outside 10:00-14:30 ET entry window")
+        reporter.record_rejection("maha7", "outside 10:00-14:30 ET entry window")
 
         with self.assertLogs(level="INFO") as captured:
             reporter.emit(settings, states, executor)
 
         self.assertIn("Heartbeat", captured.output[0])
         self.assertIn('"gap_and_go"', captured.output[0])
-        self.assertIn('"maha7_pullback_reclaim"', captured.output[0])
+        self.assertIn('"maha7"', captured.output[0])
         self.assertIn('"open_positions": ["AAPL"]', captured.output[0])
 
     def test_runtime_settings_snapshot_includes_tuning_parameters(self):
@@ -3620,15 +3637,15 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            strategy_names=["spike", "opening_impulse", "gap_and_go", "maha7_pullback_reclaim"],
+            strategy_names=["spike", "opening_impulse", "gap_and_go", "maha7"],
         )
 
         strategies = build_strategies(settings)
 
-        self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go", "maha7_pullback_reclaim"])
+        self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go", "maha7"])
 
     def test_available_strategy_names_lists_registry_order(self):
-        self.assertEqual(available_strategy_names(), ["gap_and_go", "maha7_pullback_reclaim", "spike", "opening_impulse"])
+        self.assertEqual(available_strategy_names(), ["gap_and_go", "maha7", "spike", "opening_impulse"])
 
     def test_parse_args_accepts_strategy_and_list_flag(self):
         args = trading_main.parse_args(["--strategy", "gap_and_go"])
@@ -3665,18 +3682,18 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
-            strategy_names=["maha7_pullback_reclaim"],
+            strategy_names=["maha7"],
         )
 
         guide = trading_main.strategy_plan_guide(
-            Path("data/maha7_pullback_reclaim_plan.json"),
+            Path("data/maha7_plan.json"),
             settings,
             FileNotFoundError("missing plan"),
         )
 
         self.assertIn("Strategy plan is not ready", guide)
-        self.assertIn(".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12", guide)
-        self.assertIn("scripts/run_paper.sh -s maha7_pullback_reclaim", guide)
+        self.assertIn(".venv/bin/python scripts/select_maha7.py --top 12", guide)
+        self.assertIn("scripts/run_paper.sh -s maha7", guide)
 
     def test_risk_rejects_entries_outside_regular_market_hours(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
@@ -3801,7 +3818,7 @@ class CoreTradingTests(unittest.TestCase):
         risk = RiskManager(settings)
         risk.record_trade("AAPL", market_ms(2026, 4, 24, 10, 0), "opening_impulse")
         signal = Signal(
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             symbol="AAPL",
             side="BUY",
             price=100.0,
@@ -3824,15 +3841,15 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             regular_market_only=False,
             trade_cooldown_seconds=0,
-            maha7_pullback_reclaim_reentry_cooldown_seconds=0,
-            maha7_pullback_reclaim_max_trades_per_symbol_per_session=3,
+            maha7_reentry_cooldown_seconds=0,
+            maha7_max_trades_per_symbol_per_session=3,
         )
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
         for index in range(3):
-            risk.record_trade("AAPL", base_ms + index * 60_000, "maha7_pullback_reclaim")
+            risk.record_trade("AAPL", base_ms + index * 60_000, "maha7")
         signal = Signal(
-            strategy="maha7_pullback_reclaim",
+            strategy="maha7",
             symbol="AAPL",
             side="BUY",
             price=100.0,

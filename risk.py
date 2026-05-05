@@ -53,16 +53,16 @@ class RiskManager:
             return RiskDecision(False, "max open positions reached")
 
         opening_impulse_ms = self.last_trade_by_strategy_ms.get((signal.symbol, "opening_impulse"))
-        if signal.strategy == "maha7_pullback_reclaim" and opening_impulse_ms is not None:
+        if signal.strategy == "maha7" and opening_impulse_ms is not None:
             elapsed = (signal.timestamp_ms - opening_impulse_ms) / 1000
-            cooldown_seconds = self.settings.maha7_pullback_reclaim_min_minutes_after_opening_impulse * 60
+            cooldown_seconds = self.settings.maha7_min_minutes_after_opening_impulse * 60
             if elapsed < cooldown_seconds:
                 return RiskDecision(False, "opening impulse cooldown active")
 
-        if signal.strategy == "maha7_pullback_reclaim":
+        if signal.strategy == "maha7":
             session_key = (day_key, signal.strategy, signal.symbol)
             trade_count = self.session_trade_counts.get(session_key, 0)
-            if trade_count >= self.settings.maha7_pullback_reclaim_max_trades_per_symbol_per_session:
+            if trade_count >= self.settings.maha7_max_trades_per_symbol_per_session:
                 return RiskDecision(False, "max trades per symbol per session reached")
 
         last_ms = self.last_trade_ms.get(signal.symbol)
@@ -70,7 +70,7 @@ class RiskManager:
             elapsed = (signal.timestamp_ms - last_ms) / 1000
             cooldown_seconds = max(
                 self.settings.trade_cooldown_seconds,
-                getattr(self.settings, f"{signal.strategy}_reentry_cooldown_seconds", 0),
+                self._reentry_cooldown_seconds_for_strategy(signal.strategy),
             )
             if elapsed < cooldown_seconds:
                 return RiskDecision(False, "symbol cooldown active")
@@ -83,12 +83,17 @@ class RiskManager:
 
         return RiskDecision(True, "accepted")
 
+    def _reentry_cooldown_seconds_for_strategy(self, strategy: str) -> int:
+        if strategy == "maha7":
+            return self.settings.maha7_reentry_cooldown_seconds
+        return getattr(self.settings, f"{strategy}_reentry_cooldown_seconds", 0)
+
     def record_trade(self, symbol: str, timestamp_ms: int, strategy: str = "") -> None:
         self.last_trade_ms[symbol] = timestamp_ms
         self.last_failed_entry_ms.pop(symbol, None)
         if strategy:
             self.last_trade_by_strategy_ms[(symbol, strategy)] = timestamp_ms
-        if strategy == "maha7_pullback_reclaim":
+        if strategy == "maha7":
             session_key = (self._day_key(timestamp_ms), strategy, symbol)
             self.session_trade_counts[session_key] = self.session_trade_counts.get(session_key, 0) + 1
 

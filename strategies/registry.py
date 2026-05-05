@@ -6,14 +6,14 @@ from pathlib import Path
 
 from strategies.base import Strategy
 from strategies.gap_and_go import GapAndGoStrategy
-from strategies.maha7_pullback_reclaim import Maha7PullbackReclaimStrategy
+from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
 # Registration order (used by available_strategy_names); lookup is by `name`.
 _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     GapAndGoStrategy,
-    Maha7PullbackReclaimStrategy,
+    Maha7Strategy,
     SpikeStrategy,
     OpeningImpulseStrategy,
 )

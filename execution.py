@@ -186,7 +186,7 @@ class PositionTracker:
             if mark_partial:
                 position.partial_exit_taken = True
                 if (
-                    position.strategy == "maha7_pullback_reclaim"
+                    position.strategy == "maha7"
                     and self.settings.maha7_move_stop_to_entry_after_partial
                 ):
                     position.stop_price = position.entry_price

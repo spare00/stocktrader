@@ -284,7 +284,7 @@ def setup_logging(log_file: Path | None = None, strategy_names: list[str] | None
     diagnostic_names = (
         strategy_names
         if strategy_names is not None
-        else ["opening_impulse", "gap_and_go", "maha7_pullback_reclaim"]
+        else ["opening_impulse", "gap_and_go", "maha7"]
     )
     for logger_name in diagnostic_loggers_for(diagnostic_names):
         logging.getLogger(logger_name).setLevel(logging.DEBUG)

@@ -120,46 +120,46 @@ class Settings:
     opening_impulse_volume_collapse_ratio: float = 0.5
     opening_impulse_price_stall_seconds: int = 60
 
-    maha7_pullback_reclaim_start_minute: int = 30
-    maha7_pullback_reclaim_end_minute: int = 300
-    maha7_pullback_reclaim_rsi_period: int = 14
-    maha7_pullback_reclaim_rsi_above_min_bars: int = 2
-    maha7_pullback_reclaim_flat_slope_pct: float = 0.0002
-    maha7_pullback_reclaim_consolidation_candles: int = 10
-    maha7_pullback_reclaim_vwap_min_distance_pct: float = 0.002
-    maha7_pullback_reclaim_pullback_ma7_distance_pct: float = 0.003
-    maha7_pullback_reclaim_volume_min_ratio: float = 1.1
-    maha7_pullback_reclaim_reentry_cooldown_seconds: int = 600
-    maha7_pullback_reclaim_min_minutes_after_opening_impulse: int = 5
-    maha7_pullback_reclaim_trend_min_bars: int = 3
-    maha7_pullback_reclaim_min_hold_seconds: int = 120
-    maha7_pullback_reclaim_max_trades_per_symbol_per_session: int = 3
-    maha7_pullback_reclaim_partial_r: float = 0.5
+    maha7_start_minute: int = 30
+    maha7_end_minute: int = 300
+    maha7_rsi_period: int = 14
+    maha7_rsi_above_min_bars: int = 2
+    maha7_flat_slope_pct: float = 0.0002
+    maha7_consolidation_candles: int = 10
+    maha7_vwap_min_distance_pct: float = 0.002
+    maha7_pullback_ma7_distance_pct: float = 0.003
+    maha7_volume_min_ratio: float = 1.1
+    maha7_reentry_cooldown_seconds: int = 600
+    maha7_min_minutes_after_opening_impulse: int = 5
+    maha7_trend_min_bars: int = 3
+    maha7_min_hold_seconds: int = 120
+    maha7_max_trades_per_symbol_per_session: int = 3
+    maha7_partial_r: float = 0.5
     maha7_partial_size: float = 0.5
-    maha7_pullback_reclaim_target_r: float = 2.0
+    maha7_target_r: float = 2.0
     maha7_move_stop_to_entry_after_partial: bool = True
-    maha7_pullback_reclaim_hard_target_r_exit: bool = True
-    maha7_pullback_reclaim_trend_quality_enabled: bool = True
-    maha7_pullback_reclaim_min_30m_range_pct: float = 0.01
-    maha7_pullback_reclaim_chop_max_ma_spacing_pct: float = 0.002
-    maha7_pullback_reclaim_chop_max_range_pct: float = 0.007
-    maha7_pullback_reclaim_require_higher_low: bool = True
-    maha7_pullback_reclaim_allow_continuation: bool = True
-    maha7_pullback_reclaim_continuation_pullback_min_pct: float = 0.003
-    maha7_pullback_reclaim_continuation_pullback_max_pct: float = 0.012
-    maha7_pullback_reclaim_reclaim_buffer_pct: float = 0.0005
-    maha7_pullback_reclaim_allow_early_trend_entry: bool = True
-    maha7_pullback_reclaim_early_trend_max_bars_since_cross: int = 15
+    maha7_hard_target_r_exit: bool = True
+    maha7_trend_quality_enabled: bool = True
+    maha7_min_30m_range_pct: float = 0.01
+    maha7_chop_max_ma_spacing_pct: float = 0.002
+    maha7_chop_max_range_pct: float = 0.007
+    maha7_require_higher_low: bool = True
+    maha7_allow_continuation: bool = True
+    maha7_continuation_pullback_min_pct: float = 0.003
+    maha7_continuation_pullback_max_pct: float = 0.012
+    maha7_reclaim_buffer_pct: float = 0.0005
+    maha7_allow_early_trend_entry: bool = True
+    maha7_early_trend_max_bars_since_cross: int = 15
     maha7_runner_confirm_break_bars: int = 2
-    maha7_pullback_reclaim_runner_peak_pullback_pct: float = 0.012
-    maha7_pullback_reclaim_swing_lookback: int = 5
-    maha7_pullback_reclaim_stop_anchor_buffer_pct: float = 0.001
-    maha7_pullback_reclaim_min_r_pct: float = 0.003
-    maha7_pullback_reclaim_max_r_pct: float = 0.012
-    maha7_pullback_reclaim_continuation_volume_ratio: float = 1.2
-    maha7_pullback_reclaim_max_chase_pct: float = 0.01
-    maha7_pullback_reclaim_recent_high_lookback: int = 20
-    maha7_pullback_reclaim_momentum_green_bars: int = 2
+    maha7_runner_peak_pullback_pct: float = 0.012
+    maha7_swing_lookback: int = 5
+    maha7_stop_anchor_buffer_pct: float = 0.001
+    maha7_min_r_pct: float = 0.003
+    maha7_max_r_pct: float = 0.012
+    maha7_continuation_volume_ratio: float = 1.2
+    maha7_max_chase_pct: float = 0.01
+    maha7_recent_high_lookback: int = 20
+    maha7_momentum_green_bars: int = 2
     maha7_disable_ma7_exit: bool = False
 
     ai_review: bool = False
@@ -223,7 +223,7 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
     for strategy_name in active_strategy_names:
         values.update(_read_env(strategy_env.get(strategy_name, ())))
 
-    if "maha7_pullback_reclaim" in active_strategy_names:
+    if "maha7" in active_strategy_names:
         legacy_ma7_bars = os.getenv("MAHA7_MA7_BREAKDOWN_BARS")
         new_ma7_bars = os.getenv("MAHA7_RUNNER_CONFIRM_BREAK_BARS")
         if legacy_ma7_bars is not None and new_ma7_bars is None:

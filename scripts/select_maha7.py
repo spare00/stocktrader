@@ -21,7 +21,7 @@ from opening_plan import default_plan_file_for_strategy
 
 
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
-DEFAULT_OUTPUT_FILE = default_plan_file_for_strategy("maha7_pullback_reclaim")
+DEFAULT_OUTPUT_FILE = default_plan_file_for_strategy("maha7")
 MARKET_OPEN = time(9, 30)
 
 
@@ -160,8 +160,8 @@ def score_maha7_candidate(
     extension_from_ma7_pct = max(0.0, (price - ma7) / ma7) if ma7 else 0.0
     dollar_volume = sum(bar.close * bar.volume for bar in ordered[-20:] if bar.close > 0 and bar.volume > 0)
     volume_ratio = _volume_ratio(ordered)
-    rsi = _rsi(closes, settings.maha7_pullback_reclaim_rsi_period)
-    prev_rsi = _rsi(closes[:-1], settings.maha7_pullback_reclaim_rsi_period)
+    rsi = _rsi(closes, settings.maha7_rsi_period)
+    prev_rsi = _rsi(closes[:-1], settings.maha7_rsi_period)
     vwap = _session_vwap(ordered)
     vwap_distance_pct = (price - vwap) / vwap if vwap else None
     pullback_reaction = _recent_pullback_reaction(ordered)
@@ -185,11 +185,11 @@ def score_maha7_candidate(
         quality_flags.append(f"distance_to_MA7 {distance_to_ma7_pct:.2%} > {pullback_max_distance_pct:.2%}")
     if extension_from_ma7_pct > max_extension_pct:
         quality_flags.append(f"extended_from_MA7 {extension_from_ma7_pct:.2%} > {max_extension_pct:.2%}")
-    if volume_ratio < settings.maha7_pullback_reclaim_volume_min_ratio:
-        quality_flags.append(f"volume_ratio {volume_ratio:.2f}x < {settings.maha7_pullback_reclaim_volume_min_ratio:.2f}x")
+    if volume_ratio < settings.maha7_volume_min_ratio:
+        quality_flags.append(f"volume_ratio {volume_ratio:.2f}x < {settings.maha7_volume_min_ratio:.2f}x")
     if vwap_distance_pct is None:
         quality_flags.append("missing VWAP")
-    elif vwap_distance_pct < settings.maha7_pullback_reclaim_vwap_min_distance_pct:
+    elif vwap_distance_pct < settings.maha7_vwap_min_distance_pct:
         quality_flags.append("too close to VWAP")
     if not pullback_reaction:
         quality_flags.append("no recent pullback reaction")
@@ -220,7 +220,7 @@ def score_maha7_candidate(
             rsi_score = -1.0
 
     vwap_score = 0.0
-    if vwap_distance_pct is not None and vwap_distance_pct >= settings.maha7_pullback_reclaim_vwap_min_distance_pct:
+    if vwap_distance_pct is not None and vwap_distance_pct >= settings.maha7_vwap_min_distance_pct:
         vwap_score = min(vwap_distance_pct * 500.0, 2.0)
     reaction_score = 1.0 if pullback_reaction else 0.0
 
@@ -325,7 +325,7 @@ def deterministic_plan(candidates: list[Maha7Candidate], top: int) -> dict:
     if not selected:
         raise ValueError("No Maha7 candidates could be ranked from the available market data")
     return {
-        "strategy": "maha7_pullback_reclaim",
+        "strategy": "maha7",
         "selection_stage": candidates[0].selection_stage,
         "symbols": selected,
         "ranked": [asdict(candidate) for candidate in candidates[:top]],
@@ -383,7 +383,7 @@ def build_plan(
 ) -> dict:
     if top <= 0:
         raise ValueError("--top must be positive")
-    settings = settings or load_settings(strategy_names=["maha7_pullback_reclaim"], validate=False)
+    settings = settings or load_settings(strategy_names=["maha7"], validate=False)
     candidates = rank_candidates(
         symbols,
         bars_by_symbol or {},
@@ -431,7 +431,7 @@ def main(argv: list[str] | None = None) -> dict:
     if args.daily_lookback_days < 21:
         raise ValueError("--daily-lookback-days must be at least 21")
 
-    settings = load_settings(strategy_names=["maha7_pullback_reclaim"], validate=False)
+    settings = load_settings(strategy_names=["maha7"], validate=False)
     symbols = load_universe(args.universe)
     quotes = get_latest_quotes_for_symbols(settings, symbols)
     stage = "daily"

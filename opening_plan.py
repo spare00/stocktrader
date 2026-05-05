@@ -33,7 +33,7 @@ SETTING_BOUNDS = {
 _SELECTOR_COMMAND_HINTS: dict[str, str] = {
     "opening_impulse": ".venv/bin/python scripts/select_opening_impulse.py --top 12",
     "gap_and_go": ".venv/bin/python scripts/select_gap_and_go.py --top 5",
-    "maha7_pullback_reclaim": ".venv/bin/python scripts/select_maha7_pullback_reclaim.py --top 12",
+    "maha7": ".venv/bin/python scripts/select_maha7.py --top 12",
 }
 
 
