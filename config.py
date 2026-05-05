@@ -121,9 +121,10 @@ class Settings:
     opening_impulse_price_stall_seconds: int = 60
     opening_impulse_news_hot_minutes: int = 10
     opening_impulse_news_change_pct: float = 0.003
-    opening_impulse_news_min_volume_ratio: float = 1.1
+    opening_impulse_news_min_volume_ratio: float = 1.3
     opening_impulse_news_tight_pullback_pct: float = 0.003
     opening_impulse_news_max_hold_seconds: int = 90
+    opening_impulse_news_max_move_since_event_pct: float = 0.02
 
     maha7_start_minute: int = 30
     maha7_end_minute: int = 300

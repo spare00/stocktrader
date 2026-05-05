@@ -70,6 +70,8 @@ NEGATIVE_NEWS_TERMS = (
     "plunges",
     "falls",
     "weak earnings",
+    "contract terminated",
+    "terminated",
 )
 
 
@@ -232,21 +234,21 @@ def mark_prices(states: dict[str, SymbolState]) -> dict[str, float]:
     return {symbol: state.last_price for symbol, state in states.items() if state.last_price is not None}
 
 
-def news_sentiment_score(event: NewsEvent) -> float:
-    text = f"{event.headline} {event.summary}".lower()
+def is_high_impact_news(headline: str, summary: str = "") -> bool:
+    text = f"{headline} {summary}".lower()
     if not text.strip():
-        return 0.0
-    positive_hits = sum(1 for term in POSITIVE_NEWS_TERMS if term in text)
-    negative_hits = sum(1 for term in NEGATIVE_NEWS_TERMS if term in text)
-    return float(positive_hits - negative_hits)
+        return False
+    # Negative-first guard prevents "contract win" style positives
+    # from accepting clearly negative headlines like "contract terminated".
+    if any(term in text for term in NEGATIVE_NEWS_TERMS):
+        return False
+    if any(term in text for term in POSITIVE_NEWS_TERMS):
+        return True
+    return False
 
 
 def should_mark_hot_from_news(settings, event: NewsEvent) -> bool:
-    score = news_sentiment_score(event)
-    threshold = max(0.0, settings.news_hot_min_sentiment_score)
-    if settings.news_hot_positive_only:
-        return score >= threshold
-    return abs(score) >= threshold
+    return is_high_impact_news(event.headline, event.summary)
 
 
 def credential_fingerprint(value: str | None) -> str | None:
@@ -463,7 +465,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
                     for symbol in event.symbols:
                         state = states.get(symbol)
                         if state is not None:
-                            state.mark_news(event.timestamp_ms)
+                            state.mark_news(event.timestamp_ms, price=state.last_price)
                 continue
 
             state = states.get(event.symbol)

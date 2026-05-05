@@ -81,9 +81,15 @@ class OpeningImpulseStrategy(Strategy):
         ("opening_impulse_price_stall_seconds", "OPENING_IMPULSE_PRICE_STALL_SECONDS", int_env, 60),
         ("opening_impulse_news_hot_minutes", "OPENING_IMPULSE_NEWS_HOT_MINUTES", int_env, 10),
         ("opening_impulse_news_change_pct", "OPENING_IMPULSE_NEWS_CHANGE_PCT", float_env, 0.003),
-        ("opening_impulse_news_min_volume_ratio", "OPENING_IMPULSE_NEWS_MIN_VOLUME_RATIO", float_env, 1.1),
+        ("opening_impulse_news_min_volume_ratio", "OPENING_IMPULSE_NEWS_MIN_VOLUME_RATIO", float_env, 1.3),
         ("opening_impulse_news_tight_pullback_pct", "OPENING_IMPULSE_NEWS_TIGHT_PULLBACK_PCT", float_env, 0.003),
         ("opening_impulse_news_max_hold_seconds", "OPENING_IMPULSE_NEWS_MAX_HOLD_SECONDS", int_env, 90),
+        (
+            "opening_impulse_news_max_move_since_event_pct",
+            "OPENING_IMPULSE_NEWS_MAX_MOVE_SINCE_EVENT_PCT",
+            float_env,
+            0.02,
+        ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.opening_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_opening_impulse.py --top 12"
@@ -138,6 +144,7 @@ class OpeningImpulseStrategy(Strategy):
             "news_min_volume_ratio": settings.opening_impulse_news_min_volume_ratio,
             "news_tight_pullback_pct": settings.opening_impulse_news_tight_pullback_pct,
             "news_max_hold_seconds": settings.opening_impulse_news_max_hold_seconds,
+            "news_max_move_since_event_pct": settings.opening_impulse_news_max_move_since_event_pct,
         }
 
     def __init__(self, settings: Settings):
@@ -572,7 +579,15 @@ class OpeningImpulseStrategy(Strategy):
         if state.last_news_ms is None:
             return False
         hot_window_ms = max(1, self.settings.opening_impulse_news_hot_minutes) * 60_000
-        return (timestamp_ms - state.last_news_ms) <= hot_window_ms
+        if (timestamp_ms - state.last_news_ms) > hot_window_ms:
+            return False
+        if state.last_news_price is None or state.last_news_price <= 0:
+            return False
+        current_price = state.last_price
+        if current_price is None or current_price <= 0:
+            return False
+        move_since_news = (current_price - state.last_news_price) / state.last_news_price
+        return move_since_news <= self.settings.opening_impulse_news_max_move_since_event_pct
 
     def _session_open_price(self, state: SymbolState) -> float | None:
         for bar in state.bars:
