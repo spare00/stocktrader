@@ -142,7 +142,8 @@ class GapAndGoStrategy(Strategy):
         premarket_volume = self._premarket_volume_ratio(state)
         gap_pct = (last.ask - prev_close) / prev_close
 
-        breakout_level = premarket_high * 0.995
+        buffer = self.settings.gap_and_go_breakout_buffer_pct
+        breakout_level = premarket_high * (1 + buffer)
         reclaim_level = premarket_high * 0.95
         LOG.debug(
             "GNG %s ask=%.2f pm_high=%.2f breakout=%.2f reclaim=%.2f",
