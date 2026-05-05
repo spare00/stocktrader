@@ -7,6 +7,7 @@ from pathlib import Path
 from strategies.base import Strategy
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.maha7 import Maha7Strategy
+from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
@@ -16,6 +17,7 @@ _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     Maha7Strategy,
     SpikeStrategy,
     OpeningImpulseStrategy,
+    NewsImpulseStrategy,
 )
 
 STRATEGY_REGISTRY: dict[str, type[Strategy]] = {cls.name: cls for cls in _STRATEGY_CLASSES}

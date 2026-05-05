@@ -56,6 +56,7 @@ from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, lo
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.maha7 import Maha7Strategy
+from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 
@@ -3804,7 +3805,77 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go", "maha7"])
 
     def test_available_strategy_names_lists_registry_order(self):
-        self.assertEqual(available_strategy_names(), ["gap_and_go", "maha7", "spike", "opening_impulse"])
+        self.assertEqual(available_strategy_names(), ["gap_and_go", "maha7", "spike", "opening_impulse", "news_impulse"])
+
+    def test_build_strategies_can_build_news_impulse(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            strategy_names=["news_impulse"],
+        )
+
+        strategies = build_strategies(settings)
+
+        self.assertEqual([strategy.name for strategy in strategies], ["news_impulse"])
+        self.assertIsInstance(strategies[0], NewsImpulseStrategy)
+
+    def test_news_impulse_strategy_emits_buy_signal(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["news_impulse"],
+            news_impulse_change_pct=0.003,
+            news_impulse_min_volume_ratio=1.3,
+        )
+        strategy = NewsImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+
+        state.add_bar(bar("AAPL", close=100.0, volume=1_000, end_ms=market_ms(2026, 4, 24, 9, 34)))
+        state.add_bar(bar("AAPL", close=100.2, volume=2_000, end_ms=market_ms(2026, 4, 24, 9, 35)))
+        state.mark_news(market_ms(2026, 4, 24, 9, 34), price=100.0)
+        for ts, bid, ask in (
+            (market_ms(2026, 4, 24, 9, 35), 100.00, 100.02),
+            (market_ms(2026, 4, 24, 9, 35), 100.08, 100.10),
+            (market_ms(2026, 4, 24, 9, 35), 100.16, 100.18),
+            (market_ms(2026, 4, 24, 9, 35), 100.24, 100.26),
+            (market_ms(2026, 4, 24, 9, 35), 100.32, 100.34),
+            (market_ms(2026, 4, 24, 9, 35), 100.42, 100.44),
+        ):
+            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=200, ask_size=200, timestamp_ms=ts))
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "news_impulse")
+        self.assertEqual(signal.side, "BUY")
+        self.assertEqual(signal.position_size_multiplier, 0.5)
+
+    def test_position_sizing_multiplier_reduces_news_impulse_shares(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            regular_market_only=False,
+            max_position_value=1_000.0,
+        )
+        executor = LocalPaperExecutor(PositionTracker(settings))
+        signal = Signal(
+            strategy="news_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+            change_pct=0.005,
+            volume_ratio=2.0,
+            spread_bps=4.0,
+            reason="news impulse early entry",
+            position_size_multiplier=0.5,
+        )
+
+        fill = executor.buy(signal)
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.shares, 5)
 
     def test_parse_args_accepts_strategy_and_list_flag(self):
         args = trading_main.parse_args(["--strategy", "gap_and_go"])

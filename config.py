@@ -126,6 +126,17 @@ class Settings:
     opening_impulse_news_max_hold_seconds: int = 90
     opening_impulse_news_max_move_since_event_pct: float = 0.02
 
+    news_impulse_enabled: bool = True
+    news_impulse_start_minute: int = 0
+    news_impulse_end_minute: int = 120
+    news_impulse_change_pct: float = 0.003
+    news_impulse_min_volume_ratio: float = 1.5
+    news_impulse_max_move_since_event_pct: float = 0.015
+    news_impulse_max_hold_seconds: int = 60
+    news_impulse_trailing_pullback_pct: float = 0.003
+    news_impulse_stop_loss_pct: float = 0.004
+    news_impulse_position_size_multiplier: float = 0.5
+
     maha7_start_minute: int = 30
     maha7_end_minute: int = 300
     maha7_rsi_period: int = 14

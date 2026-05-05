@@ -76,8 +76,9 @@ class PositionTracker:
     def open_symbols(self) -> set[str]:
         return set(self.positions)
 
-    def planned_shares(self, price: float, stop_price: float | None = None) -> int:
+    def planned_shares(self, price: float, stop_price: float | None = None, size_multiplier: float = 1.0) -> int:
         budget = min(self.settings.max_position_value, self.cash)
+        budget *= max(0.0, size_multiplier)
         if self.settings.position_sizing_mode == "risk":
             stop_distance = price - stop_price if stop_price is not None else price * self.settings.stop_loss_pct
             if stop_distance > 0:
@@ -314,7 +315,7 @@ class LocalPaperExecutor:
         if signal.symbol in self.tracker.positions:
             return None
 
-        shares = self.tracker.planned_shares(signal.price, signal.stop_price)
+        shares = self.tracker.planned_shares(signal.price, signal.stop_price, signal.position_size_multiplier)
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
@@ -473,7 +474,7 @@ class AlpacaPaperExecutor:
         if signal.symbol in self.tracker.positions:
             return None
 
-        shares = self.tracker.planned_shares(signal.price, signal.stop_price)
+        shares = self.tracker.planned_shares(signal.price, signal.stop_price, signal.position_size_multiplier)
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
