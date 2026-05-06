@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from alpaca.data.timeframe import TimeFrame
 
+from ai_client import request_json_response
 from alpaca_client import get_bars_between, get_latest_quotes, make_clients
 from config import Settings, load_settings
 from env_vars import format_symbols_env_line
@@ -184,6 +185,76 @@ def build_plan(candidates: list[NewsImpulseCandidate], limit: int) -> dict[str, 
     }
 
 
+def extract_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    stripped = text.lstrip()
+    result, _ = decoder.raw_decode(stripped)
+    if not isinstance(result, dict):
+        raise ValueError("Expected a JSON object.")
+    return result
+
+
+def ai_news_impulse_selection(settings: Settings, ranked: list[dict[str, Any]], limit: int) -> dict[str, Any] | None:
+    payload = {
+        "strategy": "news_impulse",
+        "selection_rules": {
+            "focus": "high-liquidity symbols with reliable volume-spike behavior and reasonable spread",
+            "must_choose_from_ranked": True,
+        },
+        "ranked": ranked,
+        "limit": limit,
+    }
+    response_text = request_json_response(
+        settings,
+        (
+            "Review the news_impulse ranked candidates and return only JSON. "
+            "Choose only from ranked symbols. Do not invent symbols. "
+            "Include keys: strategy, adjustments, rejected, risk_note. "
+            "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
+            "Keep ai_score_delta bounded between -2.0 and 2.0, and use 0 when no adjustment is needed."
+        ),
+        payload,
+    )
+    if response_text is None:
+        return None
+    return extract_json_object(response_text)
+
+
+def validated_news_impulse_selection(plan: dict[str, Any], ranked: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+    available = {str(item.get("symbol", "")).upper() for item in ranked}
+    raw_adjustments = plan.get("adjustments") if isinstance(plan.get("adjustments"), dict) else {}
+    normalized_ranked: list[dict[str, Any]] = []
+    for item in ranked:
+        symbol = str(item.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        adjustment = raw_adjustments.get(symbol) or raw_adjustments.get(symbol.lower()) or {}
+        if not isinstance(adjustment, dict):
+            adjustment = {}
+        ai_delta = max(-2.0, min(2.0, float(adjustment.get("ai_score_delta", 0.0) or 0.0)))
+        ai_reason = str(adjustment.get("ai_reason", "")).strip()
+        ranked_item = dict(item)
+        ranked_item["symbol"] = symbol
+        ranked_item["base_score"] = float(ranked_item.get("score", 0.0) or 0.0)
+        ranked_item["ai_score_delta"] = round(ai_delta, 3)
+        ranked_item["score"] = round(float(ranked_item["base_score"]) + float(ranked_item["ai_score_delta"]), 3)
+        if ai_reason:
+            ranked_item["ai_reason"] = ai_reason
+        normalized_ranked.append(ranked_item)
+
+    normalized_ranked.sort(key=lambda row: float(row.get("score", 0.0) or 0.0), reverse=True)
+    selected = [str(item.get("symbol", "")) for item in normalized_ranked[:limit] if str(item.get("symbol", ""))]
+    return {
+        "strategy": "news_impulse",
+        "selection_stage": str(plan.get("selection_stage") or "intraday_volume_screen"),
+        "symbols": selected,
+        "ranked": normalized_ranked[:limit],
+        "rejected": [item for item in (plan.get("rejected") or []) if str(item).upper() in available],
+        "settings": plan.get("settings") if isinstance(plan.get("settings"), dict) else {},
+        "risk_note": str(plan.get("risk_note") or "Embedded AI ranking over deterministic news_impulse candidates."),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Rank symbols for news_impulse watchlist (volume spike + spread/price screen)."
@@ -198,6 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top", type=int, default=12, help="Max symbols to write into the plan.")
     parser.add_argument("--min-price", type=float, default=5.0, help="Minimum ask (when quote available).")
     parser.add_argument("--max-spread-bps", type=float, default=20.0, help="Reject wide spreads.")
+    parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
     parser.add_argument(
         "--plan-output",
         type=Path,
@@ -231,8 +303,21 @@ def main() -> None:
         "selected_symbols": plan["symbols"],
         "symbols_env_line": format_symbols_env_line(plan["symbols"]),
         "selection_plan": plan,
+        "ai_enabled": args.use_ai,
         "plan_output": str(args.plan_output),
     }
+    if args.use_ai:
+        ai_plan = ai_news_impulse_selection(settings, plan["ranked"], args.top)
+        if ai_plan is None:
+            result["ai_selection"] = None
+            result["ai_error"] = "OpenAI not configured or client unavailable."
+        else:
+            validated = validated_news_impulse_selection(ai_plan, plan["ranked"], args.top)
+            result["ai_selection"] = validated
+            result["selection_plan"] = validated
+            result["selected_symbols"] = validated["symbols"]
+            result["symbols_env_line"] = format_symbols_env_line(validated["symbols"])
+            args.plan_output.write_text(json.dumps(validated, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
