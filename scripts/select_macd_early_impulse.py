@@ -6,7 +6,10 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict, dataclass
+from datetime import datetime, time
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +19,19 @@ if str(ROOT) not in sys.path:
 from ai_client import request_json_response
 from config import Settings, load_settings
 from env_vars import format_symbols_env_line
+from market_hours import MARKET_TZ
+from models import Bar, Quote
 from opening_plan import default_plan_file_for_strategy
 
 
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("macd_early_impulse")
+PREMARKET_OPEN = time(4, 0)
+HIST_NORM_MIN = 0.001
+NEAR_HIGH_TOLERANCE_PCT = 0.003
+CHOP_DELTA_MULTIPLIER = 0.0035
+MIN_VOLUME_RATIO = 1.2
+MIN_BAR_COUNT = 35
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -47,6 +58,25 @@ def load_universe(path: Path | None, raw_symbols: str) -> list[str]:
     return sorted(dict.fromkeys(symbols))
 
 
+@dataclass(frozen=True)
+class MACDEarlyImpulseCandidate:
+    symbol: str
+    score: float
+    hist_norm: float
+    volume_ratio: float
+    last_price: float
+    session_high: float
+    macd_hist: float
+    selection_stage: str = "filtered"
+
+
+@dataclass(frozen=True)
+class CandidateReject:
+    symbol: str
+    code: str
+    detail: str
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
     decoder = json.JSONDecoder()
     stripped = text.lstrip()
@@ -56,17 +86,133 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return result
 
 
-def deterministic_plan(symbols: list[str], strategy: str) -> dict[str, Any]:
-    ranked = [{"symbol": symbol, "score": float(len(symbols) - idx), "source": "deterministic"} for idx, symbol in enumerate(symbols)]
+def _ema_series(values: list[float], period: int) -> list[float]:
+    if not values or period <= 0:
+        return []
+    alpha = 2.0 / (period + 1)
+    ema = values[0]
+    out: list[float] = []
+    for value in values:
+        ema = alpha * value + (1.0 - alpha) * ema
+        out.append(ema)
+    return out
+
+
+def _macd_histogram(closes: list[float]) -> list[float]:
+    ema12 = _ema_series(closes, 12)
+    ema26 = _ema_series(closes, 26)
+    macd_line = [a - b for a, b in zip(ema12, ema26)]
+    signal_line = _ema_series(macd_line, 9)
+    return [m - s for m, s in zip(macd_line, signal_line)]
+
+
+def load_market_data(settings: Settings, symbols: list[str]) -> tuple[dict[str, list[Bar]], dict[str, Quote]]:
+    try:
+        from alpaca.data.timeframe import TimeFrame
+
+        from alpaca_client import get_bars_between, get_latest_quotes, make_clients
+    except Exception as exc:
+        raise RuntimeError("Alpaca market-data dependencies unavailable.") from exc
+
+    clients = make_clients(settings)
+    now = datetime.now(tz=MARKET_TZ)
+    start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=MARKET_TZ)
+    intraday = get_bars_between(clients, symbols, TimeFrame.Minute, start_of_day, now)
+    quotes = get_latest_quotes(settings, symbols)
+    return intraday, quotes
+
+
+def _usable_price(quote: Quote | None, bars: list[Bar]) -> float:
+    if quote is not None and quote.ask > 0:
+        return quote.ask
+    if bars:
+        return bars[-1].close
+    return 0.0
+
+
+def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[MACDEarlyImpulseCandidate | None, CandidateReject | None]:
+    if len(bars) < MIN_BAR_COUNT:
+        return None, CandidateReject(symbol, "bars", f"need >= {MIN_BAR_COUNT} bars, got {len(bars)}")
+
+    closes = [float(bar.close) for bar in bars if bar.close > 0]
+    if len(closes) < MIN_BAR_COUNT:
+        return None, CandidateReject(symbol, "close", "insufficient positive closes")
+
+    hist = _macd_histogram(closes)
+    if len(hist) < 2:
+        return None, CandidateReject(symbol, "macd", "insufficient histogram points")
+
+    price = _usable_price(quote, bars)
+    if price <= 0:
+        return None, CandidateReject(symbol, "price", "invalid last price")
+
+    hist_norm = hist[-1] / price
+    if abs(hist_norm) < HIST_NORM_MIN:
+        return None, CandidateReject(symbol, "weak_macd", f"hist_norm {hist_norm:.5f} < {HIST_NORM_MIN}")
+
+    if not (closes[-3] < closes[-2] < closes[-1]):
+        return None, CandidateReject(symbol, "momentum", "last 3 closes not strictly increasing")
+
+    session_high = max(bar.high for bar in bars if bar.high > 0)
+    if session_high <= 0:
+        return None, CandidateReject(symbol, "high", "invalid session high")
+    if price < session_high * (1.0 - NEAR_HIGH_TOLERANCE_PCT):
+        return None, CandidateReject(symbol, "near_high", "price too far below session high")
+
+    chop_delta = abs(hist[-1] - hist[-2])
+    if chop_delta < price * CHOP_DELTA_MULTIPLIER:
+        return None, CandidateReject(symbol, "chop", f"macd delta {chop_delta:.5f} below threshold")
+
+    latest_volume = bars[-1].volume
+    baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
+    volume_ratio = (latest_volume / baseline) if baseline > 0 else 0.0
+    if volume_ratio < MIN_VOLUME_RATIO:
+        return None, CandidateReject(symbol, "volume", f"volume_ratio {volume_ratio:.2f} < {MIN_VOLUME_RATIO:.2f}")
+
+    score = (hist_norm * 1000.0) + (volume_ratio * 2.0)
+    candidate = MACDEarlyImpulseCandidate(
+        symbol=symbol,
+        score=round(score, 6),
+        hist_norm=round(hist_norm, 6),
+        volume_ratio=round(volume_ratio, 4),
+        last_price=round(price, 4),
+        session_high=round(session_high, 4),
+        macd_hist=round(hist[-1], 6),
+    )
+    return candidate, None
+
+
+def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote]) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject]]:
+    ranked: list[MACDEarlyImpulseCandidate] = []
+    rejected: list[CandidateReject] = []
+    for symbol in symbols:
+        candidate, reject = evaluate_symbol(symbol, bars_by_symbol.get(symbol, []), quotes.get(symbol))
+        if candidate is not None:
+            ranked.append(candidate)
+        elif reject is not None:
+            rejected.append(reject)
+    ranked.sort(key=lambda row: row.score, reverse=True)
+    return ranked, rejected
+
+
+def deterministic_plan(
+    candidates: list[MACDEarlyImpulseCandidate],
+    rejected: list[CandidateReject],
+    strategy: str,
+    limit: int,
+) -> dict[str, Any]:
+    top = candidates[:limit]
+    selected = [row.symbol for row in top]
+    ranked = [asdict(row) for row in top]
     return {
         "strategy": strategy,
-        "selection_stage": "universe_slice",
-        "note": "Stub: sliced from opening_universe; add liquidity/MACD filters when needed.",
-        "symbols": symbols,
+        "selection_stage": "filtered",
+        "note": "Deterministic MACD prefilter using histogram normalization, momentum continuation, near-high, chop, and volume rules.",
+        "symbols": selected,
         "ranked": ranked,
-        "rejected": [],
+        "rejected": [asdict(row) for row in rejected],
         "settings": {},
-        "risk_note": "Deterministic top-N universe slice; runtime strategy filters enforce entry quality.",
+        "risk_note": "Filtered and ranked by normalized MACD impulse and relative volume; runtime strategy still enforces entry conditions.",
     }
 
 
@@ -158,8 +304,11 @@ def main() -> int:
     parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
     args = parser.parse_args()
 
-    symbols = load_universe(args.universe_file, args.symbols)[: args.top]
-    plan = deterministic_plan(symbols, "macd_early_impulse")
+    symbols = load_universe(args.universe_file, args.symbols)
+    settings = load_settings(strategy_names=["macd_early_impulse"], validate=False)
+    bars_by_symbol, quotes = load_market_data(settings, symbols)
+    candidates, rejected = rank_candidates(symbols, bars_by_symbol, quotes)
+    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top)
     selected_symbols = list(plan["symbols"])
     result: dict[str, Any] = {
         "strategy": "macd_early_impulse",
