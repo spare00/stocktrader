@@ -11,12 +11,14 @@ from strategies.maha7 import Maha7Strategy
 from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
+from strategies.steady_intraday import SteadyIntradayStrategy
 
 # Registration order (used by available_strategy_names); lookup is by `name`.
 _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     GapAndGoStrategy,
     MACDEarlyImpulseStrategy,
     Maha7Strategy,
+    SteadyIntradayStrategy,
     SpikeStrategy,
     OpeningImpulseStrategy,
     NewsImpulseStrategy,

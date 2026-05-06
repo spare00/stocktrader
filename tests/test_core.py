@@ -59,6 +59,7 @@ from strategies.maha7 import Maha7Strategy
 from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
+from strategies.steady_intraday import SteadyIntradayStrategy
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -3797,18 +3798,71 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
-            strategy_names=["spike", "opening_impulse", "gap_and_go", "maha7"],
+            strategy_names=["spike", "opening_impulse", "gap_and_go", "maha7", "steady_intraday"],
         )
 
         strategies = build_strategies(settings)
 
-        self.assertEqual([strategy.name for strategy in strategies], ["spike", "opening_impulse", "gap_and_go", "maha7"])
+        self.assertEqual(
+            [strategy.name for strategy in strategies],
+            ["spike", "opening_impulse", "gap_and_go", "maha7", "steady_intraday"],
+        )
 
     def test_available_strategy_names_lists_registry_order(self):
         self.assertEqual(
             available_strategy_names(),
-            ["gap_and_go", "macd_early_impulse", "maha7", "spike", "opening_impulse", "news_impulse"],
+            ["gap_and_go", "macd_early_impulse", "maha7", "steady_intraday", "spike", "opening_impulse", "news_impulse"],
         )
+
+    def test_steady_intraday_emits_pullback_reclaim_signal(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["steady_intraday"],
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("NVDA")
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        closes = []
+        for index in range(60):
+            if index < 15:
+                close = 100 + index * 0.03
+            elif index < 56:
+                close = 100.5 + (index - 15) * 0.04
+            elif index == 56:
+                close = 102.0
+            elif index == 57:
+                close = 101.9
+            elif index == 58:
+                close = 101.85
+            else:
+                close = 102.15
+            closes.append(close)
+            open_price = close - 0.10
+            state.add_bar(
+                Bar(
+                    "NVDA",
+                    open=open_price,
+                    high=close + 0.08,
+                    low=open_price - 0.08,
+                    close=close,
+                    volume=100_000 if index < 59 else 150_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(Quote("NVDA", 102.13, 102.17, 100, 100, start_ms + 60 * 60_000))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "steady_intraday")
+        self.assertIn("pullback_reclaim", signal.reason)
+        self.assertLess(signal.stop_price, signal.price)
+        self.assertEqual(signal.position_size_multiplier, 0.8)
 
     def test_build_strategies_can_build_news_impulse(self):
         settings = Settings(

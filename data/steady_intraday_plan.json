@@ -1,0 +1,22 @@
+{
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "AMD",
+    "AVGO",
+    "AMZN",
+    "GOOGL",
+    "NFLX",
+    "PANW",
+    "PLTR"
+  ],
+  "settings": {
+    "MAX_OPEN_POSITIONS": 2,
+    "MAX_POSITION_VALUE": 2500,
+    "STOP_LOSS_PCT": 0.005,
+    "TARGET_PROFIT_PCT": 0.01
+  }
+}
