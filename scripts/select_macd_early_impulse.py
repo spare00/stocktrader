@@ -29,8 +29,6 @@ DEFAULT_PLAN_FILE = default_plan_file_for_strategy("macd_early_impulse")
 PREMARKET_OPEN = time(4, 0)
 HIST_NORM_MIN = 0.0005
 NEAR_HIGH_TOLERANCE_PCT = 0.005
-CHOP_DELTA_MULTIPLIER = 0.0035
-MIN_VOLUME_RATIO = 1.2
 MIN_BAR_COUNT = 20
 RECENT_HIGH_LOOKBACK = 20
 DEFAULT_UNIVERSE = [
@@ -142,6 +140,15 @@ def _usable_price(quote: Quote | None, bars: list[Bar]) -> float:
     return 0.0
 
 
+def _momentum_relaxed(last_three_bars: tuple[Bar, Bar, Bar]) -> bool:
+    """(close[-1] > close[-3]) OR at least two bullish (green) bars in the last three."""
+    b_oldest, _b_mid, b_newest = last_three_bars
+    if b_newest.close > b_oldest.close:
+        return True
+    green = sum(1 for b in last_three_bars if b.close > b.open)
+    return green >= 2
+
+
 def evaluate_symbol(
     symbol: str,
     bars: list[Bar],
@@ -176,8 +183,13 @@ def evaluate_symbol(
 
     _bump("passed_hist_norm")
 
-    if not (closes[-3] < closes[-2] < closes[-1]):
-        return None, CandidateReject(symbol, "momentum", "last 3 closes not strictly increasing")
+    last3 = (bars[-3], bars[-2], bars[-1])
+    if not _momentum_relaxed(last3):
+        return None, CandidateReject(
+            symbol,
+            "momentum",
+            "need close[-1]>close[-3] or >=2 green bars in last 3",
+        )
 
     _bump("passed_momentum")
 
@@ -190,22 +202,17 @@ def evaluate_symbol(
 
     _bump("passed_near_high")
 
-    chop_delta = abs(hist[-1] - hist[-2])
-    if chop_delta < price * CHOP_DELTA_MULTIPLIER:
-        return None, CandidateReject(symbol, "chop", f"macd delta {chop_delta:.5f} below threshold")
+    if not (hist[-1] > hist[-2]):
+        return None, CandidateReject(symbol, "chop", "histogram not rising (hist[-1] <= hist[-2])")
 
     _bump("passed_chop")
 
     latest_volume = bars[-1].volume
     baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
     volume_ratio = (latest_volume / baseline) if baseline > 0 else 0.0
-    if volume_ratio < MIN_VOLUME_RATIO:
-        return None, CandidateReject(symbol, "volume", f"volume_ratio {volume_ratio:.2f} < {MIN_VOLUME_RATIO:.2f}")
-
-    _bump("passed_volume")
 
     breakout_score = ((price - recent_high) / price) * 100.0 if price > 0 else 0.0
-    score = (hist_norm * 1000.0) + (volume_ratio * 2.0) + breakout_score
+    score = (hist_norm * 1000.0) + breakout_score
     candidate = MACDEarlyImpulseCandidate(
         symbol=symbol,
         score=round(score, 6),
@@ -228,7 +235,6 @@ def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], qu
         "passed_momentum": 0,
         "passed_near_high": 0,
         "passed_chop": 0,
-        "passed_volume": 0,
     }
     for symbol in symbols:
         candidate, reject = evaluate_symbol(
@@ -263,19 +269,20 @@ def deterministic_plan(
             "hist_norm_min": HIST_NORM_MIN,
             "min_bar_count": MIN_BAR_COUNT,
             "near_high_tolerance_pct": NEAR_HIGH_TOLERANCE_PCT,
-            "chop_delta_multiplier": CHOP_DELTA_MULTIPLIER,
-            "min_volume_ratio": MIN_VOLUME_RATIO,
             "recent_high_lookback_bars": RECENT_HIGH_LOOKBACK,
+            "momentum_rule": "(close[-1] > close[-3]) OR (>=2 green bars in last 3)",
+            "chop_rule": "hist[-1] > hist[-2]",
+            "volume_filter": "disabled (upstream universe)",
         }
     return {
         "strategy": strategy,
         "selection_stage": "filtered",
-        "note": "MACD-based ranking with normalization, momentum continuation, chop, near-high, and volume filters.",
+        "note": "MACD-based ranking: hist norm, relaxed momentum, histogram uptick, near-high; volume not filtered here.",
         "symbols": selected,
         "ranked": ranked,
         "rejected": [asdict(row) for row in rejected],
         "settings": settings,
-        "risk_note": "MACD momentum + breakout + volume filtered candidates",
+        "risk_note": "MACD momentum + breakout candidates (volume screened upstream)",
     }
 
 
