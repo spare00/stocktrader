@@ -31,7 +31,8 @@ HIST_NORM_MIN = 0.001
 NEAR_HIGH_TOLERANCE_PCT = 0.003
 CHOP_DELTA_MULTIPLIER = 0.0035
 MIN_VOLUME_RATIO = 1.2
-MIN_BAR_COUNT = 35
+MIN_BAR_COUNT = 30
+RECENT_HIGH_LOOKBACK = 20
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -164,11 +165,12 @@ def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[
     if not (closes[-3] < closes[-2] < closes[-1]):
         return None, CandidateReject(symbol, "momentum", "last 3 closes not strictly increasing")
 
-    session_high = max(bar.high for bar in bars if bar.high > 0)
-    if session_high <= 0:
-        return None, CandidateReject(symbol, "high", "invalid session high")
-    if price < session_high * (1.0 - NEAR_HIGH_TOLERANCE_PCT):
-        return None, CandidateReject(symbol, "near_high", "price too far below session high")
+    recent_bars = bars[-RECENT_HIGH_LOOKBACK:]
+    recent_high = max((bar.high for bar in recent_bars if bar.high > 0), default=0.0)
+    if recent_high <= 0:
+        return None, CandidateReject(symbol, "high", "invalid recent high")
+    if price < recent_high * (1.0 - NEAR_HIGH_TOLERANCE_PCT):
+        return None, CandidateReject(symbol, "near_high", "price too far below recent high")
 
     chop_delta = abs(hist[-1] - hist[-2])
     if chop_delta < price * CHOP_DELTA_MULTIPLIER:
@@ -180,14 +182,15 @@ def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[
     if volume_ratio < MIN_VOLUME_RATIO:
         return None, CandidateReject(symbol, "volume", f"volume_ratio {volume_ratio:.2f} < {MIN_VOLUME_RATIO:.2f}")
 
-    score = (hist_norm * 1000.0) + (volume_ratio * 2.0)
+    breakout_score = ((price - recent_high) / price) * 100.0 if price > 0 else 0.0
+    score = (hist_norm * 1000.0) + (volume_ratio * 2.0) + breakout_score
     candidate = MACDEarlyImpulseCandidate(
         symbol=symbol,
         score=round(score, 6),
         hist_norm=round(hist_norm, 6),
         volume_ratio=round(volume_ratio, 4),
         last_price=round(price, 4),
-        session_high=round(session_high, 4),
+        session_high=round(recent_high, 4),
         macd_hist=round(hist[-1], 6),
     )
     return candidate, None
@@ -206,69 +209,6 @@ def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], qu
     return ranked, rejected
 
 
-def fallback_rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote]) -> list[MACDEarlyImpulseCandidate]:
-    """Relaxed fallback so selector never returns an empty ranked list."""
-    ranked: list[MACDEarlyImpulseCandidate] = []
-    for symbol in symbols:
-        bars = bars_by_symbol.get(symbol, [])
-        if len(bars) < MIN_BAR_COUNT:
-            continue
-        closes = [float(bar.close) for bar in bars if bar.close > 0]
-        if len(closes) < MIN_BAR_COUNT:
-            continue
-        hist = _macd_histogram(closes)
-        if not hist:
-            continue
-        price = _usable_price(quotes.get(symbol), bars)
-        if price <= 0:
-            continue
-        hist_norm = hist[-1] / price
-        latest_volume = bars[-1].volume
-        baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
-        volume_ratio = (latest_volume / baseline) if baseline > 0 else 0.0
-        session_high = max((bar.high for bar in bars if bar.high > 0), default=0.0)
-        score = (hist_norm * 1000.0) + (volume_ratio * 2.0)
-        ranked.append(
-            MACDEarlyImpulseCandidate(
-                symbol=symbol,
-                score=round(score, 6),
-                hist_norm=round(hist_norm, 6),
-                volume_ratio=round(volume_ratio, 4),
-                last_price=round(price, 4),
-                session_high=round(session_high, 4),
-                macd_hist=round(hist[-1], 6),
-                selection_stage="fallback_ranked",
-            )
-        )
-    ranked.sort(key=lambda row: row.score, reverse=True)
-    return ranked
-
-
-def emergency_universe_candidates(symbols: list[str], quotes: dict[str, Quote]) -> list[MACDEarlyImpulseCandidate]:
-    """
-    Final guardrail fallback when no bar-based candidates are available.
-    Keeps selector usable by emitting top universe symbols with neutral scores.
-    """
-    out: list[MACDEarlyImpulseCandidate] = []
-    for idx, symbol in enumerate(symbols):
-        quote = quotes.get(symbol)
-        price = quote.ask if quote is not None and quote.ask > 0 else 0.0
-        # Preserve deterministic ordering while still exposing minimal quote context.
-        out.append(
-            MACDEarlyImpulseCandidate(
-                symbol=symbol,
-                score=round(float(len(symbols) - idx), 6),
-                hist_norm=0.0,
-                volume_ratio=0.0,
-                last_price=round(price, 4),
-                session_high=0.0,
-                macd_hist=0.0,
-                selection_stage="universe_fallback",
-            )
-        )
-    return out
-
-
 def deterministic_plan(
     candidates: list[MACDEarlyImpulseCandidate],
     rejected: list[CandidateReject],
@@ -278,26 +218,15 @@ def deterministic_plan(
     top = candidates[:limit]
     selected = [row.symbol for row in top]
     ranked = [asdict(row) for row in top]
-    selection_stage = top[0].selection_stage if top else "filtered"
-    note_by_stage = {
-        "filtered": "Deterministic MACD prefilter using histogram normalization, momentum continuation, near-high, chop, and volume rules.",
-        "fallback_ranked": "Strict MACD filters produced no candidates; used relaxed bar-based fallback ranking.",
-        "universe_fallback": "No usable bar-based candidates; emitted deterministic universe fallback list.",
-    }
-    risk_by_stage = {
-        "filtered": "Filtered and ranked by normalized MACD impulse and relative volume; runtime strategy still enforces entry conditions.",
-        "fallback_ranked": "Fallback ranking uses relaxed bar-based scoring; runtime strategy should enforce stricter entry quality.",
-        "universe_fallback": "Universe fallback ignores signal quality and should be treated as a temporary watchlist only.",
-    }
     return {
         "strategy": strategy,
-        "selection_stage": selection_stage,
-        "note": note_by_stage.get(selection_stage, note_by_stage["filtered"]),
+        "selection_stage": "filtered",
+        "note": "MACD-based ranking with normalization, momentum continuation, chop, near-high, and volume filters.",
         "symbols": selected,
         "ranked": ranked,
         "rejected": [asdict(row) for row in rejected],
         "settings": {},
-        "risk_note": risk_by_stage.get(selection_stage, risk_by_stage["filtered"]),
+        "risk_note": "MACD momentum + breakout + volume filtered candidates",
     }
 
 
@@ -387,24 +316,6 @@ def main() -> int:
     settings = _selector_settings()
     bars_by_symbol, quotes = load_market_data(settings, symbols)
     candidates, rejected = rank_candidates(symbols, bars_by_symbol, quotes)
-    if not candidates:
-        candidates = fallback_rank_candidates(symbols, bars_by_symbol, quotes)
-        rejected.append(
-            CandidateReject(
-                symbol="*",
-                code="fallback",
-                detail="strict filters produced no candidates; used relaxed fallback ranking",
-            )
-        )
-    if not candidates:
-        candidates = emergency_universe_candidates(symbols, quotes)
-        rejected.append(
-            CandidateReject(
-                symbol="*",
-                code="universe_fallback",
-                detail="relaxed fallback still empty; using deterministic universe fallback",
-            )
-        )
     plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top)
     selected_symbols = list(plan["symbols"])
     result: dict[str, Any] = {
