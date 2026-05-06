@@ -1239,6 +1239,29 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(bars, {"AAPL": []})
 
+    def test_steady_intraday_ai_selection_is_bounded_to_ranked_candidates(self):
+        ranked = [
+            {"symbol": "NVDA", "score": 5.0, "selection_stage": "intraday"},
+            {"symbol": "AAPL", "score": 4.5, "selection_stage": "intraday"},
+        ]
+        ai_plan = {
+            "selection_stage": "intraday",
+            "adjustments": {
+                "NVDA": {"ai_score_delta": -5.0, "ai_reason": "too extended"},
+                "AAPL": {"ai_score_delta": 5.0, "ai_reason": "cleaner pullback"},
+                "FAKE": {"ai_score_delta": 2.0, "ai_reason": "not allowed"},
+            },
+            "rejected": ["FAKE", "NVDA"],
+            "risk_note": "bounded test",
+        }
+
+        validated = select_steady_intraday.validated_steady_intraday_selection(ai_plan, ranked, 2)
+
+        self.assertEqual(validated["symbols"], ["AAPL", "NVDA"])
+        self.assertEqual(validated["ranked"][0]["ai_score_delta"], 2.0)
+        self.assertEqual(validated["ranked"][1]["ai_score_delta"], -2.0)
+        self.assertEqual(validated["rejected"], ["NVDA"])
+
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
         state = SymbolState("AAPL")
