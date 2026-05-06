@@ -34,7 +34,7 @@ _SELECTOR_COMMAND_HINTS: dict[str, str] = {
     "opening_impulse": ".venv/bin/python scripts/select_opening_impulse.py --top 12",
     "gap_and_go": ".venv/bin/python scripts/select_gap_and_go.py --top 5",
     "maha7": ".venv/bin/python scripts/select_maha7.py --top 12",
-    "steady_intraday": ".venv/bin/python scripts/select_market_universe.py --top 12",
+    "steady_intraday": ".venv/bin/python scripts/select_steady_intraday.py --top 12",
     "news_impulse": ".venv/bin/python scripts/select_news_impulse.py --top 12",
     "macd_early_impulse": ".venv/bin/python scripts/select_macd_early_impulse.py --top 12",
 }

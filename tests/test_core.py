@@ -52,6 +52,7 @@ import scripts.select_gap_and_go as select_gap_and_go
 import scripts.select_maha7 as select_maha7
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
+import scripts.select_steady_intraday as select_steady_intraday
 from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
@@ -378,6 +379,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("maha7"), Path("data/maha7_plan.json"))
+        self.assertEqual(default_plan_file_for_strategy("steady_intraday"), Path("data/steady_intraday_plan.json"))
         self.assertEqual(
             selector_command_for_strategy("gap_and_go"),
             ".venv/bin/python scripts/select_gap_and_go.py --top 5",
@@ -385,6 +387,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(
             selector_command_for_strategy("maha7"),
             ".venv/bin/python scripts/select_maha7.py --top 12",
+        )
+        self.assertEqual(
+            selector_command_for_strategy("steady_intraday"),
+            ".venv/bin/python scripts/select_steady_intraday.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -1189,6 +1195,47 @@ class CoreTradingTests(unittest.TestCase):
         premarket = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
 
         bars = select_maha7.get_today_minute_bars(settings, ["AAPL"], now=premarket)
+
+        self.assertEqual(bars, {"AAPL": []})
+
+    def test_steady_intraday_selector_writes_plan_from_universe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            universe = Path(tmpdir) / "universe.txt"
+            output = Path(tmpdir) / "steady_intraday_plan.json"
+            universe.write_text("NVDA,AAPL,NVDA\nMSFT\n")
+            settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["NVDA"])
+            start_ms = market_ms(2026, 4, 24, 9, 30)
+            bars_by_symbol = {
+                "NVDA": self._steady_intraday_selector_bars("NVDA", start_ms, trigger=True),
+                "AAPL": self._steady_intraday_selector_bars("AAPL", start_ms, trigger=False),
+                "MSFT": [],
+            }
+            quotes = {
+                "NVDA": Quote("NVDA", bid=102.13, ask=102.17, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+                "AAPL": Quote("AAPL", bid=100.00, ask=100.06, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+            }
+
+            plan = select_steady_intraday.build_plan(
+                select_steady_intraday.load_universe(universe),
+                2,
+                bars_by_symbol=bars_by_symbol,
+                quotes=quotes,
+                settings=settings,
+                stage="intraday",
+                min_dollar_volume=1_000_000,
+            )
+            select_steady_intraday.write_plan(plan, output)
+
+            self.assertEqual(plan["strategy"], "steady_intraday")
+            self.assertEqual(plan["symbols"][0], "NVDA")
+            self.assertEqual(plan["ranked"][0]["pullback_reclaim_ready"], True)
+            self.assertEqual(json.loads(output.read_text())["symbols"][0], "NVDA")
+
+    def test_steady_intraday_selector_skips_intraday_before_market_open(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        premarket = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
+
+        bars = select_steady_intraday.get_today_minute_bars(settings, ["AAPL"], now=premarket)
 
         self.assertEqual(bars, {"AAPL": []})
 
@@ -4244,6 +4291,40 @@ class CoreTradingTests(unittest.TestCase):
                     vwap=close,
                     start_ms=start_ms + index * 86_400_000,
                     end_ms=start_ms + (index + 1) * 86_400_000,
+                )
+            )
+        return bars
+
+    @staticmethod
+    def _steady_intraday_selector_bars(symbol: str, start_ms: int, trigger: bool) -> list[Bar]:
+        bars = []
+        for index in range(60):
+            if index < 15:
+                close = 100 + index * 0.03
+            elif index < 56:
+                close = 100.5 + (index - 15) * (0.04 if trigger else 0.01)
+            elif trigger and index == 56:
+                close = 102.0
+            elif trigger and index == 57:
+                close = 101.9
+            elif trigger and index == 58:
+                close = 101.85
+            elif trigger:
+                close = 102.15
+            else:
+                close = 100.9
+            open_price = close - 0.10
+            bars.append(
+                Bar(
+                    symbol,
+                    open=open_price,
+                    high=close + 0.08,
+                    low=open_price - 0.08,
+                    close=close,
+                    volume=100_000 if index < 59 else 150_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
                 )
             )
         return bars
