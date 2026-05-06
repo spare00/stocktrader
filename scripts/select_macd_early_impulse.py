@@ -27,11 +27,11 @@ from opening_plan import default_plan_file_for_strategy
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("macd_early_impulse")
 PREMARKET_OPEN = time(4, 0)
-HIST_NORM_MIN = 0.001
-NEAR_HIGH_TOLERANCE_PCT = 0.003
+HIST_NORM_MIN = 0.0005
+NEAR_HIGH_TOLERANCE_PCT = 0.005
 CHOP_DELTA_MULTIPLIER = 0.0035
 MIN_VOLUME_RATIO = 1.2
-MIN_BAR_COUNT = 30
+MIN_BAR_COUNT = 20
 RECENT_HIGH_LOOKBACK = 20
 DEFAULT_UNIVERSE = [
     "AAPL",
@@ -142,7 +142,17 @@ def _usable_price(quote: Quote | None, bars: list[Bar]) -> float:
     return 0.0
 
 
-def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[MACDEarlyImpulseCandidate | None, CandidateReject | None]:
+def evaluate_symbol(
+    symbol: str,
+    bars: list[Bar],
+    quote: Quote | None,
+    *,
+    stage_counts: dict[str, int] | None = None,
+) -> tuple[MACDEarlyImpulseCandidate | None, CandidateReject | None]:
+    def _bump(key: str) -> None:
+        if stage_counts is not None:
+            stage_counts[key] = stage_counts.get(key, 0) + 1
+
     if len(bars) < MIN_BAR_COUNT:
         return None, CandidateReject(symbol, "bars", f"need >= {MIN_BAR_COUNT} bars, got {len(bars)}")
 
@@ -158,12 +168,18 @@ def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[
     if price <= 0:
         return None, CandidateReject(symbol, "price", "invalid last price")
 
+    _bump("passed_macd_data")
+
     hist_norm = hist[-1] / price
     if abs(hist_norm) < HIST_NORM_MIN:
         return None, CandidateReject(symbol, "weak_macd", f"hist_norm {hist_norm:.5f} < {HIST_NORM_MIN}")
 
+    _bump("passed_hist_norm")
+
     if not (closes[-3] < closes[-2] < closes[-1]):
         return None, CandidateReject(symbol, "momentum", "last 3 closes not strictly increasing")
+
+    _bump("passed_momentum")
 
     recent_bars = bars[-RECENT_HIGH_LOOKBACK:]
     recent_high = max((bar.high for bar in recent_bars if bar.high > 0), default=0.0)
@@ -172,15 +188,21 @@ def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[
     if price < recent_high * (1.0 - NEAR_HIGH_TOLERANCE_PCT):
         return None, CandidateReject(symbol, "near_high", "price too far below recent high")
 
+    _bump("passed_near_high")
+
     chop_delta = abs(hist[-1] - hist[-2])
     if chop_delta < price * CHOP_DELTA_MULTIPLIER:
         return None, CandidateReject(symbol, "chop", f"macd delta {chop_delta:.5f} below threshold")
+
+    _bump("passed_chop")
 
     latest_volume = bars[-1].volume
     baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
     volume_ratio = (latest_volume / baseline) if baseline > 0 else 0.0
     if volume_ratio < MIN_VOLUME_RATIO:
         return None, CandidateReject(symbol, "volume", f"volume_ratio {volume_ratio:.2f} < {MIN_VOLUME_RATIO:.2f}")
+
+    _bump("passed_volume")
 
     breakout_score = ((price - recent_high) / price) * 100.0 if price > 0 else 0.0
     score = (hist_norm * 1000.0) + (volume_ratio * 2.0) + breakout_score
@@ -196,17 +218,31 @@ def evaluate_symbol(symbol: str, bars: list[Bar], quote: Quote | None) -> tuple[
     return candidate, None
 
 
-def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote]) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject]]:
+def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote]) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject], dict[str, int]]:
     ranked: list[MACDEarlyImpulseCandidate] = []
     rejected: list[CandidateReject] = []
+    stage_counts: dict[str, int] = {
+        "universe_symbols": len(symbols),
+        "passed_macd_data": 0,
+        "passed_hist_norm": 0,
+        "passed_momentum": 0,
+        "passed_near_high": 0,
+        "passed_chop": 0,
+        "passed_volume": 0,
+    }
     for symbol in symbols:
-        candidate, reject = evaluate_symbol(symbol, bars_by_symbol.get(symbol, []), quotes.get(symbol))
+        candidate, reject = evaluate_symbol(
+            symbol,
+            bars_by_symbol.get(symbol, []),
+            quotes.get(symbol),
+            stage_counts=stage_counts,
+        )
         if candidate is not None:
             ranked.append(candidate)
         elif reject is not None:
             rejected.append(reject)
     ranked.sort(key=lambda row: row.score, reverse=True)
-    return ranked, rejected
+    return ranked, rejected, stage_counts
 
 
 def deterministic_plan(
@@ -214,10 +250,23 @@ def deterministic_plan(
     rejected: list[CandidateReject],
     strategy: str,
     limit: int,
+    *,
+    filter_stage_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     top = candidates[:limit]
     selected = [row.symbol for row in top]
     ranked = [asdict(row) for row in top]
+    settings: dict[str, Any] = {}
+    if filter_stage_counts:
+        settings["filter_stage_counts"] = dict(filter_stage_counts)
+        settings["filter_thresholds"] = {
+            "hist_norm_min": HIST_NORM_MIN,
+            "min_bar_count": MIN_BAR_COUNT,
+            "near_high_tolerance_pct": NEAR_HIGH_TOLERANCE_PCT,
+            "chop_delta_multiplier": CHOP_DELTA_MULTIPLIER,
+            "min_volume_ratio": MIN_VOLUME_RATIO,
+            "recent_high_lookback_bars": RECENT_HIGH_LOOKBACK,
+        }
     return {
         "strategy": strategy,
         "selection_stage": "filtered",
@@ -225,7 +274,7 @@ def deterministic_plan(
         "symbols": selected,
         "ranked": ranked,
         "rejected": [asdict(row) for row in rejected],
-        "settings": {},
+        "settings": settings,
         "risk_note": "MACD momentum + breakout + volume filtered candidates",
     }
 
@@ -315,14 +364,15 @@ def main() -> int:
     symbols = load_universe(args.universe_file, args.symbols)
     settings = _selector_settings()
     bars_by_symbol, quotes = load_market_data(settings, symbols)
-    candidates, rejected = rank_candidates(symbols, bars_by_symbol, quotes)
-    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top)
+    candidates, rejected, stage_counts = rank_candidates(symbols, bars_by_symbol, quotes)
+    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top, filter_stage_counts=stage_counts)
     selected_symbols = list(plan["symbols"])
     result: dict[str, Any] = {
         "strategy": "macd_early_impulse",
         "selected_symbols": selected_symbols,
         "symbols_env_line": format_symbols_env_line(selected_symbols),
         "selection_plan": plan,
+        "filter_stage_counts": stage_counts,
         "ai_enabled": args.use_ai,
         "plan_output": str(args.plan_output),
     }
@@ -335,6 +385,11 @@ def main() -> int:
             result["ai_error"] = "OpenAI not configured or client unavailable."
         else:
             validated = validated_macd_selection(ai_plan, plan["ranked"], args.top)
+            prev_settings = plan.get("settings") if isinstance(plan.get("settings"), dict) else {}
+            if prev_settings and isinstance(validated.get("settings"), dict):
+                validated["settings"] = {**prev_settings, **validated["settings"]}
+            elif prev_settings:
+                validated["settings"] = dict(prev_settings)
             result["ai_selection"] = validated
             result["selection_plan"] = validated
             result["selected_symbols"] = validated["symbols"]
