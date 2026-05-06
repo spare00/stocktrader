@@ -18,8 +18,8 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 
-# MACD needs warmup; margin for signal line and three histogram points.
-_MIN_REGULAR_BARS = 50
+# MACD needs warmup; minimum regular-session bars for stable histogram.
+_MIN_REGULAR_BARS = 20
 _NEAR_HIGH_TOLERANCE_PCT = 0.003
 _RECENT_HIGH_LOOKBACK = 15
 _OVEREXTEND_MAX_PCT = 0.003
@@ -49,7 +49,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_stop_loss_pct", "MACD_STOP_LOSS_PCT", float_env, 0.004),
         ("macd_trailing_stop_pct", "MACD_TRAILING_STOP_PCT", float_env, 0.005),
         ("macd_chop_range_pct", "MACD_CHOP_RANGE_PCT", float_env, 0.0035),
-        ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, True),
+        ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.macd_early_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_macd_early_impulse.py --top 12"
@@ -136,28 +136,22 @@ class MACDEarlyImpulseStrategy(Strategy):
         if self.settings.macd_skip_midday and 60 <= mins <= 120:
             return self._reject(state, "midday", f"skip midday {mins}m since open")
 
-        last3 = rb[-3:]
-        if not (last3[0].close < last3[1].close < last3[2].close):
-            return self._reject(state, "no_speed", "no upward momentum")
+        if rb[-1].close <= rb[-3].close:
+            return self._reject(state, "no_speed", "close[-1] not above close[-3]")
 
         macd = self._compute_macd(state)
         if macd is None:
             return self._reject(state, "macd", "could not compute MACD")
-        macd_line, _, hist = macd
-        if len(hist) < 3:
+        _, _, hist = macd
+        if len(hist) < 2:
             return self._reject(state, "macd", "insufficient histogram history")
 
-        h3, h2, h1 = hist[-3], hist[-2], hist[-1]
-        if macd_line[-1] > 0:
-            return self._reject(state, "late_macd", "macd already positive")
-        if macd_line[-1] == 0:
-            return self._reject(state, "macd_phase", "macd line at zero (not early phase)")
-
-        if not (h3 < h2 < h1):
+        h2, h1 = hist[-2], hist[-1]
+        if not (h1 > h2):
             return self._reject(
                 state,
-                "weak_acceleration",
-                f"histogram not accelerating ({h3:.5f},{h2:.5f},{h1:.5f})",
+                "weak_hist",
+                f"histogram not rising ({h2:.5f},{h1:.5f})",
             )
 
         hist_norm = h1 / last.ask if last.ask > 0 else 0.0

@@ -187,7 +187,7 @@ class Settings:
     macd_stop_loss_pct: float = 0.004
     macd_trailing_stop_pct: float = 0.005
     macd_chop_range_pct: float = 0.0035
-    macd_skip_midday: bool = True
+    macd_skip_midday: bool = False
 
     ai_review: bool = False
     news_hot_positive_only: bool = True
