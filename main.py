@@ -1,5 +1,6 @@
 import asyncio
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -58,6 +59,17 @@ POSITIVE_NEWS_TERMS = (
     "launches",
     "strong earnings",
     "record revenue",
+)
+OPENING_UNIVERSE_FILE = Path("data/opening_universe.txt")
+MACD_DEFAULT_UNIVERSE = (
+    "AAPL",
+    "AMD",
+    "AMZN",
+    "META",
+    "MSFT",
+    "NVDA",
+    "QQQ",
+    "TSLA",
 )
 NEGATIVE_NEWS_TERMS = (
     "misses",
@@ -381,6 +393,36 @@ def resolve_strategy_plan_path(settings, explicit_path: Path | None, strategy_na
     return default_plan_file_for_settings(settings)
 
 
+def load_opening_universe_symbols(path: Path = OPENING_UNIVERSE_FILE) -> list[str]:
+    if not path.exists():
+        return []
+    symbols: list[str] = []
+    text = path.read_text(encoding="utf-8")
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0]
+        for raw_symbol in line.replace(",", " ").split():
+            symbol = raw_symbol.strip().upper()
+            if symbol:
+                symbols.append(symbol)
+    return list(dict.fromkeys(symbols))
+
+
+def expand_symbols_for_macd(settings):
+    if "macd_early_impulse" not in settings.strategy_names:
+        return settings
+    opening_universe = load_opening_universe_symbols()
+    macd_universe = opening_universe or list(MACD_DEFAULT_UNIVERSE)
+    merged = list(dict.fromkeys([symbol.strip().upper() for symbol in (settings.symbols + macd_universe) if symbol.strip()]))
+    if merged == settings.symbols:
+        return settings
+    logging.info(
+        "MACD watchlist expanded to %s symbols using %s",
+        len(merged),
+        OPENING_UNIVERSE_FILE if opening_universe else "built-in default universe",
+    )
+    return replace(settings, symbols=merged)
+
+
 def _strategy_name_from(strategy_name_or_settings) -> str:
     if isinstance(strategy_name_or_settings, str):
         name = strategy_name_or_settings.strip().lower()
@@ -391,7 +433,7 @@ def _strategy_name_from(strategy_name_or_settings) -> str:
     return "opening_impulse"
 
 
-def validate_strategy_plan(path: Path, strategy_name_or_settings) -> list[str]:
+def validate_strategy_plan(path: Path, strategy_name_or_settings, *, min_symbols: int = 1) -> list[str]:
     strategy_name = _strategy_name_from(strategy_name_or_settings)
     if not path.exists():
         command = selector_command_for_strategy(strategy_name)
@@ -405,6 +447,13 @@ def validate_strategy_plan(path: Path, strategy_name_or_settings) -> list[str]:
         command = selector_command_for_strategy(strategy_name)
         raise ValueError(
             f"Strategy plan file has no selected symbols: {path}. Regenerate it first, for example: {command}"
+        )
+    required = max(1, int(min_symbols))
+    if len(symbols) < required:
+        command = selector_command_for_strategy(strategy_name)
+        raise ValueError(
+            f"Strategy plan has {len(symbols)} symbols but requires at least {required}: {path}. "
+            f"Regenerate it first, for example: {command}"
         )
     return symbols
 
@@ -442,6 +491,7 @@ def ensure_strategy_plan_ready(
     *,
     max_wait_seconds: int,
     retry_seconds: int,
+    min_symbols: int,
 ) -> list[str]:
     """
     Ensure the strategy plan exists and has selected symbols.
@@ -454,19 +504,22 @@ def ensure_strategy_plan_ready(
     last_error: Exception | None = None
     wait_step = max(1, retry_seconds)
     max_wait = max(0, max_wait_seconds)
+    required_symbols = max(1, int(min_symbols))
 
     while True:
         attempt += 1
         ok, detail = run_strategy_selector(strategy_name)
         if ok:
             try:
-                symbols = validate_strategy_plan(path, strategy_name)
+                symbols = validate_strategy_plan(path, strategy_name, min_symbols=required_symbols)
                 if attempt > 1:
                     logging.info(
-                        "Strategy plan %s ready for %s after %s attempts",
+                        "Strategy plan %s ready for %s after %s attempts (symbols=%s, minimum=%s)",
                         path,
                         strategy_name,
                         attempt,
+                        len(symbols),
+                        required_symbols,
                     )
                 return symbols
             except (FileNotFoundError, ValueError) as exc:
@@ -514,18 +567,21 @@ async def main(args: argparse.Namespace | None = None) -> None:
         auto_selector = str(os.getenv("AUTO_RUN_SELECTOR", "1")).strip().lower() not in {"0", "false", "no", "off"}
         auto_selector_max_wait_seconds = int(os.getenv("AUTO_SELECTOR_MAX_WAIT_SECONDS", "1800"))
         auto_selector_retry_seconds = int(os.getenv("AUTO_SELECTOR_RETRY_SECONDS", "60"))
+        auto_selector_min_symbols = int(os.getenv("AUTO_SELECTOR_MIN_SYMBOLS", "20"))
         try:
-            validate_strategy_plan(opening_plan_path, plan_strategy)
+            validate_strategy_plan(opening_plan_path, plan_strategy, min_symbols=auto_selector_min_symbols)
         except (FileNotFoundError, ValueError) as exc:
             if not auto_selector:
                 print(strategy_plan_guide(opening_plan_path, plan_strategy, exc), file=sys.stderr)
                 raise SystemExit(2) from None
             logging.info(
-                "Auto selector enabled for %s. Ensuring plan %s is ready (max wait %ss, retry %ss).",
+                "Auto selector enabled for %s. Ensuring plan %s is ready "
+                "(max wait %ss, retry %ss, minimum symbols %s).",
                 plan_strategy,
                 opening_plan_path,
                 auto_selector_max_wait_seconds,
                 auto_selector_retry_seconds,
+                auto_selector_min_symbols,
             )
             try:
                 ensure_strategy_plan_ready(
@@ -533,11 +589,13 @@ async def main(args: argparse.Namespace | None = None) -> None:
                     plan_strategy,
                     max_wait_seconds=auto_selector_max_wait_seconds,
                     retry_seconds=auto_selector_retry_seconds,
+                    min_symbols=auto_selector_min_symbols,
                 )
             except (FileNotFoundError, ValueError) as retry_exc:
                 print(strategy_plan_guide(opening_plan_path, plan_strategy, retry_exc), file=sys.stderr)
                 raise SystemExit(2) from None
         settings = apply_opening_plan(settings, opening_plan_path)
+    settings = expand_symbols_for_macd(settings)
     log_file = strategy_log_file(settings)
     setup_logging(log_file, settings.strategy_names)
     if opening_plan_path is not None:

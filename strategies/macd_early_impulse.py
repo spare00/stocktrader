@@ -40,6 +40,7 @@ def _ema_series(values: list[float], period: int) -> list[float]:
 
 class MACDEarlyImpulseStrategy(Strategy):
     name = "macd_early_impulse"
+    requires_plan: ClassVar[bool] = False
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("macd_start_minute", "MACD_START_MINUTE", int_env, 0),
         ("macd_end_minute", "MACD_END_MINUTE", int_env, 180),
@@ -127,8 +128,6 @@ class MACDEarlyImpulseStrategy(Strategy):
             LOG.info("MACD early impulse bootstrapped %s minute bars", seeded)
 
     def evaluate(self, state: SymbolState) -> Signal | None:
-        if state.symbol not in self.settings.symbols:
-            return None
         if state.last_event_kind not in {"quote", "bar"}:
             return None
 
