@@ -46,6 +46,8 @@ class Settings:
     gap_and_go_exit_activation_delay_seconds: int = 15
     gap_and_go_trailing_retrace_pct: float = 0.008
     gap_and_go_bar_window: int = 5
+    gap_and_go_max_trades_per_symbol_per_session: int = 2
+    gap_and_go_symbol_loss_lock_count: int = 2
 
     spike_lookback_seconds: int = 5
     spike_change_pct: float = 0.0025

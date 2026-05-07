@@ -43,6 +43,8 @@ class GapAndGoStrategy(Strategy):
         ("gap_and_go_exit_activation_delay_seconds", "GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", int_env, 15),
         ("gap_and_go_trailing_retrace_pct", "GAP_AND_GO_TRAILING_RETRACE_PCT", float_env, 0.008),
         ("gap_and_go_bar_window", "GAP_AND_GO_BAR_WINDOW", int_env, 5),
+        ("gap_and_go_max_trades_per_symbol_per_session", "GAP_AND_GO_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 2),
+        ("gap_and_go_symbol_loss_lock_count", "GAP_AND_GO_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.gap_and_go",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_gap_and_go.py --top 5"
@@ -62,6 +64,8 @@ class GapAndGoStrategy(Strategy):
             "exit_activation_delay_seconds": settings.gap_and_go_exit_activation_delay_seconds,
             "trailing_retrace_pct": settings.gap_and_go_trailing_retrace_pct,
             "bar_window": settings.gap_and_go_bar_window,
+            "max_trades_per_symbol_per_session": settings.gap_and_go_max_trades_per_symbol_per_session,
+            "symbol_loss_lock_count": settings.gap_and_go_symbol_loss_lock_count,
         }
 
     def __init__(self, settings: Settings):
@@ -141,6 +145,26 @@ class GapAndGoStrategy(Strategy):
 
         premarket_volume = self._premarket_volume_ratio(state)
         gap_pct = (last.ask - prev_close) / prev_close
+        if last.ask < self.settings.gap_and_go_min_price:
+            return self._reject(state, "price", f"price {last.ask:.2f} below min {self.settings.gap_and_go_min_price:.2f}")
+        if gap_pct < self.settings.gap_and_go_min_gap_pct:
+            return self._reject(
+                state,
+                "gap",
+                f"gap {gap_pct:.2%} below min {self.settings.gap_and_go_min_gap_pct:.2%}",
+            )
+        if premarket_volume < self.settings.gap_and_go_premarket_volume_ratio:
+            return self._reject(
+                state,
+                "premarket_volume",
+                f"premarket volume {premarket_volume:.2f}x below min {self.settings.gap_and_go_premarket_volume_ratio:.2f}x",
+            )
+        if last.spread_bps > self.settings.gap_and_go_max_spread_bps:
+            return self._reject(
+                state,
+                "spread",
+                f"spread {last.spread_bps:.1f}bps above max {self.settings.gap_and_go_max_spread_bps:.1f}bps",
+            )
 
         buffer = self.settings.gap_and_go_breakout_buffer_pct
         breakout_level = premarket_high * (1 + buffer)
@@ -163,13 +187,6 @@ class GapAndGoStrategy(Strategy):
             breakout_ok = False
             entry_type = "none"
 
-        if not breakout_ok:
-            return self._reject(
-                state,
-                "breakout",
-                f"no breakout/reclaim: {last.ask:.2f} (premarket high {premarket_high:.2f})",
-            )
-
         # --- Change #6: Confirm breakout with N consecutive closes above premarket high ---
         if GAP_AND_GO_CONFIRM_BREAKOUT and entry_type == "breakout":
             recent_bars = self._regular_bars(state)
@@ -188,6 +205,12 @@ class GapAndGoStrategy(Strategy):
             if not breakout_ok:
                 breakout_ok = True
                 entry_type = "orb"
+        if not breakout_ok:
+            return self._reject(
+                state,
+                "breakout",
+                f"no breakout/reclaim: {last.ask:.2f} (premarket high {premarket_high:.2f})",
+            )
 
         # --- Change #8: Extended reason log ---
         reason = (
@@ -245,9 +268,9 @@ class GapAndGoStrategy(Strategy):
         minutes = current.hour * 60 + current.minute
         market_open = (MARKET_OPEN.hour * 60) + MARKET_OPEN.minute
         elapsed = minutes - market_open
-        # --- Change #3: Expanded entry window (0–60 min after open) ---
+        # Entry window in minutes from regular session open.
         start = getattr(self.settings, "gap_and_go_start_minute", 0)
-        end = getattr(self.settings, "gap_and_go_end_minute", 60)
+        end = getattr(self.settings, "gap_and_go_end_minute", 30)
         return start <= elapsed <= end
 
     def _session_vwap(self, state: SymbolState) -> float | None:

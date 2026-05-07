@@ -61,10 +61,9 @@ class RiskManager:
             if elapsed < cooldown_seconds:
                 return RiskDecision(False, "opening impulse cooldown active")
 
-        if signal.strategy == "opening_impulse":
-            lock_key = (day_key, signal.strategy, signal.symbol)
-            if lock_key in self.session_symbol_locks:
-                return RiskDecision(False, "symbol session loss lock active")
+        lock_key = (day_key, signal.strategy, signal.symbol)
+        if lock_key in self.session_symbol_locks:
+            return RiskDecision(False, "symbol session loss lock active")
 
         max_symbol_trades = self._max_trades_per_symbol_for_strategy(signal.strategy)
         if max_symbol_trades > 0:
@@ -122,11 +121,7 @@ class RiskManager:
             self._reset_symbol_loss(day_key, symbol, strategy)
 
     def _max_trades_per_symbol_for_strategy(self, strategy: str) -> int:
-        if strategy == "maha7":
-            return self.settings.maha7_max_trades_per_symbol_per_session
-        if strategy == "opening_impulse":
-            return self.settings.opening_impulse_max_trades_per_symbol_per_session
-        return 0
+        return int(getattr(self.settings, f"{strategy}_max_trades_per_symbol_per_session", 0) or 0)
 
     def _record_symbol_loss(self, day_key: str, symbol: str | None, strategy: str | None) -> None:
         if not symbol or not strategy:
@@ -134,7 +129,8 @@ class RiskManager:
         key = (day_key, strategy, symbol)
         streak = self.session_symbol_loss_streaks.get(key, 0) + 1
         self.session_symbol_loss_streaks[key] = streak
-        if strategy == "opening_impulse" and streak >= self.settings.opening_impulse_symbol_loss_lock_count:
+        lock_count = int(getattr(self.settings, f"{strategy}_symbol_loss_lock_count", 0) or 0)
+        if lock_count > 0 and streak >= lock_count:
             self.session_symbol_locks.add(key)
 
     def _reset_symbol_loss(self, day_key: str, symbol: str | None, strategy: str | None) -> None:
