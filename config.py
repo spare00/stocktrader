@@ -146,19 +146,22 @@ class Settings:
     news_impulse_position_size_multiplier: float = 0.5
 
     maha7_start_minute: int = 30
-    maha7_end_minute: int = 300
+    maha7_end_minute: int = 210
     maha7_rsi_period: int = 14
     maha7_rsi_above_min_bars: int = 2
     maha7_flat_slope_pct: float = 0.0002
     maha7_consolidation_candles: int = 10
     maha7_vwap_min_distance_pct: float = 0.002
     maha7_pullback_ma7_distance_pct: float = 0.003
-    maha7_volume_min_ratio: float = 1.1
-    maha7_reentry_cooldown_seconds: int = 600
+    maha7_volume_min_ratio: float = 1.25
+    maha7_reentry_cooldown_seconds: int = 1200
     maha7_min_minutes_after_opening_impulse: int = 5
     maha7_trend_min_bars: int = 3
     maha7_min_hold_seconds: int = 120
-    maha7_max_trades_per_symbol_per_session: int = 3
+    maha7_max_trades_per_symbol_per_session: int = 2
+    maha7_symbol_loss_lock_count: int = 1
+    maha7_early_loss_cut_seconds: int = 120
+    maha7_early_loss_cut_pct: float = 0.002
     maha7_partial_r: float = 0.5
     maha7_partial_size: float = 0.5
     maha7_target_r: float = 2.0
@@ -181,7 +184,7 @@ class Settings:
     maha7_stop_anchor_buffer_pct: float = 0.001
     maha7_min_r_pct: float = 0.003
     maha7_max_r_pct: float = 0.012
-    maha7_continuation_volume_ratio: float = 1.2
+    maha7_continuation_volume_ratio: float = 1.35
     maha7_max_chase_pct: float = 0.01
     maha7_recent_high_lookback: int = 20
     maha7_momentum_green_bars: int = 2

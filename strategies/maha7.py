@@ -21,15 +21,15 @@ class Maha7Strategy(Strategy):
     name = "maha7"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("maha7_start_minute", "MAHA7_START_MINUTE", int_env, 30),
-        ("maha7_end_minute", "MAHA7_END_MINUTE", int_env, 300),
+        ("maha7_end_minute", "MAHA7_END_MINUTE", int_env, 210),
         ("maha7_rsi_period", "MAHA7_RSI_PERIOD", int_env, 14),
         ("maha7_rsi_above_min_bars", "MAHA7_RSI_ABOVE_MIN_BARS", int_env, 2),
         ("maha7_flat_slope_pct", "MAHA7_FLAT_SLOPE_PCT", float_env, 0.0002),
         ("maha7_consolidation_candles", "MAHA7_CONSOLIDATION_CANDLES", int_env, 10),
         ("maha7_vwap_min_distance_pct", "MAHA7_VWAP_MIN_DISTANCE_PCT", float_env, 0.002),
         ("maha7_pullback_ma7_distance_pct", "MAHA7_PULLBACK_MA7_DISTANCE_PCT", float_env, 0.003),
-        ("maha7_volume_min_ratio", "MAHA7_VOLUME_MIN_RATIO", float_env, 1.1),
-        ("maha7_reentry_cooldown_seconds", "MAHA7_REENTRY_COOLDOWN_SECONDS", int_env, 600),
+        ("maha7_volume_min_ratio", "MAHA7_VOLUME_MIN_RATIO", float_env, 1.25),
+        ("maha7_reentry_cooldown_seconds", "MAHA7_REENTRY_COOLDOWN_SECONDS", int_env, 1200),
         ("maha7_min_minutes_after_opening_impulse", "MAHA7_MIN_MINUTES_AFTER_OPENING_IMPULSE", int_env, 5),
         ("maha7_trend_min_bars", "MAHA7_TREND_MIN_BARS", int_env, 3),
         ("maha7_min_hold_seconds", "MAHA7_MIN_HOLD_SECONDS", int_env, 120),
@@ -37,8 +37,11 @@ class Maha7Strategy(Strategy):
             "maha7_max_trades_per_symbol_per_session",
             "MAHA7_MAX_TRADES_PER_SYMBOL_PER_SESSION",
             int_env,
-            3,
+            2,
         ),
+        ("maha7_symbol_loss_lock_count", "MAHA7_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
+        ("maha7_early_loss_cut_seconds", "MAHA7_EARLY_LOSS_CUT_SECONDS", int_env, 120),
+        ("maha7_early_loss_cut_pct", "MAHA7_EARLY_LOSS_CUT_PCT", float_env, 0.002),
         ("maha7_partial_r", "MAHA7_PARTIAL_R", float_env, 0.5),
         ("maha7_partial_size", "MAHA7_PARTIAL_SIZE", float_env, 0.5),
         ("maha7_target_r", "MAHA7_TARGET_R", float_env, 2.0),
@@ -81,7 +84,7 @@ class Maha7Strategy(Strategy):
         ("maha7_stop_anchor_buffer_pct", "MAHA7_STOP_ANCHOR_BUFFER_PCT", float_env, 0.001),
         ("maha7_min_r_pct", "MAHA7_MIN_R_PCT", float_env, 0.003),
         ("maha7_max_r_pct", "MAHA7_MAX_R_PCT", float_env, 0.012),
-        ("maha7_continuation_volume_ratio", "MAHA7_CONTINUATION_VOLUME_RATIO", float_env, 1.2),
+        ("maha7_continuation_volume_ratio", "MAHA7_CONTINUATION_VOLUME_RATIO", float_env, 1.35),
         ("maha7_max_chase_pct", "MAHA7_MAX_CHASE_PCT", float_env, 0.01),
         ("maha7_recent_high_lookback", "MAHA7_RECENT_HIGH_LOOKBACK", int_env, 20),
         ("maha7_momentum_green_bars", "MAHA7_MOMENTUM_GREEN_BARS", int_env, 2),
@@ -110,6 +113,9 @@ class Maha7Strategy(Strategy):
             "trend_min_bars": s.maha7_trend_min_bars,
             "min_hold_seconds": s.maha7_min_hold_seconds,
             "max_trades_per_symbol_per_session": s.maha7_max_trades_per_symbol_per_session,
+            "symbol_loss_lock_count": s.maha7_symbol_loss_lock_count,
+            "early_loss_cut_seconds": s.maha7_early_loss_cut_seconds,
+            "early_loss_cut_pct": s.maha7_early_loss_cut_pct,
             "partial_r": s.maha7_partial_r,
             "partial_size": s.maha7_partial_size,
             "target_r": s.maha7_target_r,
@@ -148,7 +154,7 @@ class Maha7Strategy(Strategy):
         if state.last_event_kind != "bar":
             return None
         if not self._within_entry_window(state.last_event_ms):
-            return self._reject(state, "window", "outside 10:00-14:30 ET entry window")
+            return self._reject(state, "window", "outside configured entry window")
 
         bars = self._regular_bars(state)
         lookback_rh = max(5, self.settings.maha7_recent_high_lookback)
@@ -286,6 +292,14 @@ class Maha7Strategy(Strategy):
         if price <= floor_1r:
             return ExitDecision("stop loss -1R")
 
+        event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
+        age_seconds = (event_ms - position.entry_ms) / 1000
+        pnl_pct = (price - position.entry_price) / position.entry_price
+        if age_seconds <= self.settings.maha7_early_loss_cut_seconds:
+            early_loss_cut_pct = max(0.0, self.settings.maha7_early_loss_cut_pct)
+            if pnl_pct <= -early_loss_cut_pct:
+                return ExitDecision("early loss cut")
+
         partial_r = self.settings.maha7_partial_r
         if (
             not position.partial_exit_taken
@@ -301,7 +315,7 @@ class Maha7Strategy(Strategy):
         ):
             return ExitDecision(f"target {self.settings.maha7_target_r:.1f}R")
 
-        elapsed_seconds = (state.last_event_ms - position.entry_ms) / 1000 if state.last_event_ms else 0
+        elapsed_seconds = age_seconds
 
         if position.partial_exit_taken:
             peak = position.max_price if position.max_price > 0 else position.entry_price
