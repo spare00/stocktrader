@@ -4421,6 +4421,64 @@ class CoreTradingTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "symbol session loss lock active")
 
+    def test_risk_rejects_steady_intraday_after_symbol_session_trade_cap(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            trade_cooldown_seconds=0,
+            steady_intraday_max_trades_per_symbol_per_session=2,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(2):
+            risk.record_trade("AAPL", base_ms + index * 60_000, "steady_intraday")
+        signal = Signal(
+            strategy="steady_intraday",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 10 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "max trades per symbol per session reached")
+
+    def test_risk_rejects_steady_intraday_after_symbol_loss_lock(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            steady_intraday_symbol_loss_lock_count=1,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_exit(-5.0, base_ms, "AAPL", "steady_intraday")
+        signal = Signal(
+            strategy="steady_intraday",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 10 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "symbol session loss lock active")
+
     def test_risk_rejects_symbol_during_failed_entry_cooldown(self):
         settings = Settings(
             alpaca_api_key="test",
