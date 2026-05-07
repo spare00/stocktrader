@@ -20,6 +20,7 @@ class Strategy(ABC):
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ()
     plan_file: ClassVar[Path | None] = None
     selector_command: ClassVar[str | None] = None
+    requires_plan: ClassVar[bool] = True
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:

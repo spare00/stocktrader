@@ -82,3 +82,13 @@ def build_strategies(settings: "Settings"):
 
 def available_strategy_names() -> list[str]:
     return [cls.name for cls in _STRATEGY_CLASSES]
+
+
+def strategies_requiring_plan(strategy_names: list[str]) -> list[str]:
+    required: list[str] = []
+    for raw in strategy_names:
+        name = raw.strip().lower()
+        cls = STRATEGY_REGISTRY.get(name)
+        if cls and cls.requires_plan:
+            required.append(name)
+    return required

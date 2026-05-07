@@ -61,12 +61,25 @@ class AlpacaRestPollingStream:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._last_bar_start_ms: dict[str, int] = {}
+        self._symbols: list[str] = list(settings.symbols)
+
+    def add_symbol(self, symbol: str) -> None:
+        normalized = symbol.strip().upper()
+        if not normalized:
+            return
+        if normalized in self._symbols:
+            return
+        self._symbols.append(normalized)
 
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote]:
         clients = make_clients(self.settings)
-        symbols = list(self.settings.symbols)
         while True:
             now = datetime.now(tz=timezone.utc)
+            symbols = list(self._symbols)
+            if not symbols:
+                yield Heartbeat(timestamp_ms=int(now.timestamp() * 1000))
+                await asyncio.sleep(self.settings.alpaca_market_data_poll_seconds)
+                continue
             quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbols, feed=clients.feed)
             quote_response = await asyncio.to_thread(clients.historical.get_stock_latest_quote, quote_request)
             for quote in quote_response.values():
@@ -88,12 +101,28 @@ class AlpacaRestPollingStream:
 class AlpacaStockStream:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._symbols: set[str] = {symbol.strip().upper() for symbol in settings.symbols if symbol.strip()}
+        self._clients = None
+        self._on_bar = None
+        self._on_quote = None
+        self._on_news = None
+
+    def add_symbol(self, symbol: str) -> None:
+        normalized = symbol.strip().upper()
+        if not normalized or normalized in self._symbols:
+            return
+        self._symbols.add(normalized)
+        if self._clients is None or self._on_bar is None or self._on_quote is None:
+            return
+        self._clients.stream.subscribe_bars(self._on_bar, normalized)
+        self._clients.stream.subscribe_quotes(self._on_quote, normalized)
 
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote | NewsEvent]:
         queue: asyncio.Queue[Bar | Heartbeat | Quote | NewsEvent | BaseException | None] = asyncio.Queue()
         stream_lock = AlpacaStreamLock(self.settings)
         stream_lock.acquire()
         clients = make_clients(self.settings)
+        self._clients = clients
 
         async def on_bar(raw_bar) -> None:
             await queue.put(to_bar(raw_bar))
@@ -134,18 +163,22 @@ class AlpacaStockStream:
                 )
             )
 
+        self._on_bar = on_bar
+        self._on_quote = on_quote
+        self._on_news = on_news
+
         async def heartbeat() -> None:
             while self.settings.heartbeat_seconds > 0:
                 await asyncio.sleep(self.settings.heartbeat_seconds)
                 await queue.put(Heartbeat(timestamp_ms=int(time.time() * 1000)))
 
-        for symbol in self.settings.symbols:
+        for symbol in sorted(self._symbols):
             clients.stream.subscribe_bars(on_bar, symbol)
             clients.stream.subscribe_quotes(on_quote, symbol)
-            if hasattr(clients.stream, "subscribe_news"):
-                clients.stream.subscribe_news(on_news, symbol)
+        clients.news_stream.subscribe_news(on_news, "*")
 
-        stream_task = asyncio.create_task(clients.stream._run_forever())
+        stock_stream_task = asyncio.create_task(clients.stream._run_forever())
+        news_stream_task = asyncio.create_task(clients.news_stream._run_forever())
 
         def on_stream_done(task: asyncio.Task) -> None:
             if task.cancelled():
@@ -156,7 +189,8 @@ class AlpacaStockStream:
             else:
                 queue.put_nowait(None)
 
-        stream_task.add_done_callback(on_stream_done)
+        stock_stream_task.add_done_callback(on_stream_done)
+        news_stream_task.add_done_callback(on_stream_done)
         heartbeat_task = asyncio.create_task(heartbeat())
         try:
             while True:
@@ -176,7 +210,12 @@ class AlpacaStockStream:
         finally:
             heartbeat_task.cancel()
             await clients.stream.stop_ws()
-            await asyncio.gather(stream_task, heartbeat_task, return_exceptions=True)
+            await clients.news_stream.stop_ws()
+            await asyncio.gather(stock_stream_task, news_stream_task, heartbeat_task, return_exceptions=True)
+            self._clients = None
+            self._on_bar = None
+            self._on_quote = None
+            self._on_news = None
             stream_lock.release()
 
 

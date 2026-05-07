@@ -578,6 +578,8 @@ class OpeningImpulseStrategy(Strategy):
     def _has_hot_news(self, state: SymbolState, timestamp_ms: int) -> bool:
         if state.last_news_ms is None:
             return False
+        if state.last_news_sentiment <= 0:
+            return False
         hot_window_ms = max(1, self.settings.opening_impulse_news_hot_minutes) * 60_000
         if (timestamp_ms - state.last_news_ms) > hot_window_ms:
             return False

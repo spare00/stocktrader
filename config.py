@@ -225,6 +225,9 @@ class Settings:
     ai_review: bool = False
     news_hot_positive_only: bool = True
     news_hot_min_sentiment_score: float = 0.5
+    news_listener_positive_only: bool = True
+    news_listener_min_impact: float = 0.5
+    news_listener_symbol_cooldown_seconds: int = 120
 
 
 # Used by load_settings and opening_plan: same list must stay in sync.
@@ -272,6 +275,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("ai_review", "AI_REVIEW", _bool_env, False),
     ("news_hot_positive_only", "NEWS_HOT_POSITIVE_ONLY", _bool_env, True),
     ("news_hot_min_sentiment_score", "NEWS_HOT_MIN_SENTIMENT_SCORE", _float_env, 0.5),
+    ("news_listener_positive_only", "NEWS_LISTENER_POSITIVE_ONLY", _bool_env, True),
+    ("news_listener_min_impact", "NEWS_LISTENER_MIN_IMPACT", _float_env, 0.5),
+    ("news_listener_symbol_cooldown_seconds", "NEWS_LISTENER_SYMBOL_COOLDOWN_SECONDS", _int_env, 120),
 )
 
 

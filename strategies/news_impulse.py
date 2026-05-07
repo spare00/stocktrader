@@ -18,7 +18,7 @@ MARKET_OPEN = time(9, 30)
 
 class NewsImpulseStrategy(Strategy):
     name = "news_impulse"
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_news_impulse.py --top 12"
+    requires_plan: ClassVar[bool] = False
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("news_impulse_enabled", "NEWS_IMPULSE_ENABLED", bool_env, True),
         ("news_impulse_start_minute", "NEWS_IMPULSE_START_MINUTE", int_env, 0),
@@ -67,6 +67,8 @@ class NewsImpulseStrategy(Strategy):
         if not self._within_entry_window(state.last_event_ms):
             return None
         if not state.is_high_impact_news:
+            return None
+        if state.last_news_sentiment <= 0:
             return None
         if not self._has_recent_news(state):
             return None

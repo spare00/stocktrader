@@ -14,9 +14,12 @@ from alpaca_stream import AlpacaStreamAuthError, AlpacaStreamConnectionLimitErro
 from candle import SymbolState
 from config import load_settings
 from execution import build_executor
+from modules.news_listener import NewsListener
+from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote
 from opening_plan import (
     apply_opening_plan,
+    default_plan_file_for_strategy,
     default_plan_file_for_settings,
     load_opening_plan,
     parse_plan_symbols,
@@ -26,7 +29,7 @@ from opening_plan import (
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown, manage_all_exits
 from strategies import available_strategy_names, build_strategies
-from strategies.registry import diagnostic_loggers_for, merge_strategy_runtime_snapshots
+from strategies.registry import diagnostic_loggers_for, merge_strategy_runtime_snapshots, strategies_requiring_plan
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
@@ -273,6 +276,9 @@ def runtime_settings_snapshot(settings) -> dict:
         "ai_review": settings.ai_review,
         "news_hot_positive_only": settings.news_hot_positive_only,
         "news_hot_min_sentiment_score": settings.news_hot_min_sentiment_score,
+        "news_listener_positive_only": settings.news_listener_positive_only,
+        "news_listener_min_impact": settings.news_listener_min_impact,
+        "news_listener_symbol_cooldown_seconds": settings.news_listener_symbol_cooldown_seconds,
         "openai_model": settings.openai_model if settings.ai_review else None,
         "risk": {
             "target_profit_pct": settings.target_profit_pct,
@@ -366,13 +372,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_strategy_plan_path(settings, explicit_path: Path | None) -> Path:
-    return explicit_path or default_plan_file_for_settings(settings)
+def resolve_strategy_plan_path(settings, explicit_path: Path | None, strategy_name: str | None = None) -> Path:
+    if explicit_path:
+        return explicit_path
+    if strategy_name:
+        return default_plan_file_for_strategy(strategy_name)
+    return default_plan_file_for_settings(settings)
 
 
-def validate_strategy_plan(path: Path, settings) -> list[str]:
+def _strategy_name_from(strategy_name_or_settings) -> str:
+    if isinstance(strategy_name_or_settings, str):
+        name = strategy_name_or_settings.strip().lower()
+        return name or "opening_impulse"
+    strategy_names = getattr(strategy_name_or_settings, "strategy_names", None) or []
+    if strategy_names:
+        return str(strategy_names[0]).strip().lower() or "opening_impulse"
+    return "opening_impulse"
+
+
+def validate_strategy_plan(path: Path, strategy_name_or_settings) -> list[str]:
+    strategy_name = _strategy_name_from(strategy_name_or_settings)
     if not path.exists():
-        strategy_name = settings.strategy_names[0] if settings.strategy_names else "opening_impulse"
         command = selector_command_for_strategy(strategy_name)
         raise FileNotFoundError(
             f"Missing strategy plan file: {path}. Run the selector first, for example: {command}"
@@ -381,7 +401,6 @@ def validate_strategy_plan(path: Path, settings) -> list[str]:
     plan = load_opening_plan(path)
     symbols = parse_plan_symbols(plan)
     if not symbols:
-        strategy_name = settings.strategy_names[0] if settings.strategy_names else "opening_impulse"
         command = selector_command_for_strategy(strategy_name)
         raise ValueError(
             f"Strategy plan file has no selected symbols: {path}. Regenerate it first, for example: {command}"
@@ -389,8 +408,8 @@ def validate_strategy_plan(path: Path, settings) -> list[str]:
     return symbols
 
 
-def strategy_plan_guide(path: Path, settings, error: Exception) -> str:
-    strategy_name = settings.strategy_names[0] if settings.strategy_names else "opening_impulse"
+def strategy_plan_guide(path: Path, strategy_name_or_settings, error: Exception) -> str:
+    strategy_name = _strategy_name_from(strategy_name_or_settings)
     selector_command = selector_command_for_strategy(strategy_name)
     run_command = f"scripts/run_paper.sh -s {strategy_name}"
     return "\n".join(
@@ -414,17 +433,22 @@ async def main(args: argparse.Namespace | None = None) -> None:
         return
     requested_strategies = [args.strategy] if args.strategy else None
     settings = load_settings(strategy_names=requested_strategies)
-    opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan)
-    try:
-        validate_strategy_plan(opening_plan_path, settings)
-    except (FileNotFoundError, ValueError) as exc:
-        print(strategy_plan_guide(opening_plan_path, settings, exc), file=sys.stderr)
-        raise SystemExit(2) from None
-    settings = apply_opening_plan(settings, opening_plan_path)
+    plan_required_for = strategies_requiring_plan(settings.strategy_names)
+    opening_plan_path: Path | None = None
+    if plan_required_for:
+        plan_strategy = plan_required_for[0]
+        opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan, strategy_name=plan_strategy)
+        try:
+            validate_strategy_plan(opening_plan_path, plan_strategy)
+        except (FileNotFoundError, ValueError) as exc:
+            print(strategy_plan_guide(opening_plan_path, plan_strategy, exc), file=sys.stderr)
+            raise SystemExit(2) from None
+        settings = apply_opening_plan(settings, opening_plan_path)
     log_file = strategy_log_file(settings)
     setup_logging(log_file, settings.strategy_names)
-    logging.info("Loaded opening plan from %s", opening_plan_path)
-    if symbols_env_blocks_plan():
+    if opening_plan_path is not None:
+        logging.info("Loaded opening plan from %s", opening_plan_path)
+    if opening_plan_path is not None and symbols_env_blocks_plan():
         logging.info(
             "Watchlist: SYMBOLS from environment overrides strategy plan (%s)",
             os.getenv("SYMBOLS", "").strip(),
@@ -436,7 +460,13 @@ async def main(args: argparse.Namespace | None = None) -> None:
     strategies = build_strategies(settings)
     for strategy in strategies:
         strategy.bootstrap_states(states)
+    symbol_manager = SymbolManager(states, stream, strategies)
     strategies_by_name = {strategy.name: strategy for strategy in strategies}
+    news_listener = NewsListener(
+        symbol_cooldown_seconds=settings.news_listener_symbol_cooldown_seconds,
+        min_impact=settings.news_listener_min_impact,
+        positive_only=settings.news_listener_positive_only,
+    )
     executor = build_executor(settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
@@ -461,16 +491,28 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 continue
             if isinstance(event, NewsEvent):
                 heartbeat.record_news()
-                if should_mark_hot_from_news(settings, event):
-                    for symbol in event.symbols:
-                        state = states.get(symbol)
-                        if state is not None:
-                            state.mark_news(event.timestamp_ms, price=state.last_price)
+                for classified in news_listener.process(event):
+                    added = symbol_manager.add_symbol(classified.symbol)
+                    if added:
+                        logging.info("Added symbol %s from news stream", classified.symbol)
+                    state = states.get(classified.symbol)
+                    if state is None:
+                        continue
+                    state.mark_news(
+                        classified.timestamp_ms,
+                        price=state.last_price,
+                        sentiment=classified.sentiment,
+                        impact=classified.impact,
+                    )
                 continue
 
             state = states.get(event.symbol)
             if state is None:
-                continue
+                if symbol_manager.add_symbol(event.symbol):
+                    logging.info("Added symbol %s from market data stream", event.symbol)
+                    state = states.get(event.symbol)
+                if state is None:
+                    continue
 
             if isinstance(event, Quote):
                 heartbeat.record_quote()

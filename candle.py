@@ -12,6 +12,8 @@ class SymbolState:
     quote: Quote | None = None
     last_news_ms: int | None = None
     last_news_price: float | None = None
+    last_news_sentiment: int = 0
+    last_news_impact: float = 0.0
     is_high_impact_news: bool = False
     last_event_kind: str | None = None
     last_event_ms: int | None = None
@@ -26,10 +28,21 @@ class SymbolState:
         self.quotes.append(quote)
         self.last_event_kind = "quote"
         self.last_event_ms = quote.timestamp_ms
+        if self.last_news_ms is not None and self.last_news_price is None:
+            self.last_news_price = quote.mid
 
-    def mark_news(self, timestamp_ms: int, price: float | None = None) -> None:
+    def mark_news(
+        self,
+        timestamp_ms: int,
+        price: float | None = None,
+        *,
+        sentiment: int = 1,
+        impact: float = 1.0,
+    ) -> None:
         self.last_news_ms = max(self.last_news_ms or 0, timestamp_ms)
-        self.is_high_impact_news = True
+        self.last_news_sentiment = sentiment
+        self.last_news_impact = impact
+        self.is_high_impact_news = impact >= 0.5 and sentiment > 0
         if price is not None and price > 0:
             self.last_news_price = price
 

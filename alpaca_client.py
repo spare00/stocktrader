@@ -6,6 +6,7 @@ from typing import Iterable
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
+from alpaca.data.live.news import NewsDataStream
 from alpaca.data.live.stock import StockDataStream
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
@@ -67,6 +68,7 @@ class AlpacaClients:
     trading: TradingClient
     historical: StockHistoricalDataClient
     stream: StockDataStream
+    news_stream: NewsDataStream
     feed: DataFeed
 
 
@@ -89,7 +91,12 @@ def make_clients(settings: Settings) -> AlpacaClients:
         feed=feed,
         url_override=settings.alpaca_stream_url,
     )
-    return AlpacaClients(trading=trading, historical=historical, stream=stream, feed=feed)
+    news_stream = NewsDataStream(
+        api_key=settings.alpaca_api_key,
+        secret_key=settings.alpaca_secret_key,
+        url_override=settings.alpaca_stream_url,
+    )
+    return AlpacaClients(trading=trading, historical=historical, stream=stream, news_stream=news_stream, feed=feed)
 
 
 def get_latest_quotes(settings: Settings, symbols: Iterable[str]) -> dict[str, Quote]:
