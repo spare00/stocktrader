@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -426,6 +427,78 @@ def strategy_plan_guide(path: Path, strategy_name_or_settings, error: Exception)
     )
 
 
+def run_strategy_selector(strategy_name: str) -> tuple[bool, str]:
+    command = selector_command_for_strategy(strategy_name)
+    try:
+        subprocess.run(command, shell=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        return False, f"selector failed with exit code {exc.returncode}"
+    return True, "selector completed"
+
+
+def ensure_strategy_plan_ready(
+    path: Path,
+    strategy_name: str,
+    *,
+    max_wait_seconds: int,
+    retry_seconds: int,
+) -> list[str]:
+    """
+    Ensure the strategy plan exists and has selected symbols.
+
+    Automatically runs the strategy selector and retries until the plan validates
+    or the max wait window is reached.
+    """
+    start = time.monotonic()
+    attempt = 0
+    last_error: Exception | None = None
+    wait_step = max(1, retry_seconds)
+    max_wait = max(0, max_wait_seconds)
+
+    while True:
+        attempt += 1
+        ok, detail = run_strategy_selector(strategy_name)
+        if ok:
+            try:
+                symbols = validate_strategy_plan(path, strategy_name)
+                if attempt > 1:
+                    logging.info(
+                        "Strategy plan %s ready for %s after %s attempts",
+                        path,
+                        strategy_name,
+                        attempt,
+                    )
+                return symbols
+            except (FileNotFoundError, ValueError) as exc:
+                last_error = exc
+                logging.info(
+                    "Selector run %s for %s did not produce a ready plan yet: %s",
+                    attempt,
+                    strategy_name,
+                    exc,
+                )
+        else:
+            last_error = ValueError(detail)
+            logging.warning("Selector run %s for %s failed: %s", attempt, strategy_name, detail)
+
+        elapsed = int(time.monotonic() - start)
+        if elapsed >= max_wait:
+            break
+        sleep_for = min(wait_step, max_wait - elapsed)
+        logging.info(
+            "Waiting %ss before retrying selector for %s (%ss/%ss elapsed)",
+            sleep_for,
+            strategy_name,
+            elapsed,
+            max_wait,
+        )
+        time.sleep(sleep_for)
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError(f"Strategy plan for {strategy_name} is not ready.")
+
+
 async def main(args: argparse.Namespace | None = None) -> None:
     args = args or parse_args()
     if args.list_strategies:
@@ -438,11 +511,32 @@ async def main(args: argparse.Namespace | None = None) -> None:
     if plan_required_for:
         plan_strategy = plan_required_for[0]
         opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan, strategy_name=plan_strategy)
+        auto_selector = str(os.getenv("AUTO_RUN_SELECTOR", "1")).strip().lower() not in {"0", "false", "no", "off"}
+        auto_selector_max_wait_seconds = int(os.getenv("AUTO_SELECTOR_MAX_WAIT_SECONDS", "1800"))
+        auto_selector_retry_seconds = int(os.getenv("AUTO_SELECTOR_RETRY_SECONDS", "60"))
         try:
             validate_strategy_plan(opening_plan_path, plan_strategy)
         except (FileNotFoundError, ValueError) as exc:
-            print(strategy_plan_guide(opening_plan_path, plan_strategy, exc), file=sys.stderr)
-            raise SystemExit(2) from None
+            if not auto_selector:
+                print(strategy_plan_guide(opening_plan_path, plan_strategy, exc), file=sys.stderr)
+                raise SystemExit(2) from None
+            logging.info(
+                "Auto selector enabled for %s. Ensuring plan %s is ready (max wait %ss, retry %ss).",
+                plan_strategy,
+                opening_plan_path,
+                auto_selector_max_wait_seconds,
+                auto_selector_retry_seconds,
+            )
+            try:
+                ensure_strategy_plan_ready(
+                    opening_plan_path,
+                    plan_strategy,
+                    max_wait_seconds=auto_selector_max_wait_seconds,
+                    retry_seconds=auto_selector_retry_seconds,
+                )
+            except (FileNotFoundError, ValueError) as retry_exc:
+                print(strategy_plan_guide(opening_plan_path, plan_strategy, retry_exc), file=sys.stderr)
+                raise SystemExit(2) from None
         settings = apply_opening_plan(settings, opening_plan_path)
     log_file = strategy_log_file(settings)
     setup_logging(log_file, settings.strategy_names)
