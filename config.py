@@ -65,7 +65,7 @@ class Settings:
     position_sizing_mode: str = "fixed_value"
     risk_per_trade_pct: float = 0.005
     max_trade_loss_r: float = 1.2
-    max_open_positions: int = 2
+    max_open_positions: int = 8
     trade_cooldown_seconds: int = 60
     failed_entry_cooldown_seconds: int = 30
     daily_max_loss: float = 250.0
@@ -274,7 +274,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("position_sizing_mode", "POSITION_SIZING_MODE", _lower_env, "fixed_value"),
     ("risk_per_trade_pct", "RISK_PER_TRADE_PCT", _float_env, 0.005),
     ("max_trade_loss_r", "MAX_TRADE_LOSS_R", _float_env, 1.2),
-    ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 2),
+    ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 8),
     ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
     ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
