@@ -23,6 +23,8 @@ class RiskManager:
     stopped_day_keys: set[str] = field(default_factory=set)
     daily_realized_pnl: dict[str, float] = field(default_factory=dict)
     session_trade_counts: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    session_symbol_loss_streaks: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    session_symbol_locks: set[tuple[str, str, str]] = field(default_factory=set)
 
     def check_entry(self, signal: Signal, open_symbols: set[str], total_pnl: float) -> RiskDecision:
         if self.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
@@ -59,10 +61,16 @@ class RiskManager:
             if elapsed < cooldown_seconds:
                 return RiskDecision(False, "opening impulse cooldown active")
 
-        if signal.strategy == "maha7":
+        if signal.strategy == "opening_impulse":
+            lock_key = (day_key, signal.strategy, signal.symbol)
+            if lock_key in self.session_symbol_locks:
+                return RiskDecision(False, "symbol session loss lock active")
+
+        max_symbol_trades = self._max_trades_per_symbol_for_strategy(signal.strategy)
+        if max_symbol_trades > 0:
             session_key = (day_key, signal.strategy, signal.symbol)
             trade_count = self.session_trade_counts.get(session_key, 0)
-            if trade_count >= self.settings.maha7_max_trades_per_symbol_per_session:
+            if trade_count >= max_symbol_trades:
                 return RiskDecision(False, "max trades per symbol per session reached")
 
         last_ms = self.last_trade_ms.get(signal.symbol)
@@ -93,14 +101,13 @@ class RiskManager:
         self.last_failed_entry_ms.pop(symbol, None)
         if strategy:
             self.last_trade_by_strategy_ms[(symbol, strategy)] = timestamp_ms
-        if strategy == "maha7":
             session_key = (self._day_key(timestamp_ms), strategy, symbol)
             self.session_trade_counts[session_key] = self.session_trade_counts.get(session_key, 0) + 1
 
     def record_failed_entry(self, symbol: str, timestamp_ms: int) -> None:
         self.last_failed_entry_ms[symbol] = timestamp_ms
 
-    def record_exit(self, pnl: float, timestamp_ms: int) -> None:
+    def record_exit(self, pnl: float, timestamp_ms: int, symbol: str | None = None, strategy: str | None = None) -> None:
         day_key = self._day_key(timestamp_ms)
         self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
         if pnl < 0:
@@ -109,8 +116,32 @@ class RiskManager:
                 self.stopped_day_keys.add(day_key)
             if self.consecutive_losses >= self.settings.consecutive_loss_pause_count:
                 self.pause_until_ms = timestamp_ms + self.settings.consecutive_loss_pause_minutes * 60_000
+            self._record_symbol_loss(day_key, symbol, strategy)
         elif pnl > 0:
             self.consecutive_losses = 0
+            self._reset_symbol_loss(day_key, symbol, strategy)
+
+    def _max_trades_per_symbol_for_strategy(self, strategy: str) -> int:
+        if strategy == "maha7":
+            return self.settings.maha7_max_trades_per_symbol_per_session
+        if strategy == "opening_impulse":
+            return self.settings.opening_impulse_max_trades_per_symbol_per_session
+        return 0
+
+    def _record_symbol_loss(self, day_key: str, symbol: str | None, strategy: str | None) -> None:
+        if not symbol or not strategy:
+            return
+        key = (day_key, strategy, symbol)
+        streak = self.session_symbol_loss_streaks.get(key, 0) + 1
+        self.session_symbol_loss_streaks[key] = streak
+        if strategy == "opening_impulse" and streak >= self.settings.opening_impulse_symbol_loss_lock_count:
+            self.session_symbol_locks.add(key)
+
+    def _reset_symbol_loss(self, day_key: str, symbol: str | None, strategy: str | None) -> None:
+        if not symbol or not strategy:
+            return
+        key = (day_key, strategy, symbol)
+        self.session_symbol_loss_streaks.pop(key, None)
 
     def _daily_loss_limit(self) -> float:
         percent_limit = self.settings.starting_cash * self.settings.daily_max_loss_pct

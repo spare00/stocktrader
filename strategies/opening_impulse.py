@@ -90,6 +90,42 @@ class OpeningImpulseStrategy(Strategy):
             float_env,
             0.02,
         ),
+        (
+            "opening_impulse_max_trades_per_symbol_per_session",
+            "OPENING_IMPULSE_MAX_TRADES_PER_SYMBOL_PER_SESSION",
+            int_env,
+            2,
+        ),
+        (
+            "opening_impulse_symbol_loss_lock_count",
+            "OPENING_IMPULSE_SYMBOL_LOSS_LOCK_COUNT",
+            int_env,
+            2,
+        ),
+        (
+            "opening_impulse_failed_continuation_no_high_seconds",
+            "OPENING_IMPULSE_FAILED_CONTINUATION_NO_HIGH_SECONDS",
+            int_env,
+            120,
+        ),
+        (
+            "opening_impulse_failed_continuation_max_mfe_pct",
+            "OPENING_IMPULSE_FAILED_CONTINUATION_MAX_MFE_PCT",
+            float_env,
+            0.004,
+        ),
+        (
+            "opening_impulse_reentry_reclaim_lookback_bars",
+            "OPENING_IMPULSE_REENTRY_RECLAIM_LOOKBACK_BARS",
+            int_env,
+            5,
+        ),
+        (
+            "opening_impulse_reentry_min_volume_ratio",
+            "OPENING_IMPULSE_REENTRY_MIN_VOLUME_RATIO",
+            float_env,
+            1.3,
+        ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.opening_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_opening_impulse.py --top 12"
@@ -145,6 +181,12 @@ class OpeningImpulseStrategy(Strategy):
             "news_tight_pullback_pct": settings.opening_impulse_news_tight_pullback_pct,
             "news_max_hold_seconds": settings.opening_impulse_news_max_hold_seconds,
             "news_max_move_since_event_pct": settings.opening_impulse_news_max_move_since_event_pct,
+            "max_trades_per_symbol_per_session": settings.opening_impulse_max_trades_per_symbol_per_session,
+            "symbol_loss_lock_count": settings.opening_impulse_symbol_loss_lock_count,
+            "failed_continuation_no_high_seconds": settings.opening_impulse_failed_continuation_no_high_seconds,
+            "failed_continuation_max_mfe_pct": settings.opening_impulse_failed_continuation_max_mfe_pct,
+            "reentry_reclaim_lookback_bars": settings.opening_impulse_reentry_reclaim_lookback_bars,
+            "reentry_min_volume_ratio": settings.opening_impulse_reentry_min_volume_ratio,
         }
 
     def __init__(self, settings: Settings):
@@ -243,6 +285,8 @@ class OpeningImpulseStrategy(Strategy):
             )
         if not has_news and not self._higher_high_structure(state):
             return self._reject(state, "structure", "missing higher-high bar structure")
+        if self._recent_failed_continuation(state) and not self._reentry_structure_reclaimed(state):
+            return self._reject(state, "reentry", "failed-continuation pattern requires reclaim before re-entry")
 
         session_open_price = self._session_open_price(state)
         if session_open_price is None or session_open_price <= 0:
@@ -356,6 +400,10 @@ class OpeningImpulseStrategy(Strategy):
             recent_low = min(bar.low for bar in bars[:-1])
             if pnl_pct <= 0 and price < recent_low:
                 return ExitDecision("break structure")
+        if self._failed_continuation_no_high(position, event_ms, pnl_pct):
+            return ExitDecision("failed continuation no new highs")
+        if self._failed_continuation_lower_highs(state, position):
+            return ExitDecision("failed continuation lower highs")
 
         quotes = self._recent_quotes(state, self.settings.opening_impulse_exit_window_seconds)
         if len(quotes) < self.settings.opening_impulse_exit_min_quotes:
@@ -605,6 +653,44 @@ class OpeningImpulseStrategy(Strategy):
         latest_volume = state.bars[-1].volume
         baseline = median([bar.volume for bar in list(state.bars)[:-1] if bar.volume > 0] or [1])
         return latest_volume <= baseline * self.settings.opening_impulse_volume_collapse_ratio
+
+    def _recent_failed_continuation(self, state: SymbolState) -> bool:
+        bars = list(state.bars)
+        if len(bars) < 5:
+            return False
+        window = bars[-5:-1]
+        lower_highs = window[-2].high <= window[-3].high and window[-1].high <= window[-2].high
+        lower_closes = window[-2].close <= window[-3].close and window[-1].close <= window[-2].close
+        return lower_highs and lower_closes
+
+    def _reentry_structure_reclaimed(self, state: SymbolState) -> bool:
+        lookback = max(3, self.settings.opening_impulse_reentry_reclaim_lookback_bars)
+        bars = list(state.bars)[-lookback:]
+        if len(bars) < lookback:
+            return False
+        reclaim_level = max(bar.high for bar in bars[:-1])
+        latest = bars[-1]
+        if latest.close < reclaim_level:
+            return False
+        return self._volume_ratio(state) >= self.settings.opening_impulse_reentry_min_volume_ratio
+
+    def _failed_continuation_no_high(self, position, event_ms: int, pnl_pct: float) -> bool:
+        if position.max_price <= position.entry_price:
+            return False
+        age_since_high_seconds = (event_ms - position.last_high_ts) / 1000 if position.last_high_ts else 0
+        if age_since_high_seconds < self.settings.opening_impulse_failed_continuation_no_high_seconds:
+            return False
+        return pnl_pct <= self.settings.opening_impulse_failed_continuation_max_mfe_pct
+
+    def _failed_continuation_lower_highs(self, state: SymbolState, position) -> bool:
+        bars = list(state.bars)[-3:]
+        if len(bars) < 3:
+            return False
+        lower_highs = bars[-1].high <= bars[-2].high <= bars[-3].high
+        if not lower_highs:
+            return False
+        mfe_pct = (position.max_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
+        return mfe_pct <= self.settings.opening_impulse_failed_continuation_max_mfe_pct
 
     @staticmethod
     def _volume_ratio(state: SymbolState) -> float:

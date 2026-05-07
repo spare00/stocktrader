@@ -1742,6 +1742,73 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "cut loss early")
 
+    def test_opening_impulse_failed_continuation_exits_if_no_new_highs(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=0,
+            opening_impulse_exit_negative_steps=99,
+            opening_impulse_failed_continuation_no_high_seconds=30,
+            opening_impulse_failed_continuation_max_mfe_pct=0.004,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.25, low=99.9, close=100.15, volume=100, vwap=100.1, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.15, high=100.30, low=100.0, close=100.18, volume=90, vwap=100.15, start_ms=61_000, end_ms=121_000))
+        state.add_bar(Bar("AAPL", open=100.18, high=100.32, low=100.05, close=100.20, volume=85, vwap=100.18, start_ms=121_000, end_ms=181_000))
+        state.update_quote(Quote("AAPL", bid=100.19, ask=100.21, bid_size=20, ask_size=20, timestamp_ms=220_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=100.30,
+            last_high_ts=150_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "failed continuation no new highs")
+
+    def test_opening_impulse_failed_continuation_exits_on_lower_high_chain(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_min_hold_seconds=0,
+            opening_impulse_exit_negative_steps=99,
+            opening_impulse_failed_continuation_max_mfe_pct=0.005,
+        )
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        state.add_bar(Bar("AAPL", open=100.0, high=100.60, low=99.9, close=100.30, volume=100, vwap=100.2, start_ms=1_000, end_ms=61_000))
+        state.add_bar(Bar("AAPL", open=100.3, high=100.50, low=100.1, close=100.35, volume=100, vwap=100.3, start_ms=61_000, end_ms=121_000))
+        state.add_bar(Bar("AAPL", open=100.35, high=100.40, low=100.2, close=100.36, volume=95, vwap=100.33, start_ms=121_000, end_ms=181_000))
+        state.update_quote(Quote("AAPL", bid=100.07, ask=100.09, bid_size=20, ask_size=20, timestamp_ms=200_000))
+        position = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+            max_price=100.30,
+            last_high_ts=100_000,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "failed continuation lower highs")
+
     def test_paper_broker_flattens_before_close(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -2474,7 +2541,55 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertIn("news_early_impulse", signal.reason)
-        self.assertIn("hot_news", signal.reason)
+
+    def test_opening_impulse_hot_news_reentry_requires_reclaim_after_failed_continuation(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_start_minute=0,
+            opening_impulse_end_minute=90,
+            opening_impulse_window_seconds=30,
+            opening_impulse_min_quotes=4,
+            opening_impulse_change_pct=0.02,
+            opening_impulse_news_hot_minutes=10,
+            opening_impulse_news_change_pct=0.003,
+            opening_impulse_news_min_volume_ratio=1.2,
+            opening_impulse_reentry_reclaim_lookback_bars=5,
+            opening_impulse_reentry_min_volume_ratio=1.2,
+            opening_impulse_max_spread_bps=15.0,
+            opening_impulse_min_quote_size=25,
+        )
+        state = SymbolState("AAPL")
+        # Prior bars show failed continuation (lower highs and lower closes).
+        state.add_bar(Bar("AAPL", open=100.0, high=100.6, low=99.8, close=100.5, volume=100, vwap=100.3, start_ms=market_ms(2026, 4, 24, 9, 31), end_ms=market_ms(2026, 4, 24, 9, 32)))
+        state.add_bar(Bar("AAPL", open=100.5, high=100.5, low=100.1, close=100.4, volume=95, vwap=100.4, start_ms=market_ms(2026, 4, 24, 9, 32), end_ms=market_ms(2026, 4, 24, 9, 33)))
+        state.add_bar(Bar("AAPL", open=100.4, high=100.4, low=100.0, close=100.3, volume=90, vwap=100.3, start_ms=market_ms(2026, 4, 24, 9, 33), end_ms=market_ms(2026, 4, 24, 9, 34)))
+        state.add_bar(Bar("AAPL", open=100.3, high=100.3, low=99.9, close=100.2, volume=92, vwap=100.2, start_ms=market_ms(2026, 4, 24, 9, 34), end_ms=market_ms(2026, 4, 24, 9, 35)))
+        # Latest bar does not reclaim prior high yet.
+        state.add_bar(Bar("AAPL", open=100.2, high=100.45, low=100.1, close=100.45, volume=220, vwap=100.35, start_ms=market_ms(2026, 4, 24, 9, 35), end_ms=market_ms(2026, 4, 24, 9, 36)))
+        quote_base_ms = market_ms(2026, 4, 24, 9, 35)
+        state.mark_news(quote_base_ms + 20_000, price=100.20, sentiment=1, impact=0.9)
+        for ms, price in (
+            (quote_base_ms + 30_000, 100.30),
+            (quote_base_ms + 40_000, 100.45),
+            (quote_base_ms + 50_000, 100.56),
+            (market_ms(2026, 4, 24, 9, 36), 100.66),
+        ):
+            state.update_quote(Quote("AAPL", bid=price - 0.01, ask=price + 0.01, bid_size=50, ask_size=50, timestamp_ms=ms))
+
+        strategy = OpeningImpulseStrategy(settings)
+        rejected = strategy.evaluate(state)
+        self.assertIsNone(rejected)
+
+        # Reclaim the prior swing high with a strong follow-through bar.
+        state.add_bar(Bar("AAPL", open=100.45, high=100.85, low=100.4, close=100.70, volume=280, vwap=100.65, start_ms=market_ms(2026, 4, 24, 9, 36), end_ms=market_ms(2026, 4, 24, 9, 37)))
+        state.update_quote(Quote("AAPL", bid=100.71, ask=100.73, bid_size=55, ask_size=55, timestamp_ms=market_ms(2026, 4, 24, 9, 37)))
+        accepted = strategy.evaluate(state)
+
+        self.assertIsNotNone(accepted)
+        self.assertIn("hot_news", accepted.reason)
 
     def test_opening_impulse_hot_news_uses_tighter_trailing_and_max_hold(self):
         settings = Settings(
@@ -4221,6 +4336,65 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max trades per symbol per session reached")
+
+    def test_risk_rejects_opening_impulse_after_symbol_session_trade_cap(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            trade_cooldown_seconds=0,
+            opening_impulse_max_trades_per_symbol_per_session=2,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(2):
+            risk.record_trade("AAPL", base_ms + index * 60_000, "opening_impulse")
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 10 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "max trades per symbol per session reached")
+
+    def test_risk_rejects_opening_impulse_after_symbol_loss_lock(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            opening_impulse_symbol_loss_lock_count=2,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_exit(-5.0, base_ms, "AAPL", "opening_impulse")
+        risk.record_exit(-3.0, base_ms + 60_000, "AAPL", "opening_impulse")
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 10 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "symbol session loss lock active")
 
     def test_risk_rejects_symbol_during_failed_entry_cooldown(self):
         settings = Settings(

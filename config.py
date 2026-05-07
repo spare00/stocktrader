@@ -125,6 +125,12 @@ class Settings:
     opening_impulse_news_tight_pullback_pct: float = 0.003
     opening_impulse_news_max_hold_seconds: int = 90
     opening_impulse_news_max_move_since_event_pct: float = 0.02
+    opening_impulse_max_trades_per_symbol_per_session: int = 2
+    opening_impulse_symbol_loss_lock_count: int = 2
+    opening_impulse_failed_continuation_no_high_seconds: int = 120
+    opening_impulse_failed_continuation_max_mfe_pct: float = 0.004
+    opening_impulse_reentry_reclaim_lookback_bars: int = 5
+    opening_impulse_reentry_min_volume_ratio: float = 1.3
 
     news_impulse_enabled: bool = True
     news_impulse_start_minute: int = 0

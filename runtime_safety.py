@@ -9,7 +9,7 @@ def manage_all_exits(executor, states: dict[str, SymbolState], strategies_by_nam
     for exit_state in states.values():
         fill = executor.manage_exit(exit_state, strategies_by_name, event_ms)
         if fill and risk is not None:
-            risk.record_exit(fill.pnl, fill.timestamp_ms)
+            risk.record_exit(fill.pnl, fill.timestamp_ms, fill.symbol, fill.strategy)
 
 
 def flatten_on_shutdown(settings, executor, states: dict[str, SymbolState], strategies_by_name: dict, now_ms: int | None = None) -> None:
