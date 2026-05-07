@@ -52,6 +52,13 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_stall_minutes", "STEADY_INTRADAY_STALL_MINUTES", int_env, 25),
         ("steady_intraday_stall_min_r", "STEADY_INTRADAY_STALL_MIN_R", float_env, 0.35),
         ("steady_intraday_position_size_multiplier", "STEADY_INTRADAY_POSITION_SIZE_MULTIPLIER", float_env, 0.8),
+        (
+            "steady_intraday_max_trades_per_symbol_per_session",
+            "STEADY_INTRADAY_MAX_TRADES_PER_SYMBOL_PER_SESSION",
+            int_env,
+            2,
+        ),
+        ("steady_intraday_symbol_loss_lock_count", "STEADY_INTRADAY_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("steady_intraday_allow_orb_breakout", "STEADY_INTRADAY_ALLOW_ORB_BREAKOUT", bool_env, True),
         ("steady_intraday_allow_pullback_reclaim", "STEADY_INTRADAY_ALLOW_PULLBACK_RECLAIM", bool_env, True),
     )
@@ -88,6 +95,8 @@ class SteadyIntradayStrategy(Strategy):
             "target_r": settings.steady_intraday_target_r,
             "runner_pullback_pct": settings.steady_intraday_runner_pullback_pct,
             "position_size_multiplier": settings.steady_intraday_position_size_multiplier,
+            "max_trades_per_symbol_per_session": settings.steady_intraday_max_trades_per_symbol_per_session,
+            "symbol_loss_lock_count": settings.steady_intraday_symbol_loss_lock_count,
         }
 
     def __init__(self, settings: Settings):
@@ -96,6 +105,8 @@ class SteadyIntradayStrategy(Strategy):
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
 
     def evaluate(self, state: SymbolState) -> Signal | None:
+        if state.symbol not in self.settings.symbols:
+            return None
         if state.last_event_kind != "bar":
             return None
         if not self._within_entry_window(state.last_event_ms):

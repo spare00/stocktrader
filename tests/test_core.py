@@ -1239,6 +1239,16 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(bars, {"AAPL": []})
 
+    def test_steady_intraday_selector_history_threshold_matches_runtime(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            steady_intraday_min_bars=55,
+            steady_intraday_ema_slow=50,
+        )
+
+        self.assertEqual(select_steady_intraday.required_intraday_bar_count(settings), 55)
+
     def test_steady_intraday_ai_selection_is_bounded_to_ranked_candidates(self):
         ranked = [
             {"symbol": "NVDA", "score": 5.0, "selection_stage": "intraday"},
@@ -4048,6 +4058,21 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("pullback_reclaim", signal.reason)
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
+
+    def test_steady_intraday_ignores_symbols_outside_selected_universe(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            strategy_names=["steady_intraday"],
+        )
+        state = SymbolState("NVDA")
+        for bar_item in self._steady_intraday_selector_bars("NVDA", market_ms(2026, 4, 24, 9, 30), trigger=True):
+            state.add_bar(bar_item)
+
+        signal = SteadyIntradayStrategy(settings).evaluate(state)
+
+        self.assertIsNone(signal)
 
     def test_build_strategies_can_build_news_impulse(self):
         settings = Settings(

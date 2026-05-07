@@ -220,6 +220,8 @@ class Settings:
     steady_intraday_stall_minutes: int = 25
     steady_intraday_stall_min_r: float = 0.35
     steady_intraday_position_size_multiplier: float = 0.8
+    steady_intraday_max_trades_per_symbol_per_session: int = 2
+    steady_intraday_symbol_loss_lock_count: int = 1
     steady_intraday_allow_orb_breakout: bool = True
     steady_intraday_allow_pullback_reclaim: bool = True
 

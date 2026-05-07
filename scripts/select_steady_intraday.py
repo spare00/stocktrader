@@ -213,7 +213,7 @@ def score_steady_intraday_candidate(
     dollar_volume = sum(bar.close * bar.volume for bar in ordered[-20:] if bar.close > 0 and bar.volume > 0)
 
     quality_flags: list[str] = []
-    if len(ordered) < max(settings.steady_intraday_min_bars, settings.steady_intraday_ema_slow):
+    if len(ordered) < required_intraday_bar_count(settings):
         quality_flags.append(f"bar_history {len(ordered)} < steady minimum")
     if price < min_price or price > max_price:
         quality_flags.append(f"price {price:.2f} outside {min_price:.2f}-{max_price:.2f}")
@@ -361,6 +361,10 @@ def rank_candidates(
         candidates.append(candidate)
     candidates.sort(key=lambda item: item.score, reverse=True)
     return candidates[:top]
+
+
+def required_intraday_bar_count(settings: Settings) -> int:
+    return max(settings.steady_intraday_min_bars, settings.steady_intraday_ema_slow + 5)
 
 
 def deterministic_plan(candidates: list[SteadyIntradayCandidate], top: int) -> dict:
@@ -566,7 +570,7 @@ def main(argv: list[str] | None = None) -> dict:
         intraday_ready = {
             symbol: bars
             for symbol, bars in intraday.items()
-            if len(regular_session_bars(bars)) >= max(settings.steady_intraday_min_bars, settings.steady_intraday_ema_slow)
+            if len(regular_session_bars(bars)) >= required_intraday_bar_count(settings)
         }
         if intraday_ready:
             stage = "intraday"
