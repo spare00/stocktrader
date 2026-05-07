@@ -229,6 +229,10 @@ class Settings:
     macd_trailing_stop_pct: float = 0.005
     macd_chop_range_pct: float = 0.0035
     macd_skip_midday: bool = False
+    macd_early_loss_cut_seconds: int = 90
+    macd_early_loss_cut_pct: float = 0.0025
+    macd_early_impulse_max_trades_per_symbol_per_session: int = 2
+    macd_early_impulse_symbol_loss_lock_count: int = 1
 
     ai_review: bool = False
     news_hot_positive_only: bool = True

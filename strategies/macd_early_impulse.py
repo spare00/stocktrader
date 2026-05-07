@@ -50,6 +50,20 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_trailing_stop_pct", "MACD_TRAILING_STOP_PCT", float_env, 0.005),
         ("macd_chop_range_pct", "MACD_CHOP_RANGE_PCT", float_env, 0.0035),
         ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
+        ("macd_early_loss_cut_seconds", "MACD_EARLY_LOSS_CUT_SECONDS", int_env, 90),
+        ("macd_early_loss_cut_pct", "MACD_EARLY_LOSS_CUT_PCT", float_env, 0.0025),
+        (
+            "macd_early_impulse_max_trades_per_symbol_per_session",
+            "MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
+            int_env,
+            2,
+        ),
+        (
+            "macd_early_impulse_symbol_loss_lock_count",
+            "MACD_SYMBOL_LOSS_LOCK_COUNT",
+            int_env,
+            1,
+        ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.macd_early_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python scripts/select_macd_early_impulse.py --top 12"
@@ -69,6 +83,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             "trailing_stop_pct": s.macd_trailing_stop_pct,
             "chop_range_pct": s.macd_chop_range_pct,
             "skip_midday": s.macd_skip_midday,
+            "early_loss_cut_seconds": s.macd_early_loss_cut_seconds,
+            "early_loss_cut_pct": s.macd_early_loss_cut_pct,
+            "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
+            "symbol_loss_lock_count": s.macd_early_impulse_symbol_loss_lock_count,
         }
 
     def __init__(self, settings: Settings):
@@ -218,6 +236,11 @@ class MACDEarlyImpulseStrategy(Strategy):
             return None
 
         pnl_pct = (price - position.entry_price) / position.entry_price
+        event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
+        age_seconds = (event_ms - position.entry_ms) / 1000
+
+        if age_seconds <= self.settings.macd_early_loss_cut_seconds and pnl_pct <= -self.settings.macd_early_loss_cut_pct:
+            return ExitDecision("early loss cut")
 
         if pnl_pct >= self.settings.macd_target_profit_pct:
             return ExitDecision("target profit")
