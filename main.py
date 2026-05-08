@@ -267,6 +267,15 @@ def should_mark_hot_from_news(settings, event: NewsEvent) -> bool:
     return is_high_impact_news(event.headline, event.summary)
 
 
+def format_news_event_for_log(event: NewsEvent, *, max_headline_chars: int = 180) -> str:
+    symbols = ", ".join(event.symbols) if event.symbols else "-"
+    headline = (event.headline or "").strip().replace("\n", " ")
+    if len(headline) > max_headline_chars:
+        headline = f"{headline[:max_headline_chars - 1]}…"
+    source = (event.source or "").strip() or "unknown"
+    return f"symbols=[{symbols}] source={source} headline={headline!r}"
+
+
 def credential_fingerprint(value: str | None) -> str | None:
     if not value:
         return None
@@ -289,6 +298,7 @@ def runtime_settings_snapshot(settings) -> dict:
         "ai_review": settings.ai_review,
         "news_hot_positive_only": settings.news_hot_positive_only,
         "news_hot_min_sentiment_score": settings.news_hot_min_sentiment_score,
+        "news_log_events": settings.news_log_events,
         "news_listener_positive_only": settings.news_listener_positive_only,
         "news_listener_min_impact": settings.news_listener_min_impact,
         "news_listener_symbol_cooldown_seconds": settings.news_listener_symbol_cooldown_seconds,
@@ -643,6 +653,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 continue
             if isinstance(event, NewsEvent):
                 heartbeat.record_news()
+                if settings.news_log_events:
+                    logging.info("News feed %s", format_news_event_for_log(event))
                 for classified in news_listener.process(event):
                     added = symbol_manager.add_symbol(classified.symbol)
                     if added:
