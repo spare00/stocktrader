@@ -56,6 +56,7 @@ import scripts.select_steady_intraday as select_steady_intraday
 from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
+from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
@@ -3618,6 +3619,7 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             maha7_min_hold_seconds=120,
             maha7_runner_confirm_break_bars=2,
+            maha7_early_loss_cut_pct=0.1,
         )
         strategy = Maha7Strategy(settings)
         state = self._maha7_reclaim_state()
@@ -3714,6 +3716,124 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "break structure")
+
+    def test_macd_min_hold_delays_soft_exits(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_min_hold_seconds=60,
+            macd_trailing_activation_pct=0.003,
+            macd_trailing_stop_pct=0.0045,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=100.45,
+                ask=100.47,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 5, 8, 13, 1),
+            )
+        )
+        position = Position(
+            symbol="SMR",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=state.last_event_ms - 15_000,
+            target_price=101.2,
+            stop_price=99.65,
+            max_price=101.0,
+        )
+
+        self.assertIsNone(strategy.should_exit(state, position))
+
+        position.entry_ms = state.last_event_ms - 75_000
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "trailing stop")
+
+    def test_macd_target_profit_not_blocked_by_min_hold(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_min_hold_seconds=60,
+            macd_target_profit_pct=0.012,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=101.25,
+                ask=101.27,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 5, 8, 13, 1),
+            )
+        )
+        position = Position(
+            symbol="SMR",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=state.last_event_ms - 15_000,
+            target_price=101.2,
+            stop_price=99.65,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "target profit")
+
+    def test_macd_rejects_negative_histogram_even_if_rising(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.0,
+            macd_chop_range_pct=0.0001,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(25):
+            close = 100.0 + index * 0.05
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.05,
+                    low=close - 0.05,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.1,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=101.24,
+                ask=101.25,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(strategy, "_compute_macd", return_value=([0.0], [0.0], [-0.003, -0.002, -0.001])):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
 
     def test_setup_logging_creates_rotating_log_file(self):
         old_log_dir = trading_main.LOG_DIR

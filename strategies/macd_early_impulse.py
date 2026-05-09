@@ -23,6 +23,7 @@ _MIN_REGULAR_BARS = 20
 _NEAR_HIGH_TOLERANCE_PCT = 0.003
 _RECENT_HIGH_LOOKBACK = 15
 _OVEREXTEND_MAX_PCT = 0.003
+_EMA_TREND_PERIOD = 12
 
 
 def _ema_series(values: list[float], period: int) -> list[float]:
@@ -43,14 +44,19 @@ class MACDEarlyImpulseStrategy(Strategy):
     requires_plan: ClassVar[bool] = False
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("macd_start_minute", "MACD_START_MINUTE", int_env, 0),
-        ("macd_end_minute", "MACD_END_MINUTE", int_env, 180),
+        ("macd_end_minute", "MACD_END_MINUTE", int_env, 360),
         ("macd_hist_threshold", "MACD_HIST_THRESHOLD", float_env, 0.001),
-        ("macd_volume_ratio", "MACD_VOLUME_RATIO", float_env, 1.3),
+        ("macd_volume_ratio", "MACD_VOLUME_RATIO", float_env, 1.35),
         ("macd_target_profit_pct", "MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("macd_stop_loss_pct", "MACD_STOP_LOSS_PCT", float_env, 0.0035),
         ("macd_trailing_stop_pct", "MACD_TRAILING_STOP_PCT", float_env, 0.0045),
+        ("macd_trailing_activation_pct", "MACD_TRAILING_ACTIVATION_PCT", float_env, 0.003),
         ("macd_chop_range_pct", "MACD_CHOP_RANGE_PCT", float_env, 0.0035),
         ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
+        ("macd_min_hold_seconds", "MACD_MIN_HOLD_SECONDS", int_env, 60),
+        ("macd_hist_rise_bars", "MACD_HIST_RISE_BARS", int_env, 2),
+        ("macd_require_positive_hist", "MACD_REQUIRE_POSITIVE_HIST", bool_env, True),
+        ("macd_momentum_exit_min_profit_pct", "MACD_MOMENTUM_EXIT_MIN_PROFIT_PCT", float_env, 0.0015),
         ("macd_early_loss_cut_seconds", "MACD_EARLY_LOSS_CUT_SECONDS", int_env, 75),
         ("macd_early_loss_cut_pct", "MACD_EARLY_LOSS_CUT_PCT", float_env, 0.0022),
         (
@@ -82,8 +88,13 @@ class MACDEarlyImpulseStrategy(Strategy):
             "target_profit_pct": s.macd_target_profit_pct,
             "stop_loss_pct": s.macd_stop_loss_pct,
             "trailing_stop_pct": s.macd_trailing_stop_pct,
+            "trailing_activation_pct": s.macd_trailing_activation_pct,
             "chop_range_pct": s.macd_chop_range_pct,
             "skip_midday": s.macd_skip_midday,
+            "min_hold_seconds": s.macd_min_hold_seconds,
+            "hist_rise_bars": s.macd_hist_rise_bars,
+            "require_positive_hist": s.macd_require_positive_hist,
+            "momentum_exit_min_profit_pct": s.macd_momentum_exit_min_profit_pct,
             "early_loss_cut_seconds": s.macd_early_loss_cut_seconds,
             "early_loss_cut_pct": s.macd_early_loss_cut_pct,
             "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
@@ -131,6 +142,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         if state.last_event_kind not in {"quote", "bar"}:
             return None
 
+        if state.symbol not in self.settings.symbols:
+            return self._reject(state, "symbol", "symbol not in selected MACD universe")
+
         if not self._within_entry_window(state.last_event_ms):
             return None
 
@@ -156,23 +170,32 @@ class MACDEarlyImpulseStrategy(Strategy):
         if rb[-1].close <= rb[-3].close:
             return self._reject(state, "no_speed", "close[-1] not above close[-3]")
 
+        closes = [float(bar.close) for bar in rb]
+        ema_trend = _ema_series(closes, _EMA_TREND_PERIOD)
+        if not ema_trend or last.ask < ema_trend[-1]:
+            return self._reject(state, "below_ema", f"price below EMA{_EMA_TREND_PERIOD}")
+
         macd = self._compute_macd(state)
         if macd is None:
             return self._reject(state, "macd", "could not compute MACD")
         _, _, hist = macd
-        if len(hist) < 2:
+        min_hist_len = max(2, self.settings.macd_hist_rise_bars + 1)
+        if len(hist) < min_hist_len:
             return self._reject(state, "macd", "insufficient histogram history")
 
-        h2, h1 = hist[-2], hist[-1]
-        if not (h1 > h2):
+        h1 = hist[-1]
+        recent_hist = hist[-min_hist_len:]
+        if not self._is_rising(recent_hist):
             return self._reject(
                 state,
                 "weak_hist",
-                f"histogram not rising ({h2:.5f},{h1:.5f})",
+                f"histogram not rising enough ({','.join(f'{h:.5f}' for h in recent_hist)})",
             )
+        if self.settings.macd_require_positive_hist and h1 <= 0:
+            return self._reject(state, "negative_hist", f"histogram {h1:.5f} not positive")
 
         hist_norm = h1 / last.ask if last.ask > 0 else 0.0
-        if abs(hist_norm) < self.settings.macd_hist_threshold:
+        if hist_norm < self.settings.macd_hist_threshold:
             return self._reject(
                 state,
                 "weak_macd",
@@ -198,12 +221,11 @@ class MACDEarlyImpulseStrategy(Strategy):
 
         recent_high = max(bar.high for bar in rb[-_RECENT_HIGH_LOOKBACK:])
         near_high = last.ask >= recent_high * (1.0 - _NEAR_HIGH_TOLERANCE_PCT)
-        above_vwap = vwap is not None and last.ask >= vwap and vwap > 0
-        if not (near_high or above_vwap):
+        if not near_high:
             return self._reject(
                 state,
                 "price_structure",
-                f"not near high ({recent_high:.2f}) nor above vwap ({vwap})",
+                f"not near recent high ({recent_high:.2f}) while above vwap ({vwap})",
             )
 
         spread_bps = last.spread_bps
@@ -244,16 +266,22 @@ class MACDEarlyImpulseStrategy(Strategy):
         if pnl_pct >= self.settings.macd_target_profit_pct:
             return ExitDecision("target profit")
 
+        if age_seconds < self.settings.macd_min_hold_seconds:
+            return None
+
         macd = self._compute_macd(state)
         if macd is not None:
             _, _, hist = macd
-            if len(hist) >= 2 and hist[-1] < hist[-2] and pnl_pct > 0:
+            if (
+                len(hist) >= 2
+                and hist[-1] < hist[-2]
+                and pnl_pct >= self.settings.macd_momentum_exit_min_profit_pct
+            ):
                 return ExitDecision("macd momentum fade")
 
-        rb = self._regular_bars(state)
-        if len(rb) >= 2:
-            recent_high = max(bar.high for bar in rb[-_RECENT_HIGH_LOOKBACK:])
-            if recent_high > 0 and price < recent_high * (1.0 - self.settings.macd_trailing_stop_pct):
+        trail_high = max(position.max_price or 0.0, price)
+        if trail_high >= position.entry_price * (1.0 + self.settings.macd_trailing_activation_pct):
+            if trail_high > 0 and price < trail_high * (1.0 - self.settings.macd_trailing_stop_pct):
                 return ExitDecision("trailing stop")
 
         if pnl_pct <= -self.settings.macd_stop_loss_pct:
@@ -306,6 +334,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         signal_line = _ema_series(macd_line, 9)
         hist = [m - s for m, s in zip(macd_line, signal_line)]
         return macd_line, signal_line, hist
+
+    @staticmethod
+    def _is_rising(values: list[float]) -> bool:
+        return len(values) >= 2 and all(values[index] > values[index - 1] for index in range(1, len(values)))
 
     @staticmethod
     def _session_vwap(session_bars) -> float | None:

@@ -226,14 +226,19 @@ class Settings:
     steady_intraday_allow_pullback_reclaim: bool = True
 
     macd_start_minute: int = 0
-    macd_end_minute: int = 180
+    macd_end_minute: int = 360
     macd_hist_threshold: float = 0.001
-    macd_volume_ratio: float = 1.3
+    macd_volume_ratio: float = 1.35
     macd_target_profit_pct: float = 0.012
     macd_stop_loss_pct: float = 0.0035
     macd_trailing_stop_pct: float = 0.0045
+    macd_trailing_activation_pct: float = 0.003
     macd_chop_range_pct: float = 0.0035
     macd_skip_midday: bool = False
+    macd_min_hold_seconds: int = 60
+    macd_hist_rise_bars: int = 2
+    macd_require_positive_hist: bool = True
+    macd_momentum_exit_min_profit_pct: float = 0.0015
     macd_early_loss_cut_seconds: int = 75
     macd_early_loss_cut_pct: float = 0.0022
     macd_early_impulse_max_trades_per_symbol_per_session: int = 1

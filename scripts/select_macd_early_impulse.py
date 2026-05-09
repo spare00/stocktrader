@@ -27,10 +27,10 @@ from opening_plan import default_plan_file_for_strategy
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("macd_early_impulse")
 PREMARKET_OPEN = time(4, 0)
-HIST_NORM_MIN = 0.0005
-NEAR_HIGH_TOLERANCE_PCT = 0.005
+NEAR_HIGH_TOLERANCE_PCT = 0.003
 MIN_BAR_COUNT = 20
-RECENT_HIGH_LOOKBACK = 20
+RECENT_HIGH_LOOKBACK = 15
+EMA_TREND_PERIOD = 12
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -105,6 +105,10 @@ def _macd_histogram(closes: list[float]) -> list[float]:
     return [m - s for m, s in zip(macd_line, signal_line)]
 
 
+def _is_rising(values: list[float]) -> bool:
+    return len(values) >= 2 and all(values[index] > values[index - 1] for index in range(1, len(values)))
+
+
 def load_market_data(settings: Settings, symbols: list[str]) -> tuple[dict[str, list[Bar]], dict[str, Quote]]:
     try:
         from alpaca.data.timeframe import TimeFrame
@@ -153,6 +157,7 @@ def evaluate_symbol(
     symbol: str,
     bars: list[Bar],
     quote: Quote | None,
+    settings: Settings,
     *,
     stage_counts: dict[str, int] | None = None,
 ) -> tuple[MACDEarlyImpulseCandidate | None, CandidateReject | None]:
@@ -178,10 +183,18 @@ def evaluate_symbol(
     _bump("passed_macd_data")
 
     hist_norm = hist[-1] / price
-    if abs(hist_norm) < HIST_NORM_MIN:
-        return None, CandidateReject(symbol, "weak_macd", f"hist_norm {hist_norm:.5f} < {HIST_NORM_MIN}")
+    if settings.macd_require_positive_hist and hist[-1] <= 0:
+        return None, CandidateReject(symbol, "negative_hist", f"histogram {hist[-1]:.5f} not positive")
+    if hist_norm < settings.macd_hist_threshold:
+        return None, CandidateReject(symbol, "weak_macd", f"hist_norm {hist_norm:.5f} < {settings.macd_hist_threshold}")
 
     _bump("passed_hist_norm")
+
+    ema_trend = _ema_series(closes, EMA_TREND_PERIOD)
+    if not ema_trend or price < ema_trend[-1]:
+        return None, CandidateReject(symbol, "below_ema", f"price below EMA{EMA_TREND_PERIOD}")
+
+    _bump("passed_ema")
 
     last3 = (bars[-3], bars[-2], bars[-1])
     if not _momentum_relaxed(last3):
@@ -202,14 +215,20 @@ def evaluate_symbol(
 
     _bump("passed_near_high")
 
-    if not (hist[-1] > hist[-2]):
-        return None, CandidateReject(symbol, "chop", "histogram not rising (hist[-1] <= hist[-2])")
+    min_hist_len = max(2, settings.macd_hist_rise_bars + 1)
+    recent_hist = hist[-min_hist_len:]
+    if len(recent_hist) < min_hist_len or not _is_rising(recent_hist):
+        return None, CandidateReject(symbol, "chop", "histogram not rising enough")
 
     _bump("passed_chop")
 
     latest_volume = bars[-1].volume
     baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
     volume_ratio = (latest_volume / baseline) if baseline > 0 else 0.0
+    if volume_ratio < settings.macd_volume_ratio:
+        return None, CandidateReject(symbol, "volume", f"volume_ratio {volume_ratio:.2f} < {settings.macd_volume_ratio}")
+
+    _bump("passed_volume")
 
     breakout_score = ((price - recent_high) / price) * 100.0 if price > 0 else 0.0
     score = (hist_norm * 1000.0) + breakout_score
@@ -225,22 +244,25 @@ def evaluate_symbol(
     return candidate, None
 
 
-def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote]) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject], dict[str, int]]:
+def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote], settings: Settings) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject], dict[str, int]]:
     ranked: list[MACDEarlyImpulseCandidate] = []
     rejected: list[CandidateReject] = []
     stage_counts: dict[str, int] = {
         "universe_symbols": len(symbols),
         "passed_macd_data": 0,
         "passed_hist_norm": 0,
+        "passed_ema": 0,
         "passed_momentum": 0,
         "passed_near_high": 0,
         "passed_chop": 0,
+        "passed_volume": 0,
     }
     for symbol in symbols:
         candidate, reject = evaluate_symbol(
             symbol,
             bars_by_symbol.get(symbol, []),
             quotes.get(symbol),
+            settings,
             stage_counts=stage_counts,
         )
         if candidate is not None:
@@ -256,6 +278,7 @@ def deterministic_plan(
     rejected: list[CandidateReject],
     strategy: str,
     limit: int,
+    runtime_settings: Settings,
     *,
     filter_stage_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
@@ -266,23 +289,26 @@ def deterministic_plan(
     if filter_stage_counts:
         settings["filter_stage_counts"] = dict(filter_stage_counts)
         settings["filter_thresholds"] = {
-            "hist_norm_min": HIST_NORM_MIN,
+            "hist_norm_min": runtime_settings.macd_hist_threshold,
+            "volume_ratio_min": runtime_settings.macd_volume_ratio,
+            "hist_rise_bars": runtime_settings.macd_hist_rise_bars,
+            "require_positive_hist": runtime_settings.macd_require_positive_hist,
             "min_bar_count": MIN_BAR_COUNT,
             "near_high_tolerance_pct": NEAR_HIGH_TOLERANCE_PCT,
             "recent_high_lookback_bars": RECENT_HIGH_LOOKBACK,
+            "ema_trend_period": EMA_TREND_PERIOD,
             "momentum_rule": "(close[-1] > close[-3]) OR (>=2 green bars in last 3)",
-            "chop_rule": "hist[-1] > hist[-2]",
-            "volume_filter": "disabled (upstream universe)",
+            "chop_rule": "histogram rises for configured bars",
         }
     return {
         "strategy": strategy,
         "selection_stage": "filtered",
-        "note": "MACD-based ranking: hist norm, relaxed momentum, histogram uptick, near-high; volume not filtered here.",
+        "note": "MACD-based ranking aligned with runtime filters: positive rising histogram, EMA trend, volume, near-high.",
         "symbols": selected,
         "ranked": ranked,
         "rejected": [asdict(row) for row in rejected],
         "settings": settings,
-        "risk_note": "MACD momentum + breakout candidates (volume screened upstream)",
+        "risk_note": "MACD momentum + breakout candidates with runtime-aligned volume and structure filters.",
     }
 
 
@@ -371,8 +397,8 @@ def main() -> int:
     symbols = load_universe(args.universe_file, args.symbols)
     settings = _selector_settings()
     bars_by_symbol, quotes = load_market_data(settings, symbols)
-    candidates, rejected, stage_counts = rank_candidates(symbols, bars_by_symbol, quotes)
-    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top, filter_stage_counts=stage_counts)
+    candidates, rejected, stage_counts = rank_candidates(symbols, bars_by_symbol, quotes, settings)
+    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top, settings, filter_stage_counts=stage_counts)
     selected_symbols = list(plan["symbols"])
     result: dict[str, Any] = {
         "strategy": "macd_early_impulse",
