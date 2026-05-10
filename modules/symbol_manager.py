@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from candle import SymbolState
 
 
@@ -19,5 +21,8 @@ class SymbolManager:
         if hasattr(self.stream, "add_symbol"):
             self.stream.add_symbol(normalized)
         for strategy in self.strategies:
+            settings = getattr(strategy, "settings", None)
+            if settings is not None and normalized not in settings.symbols:
+                strategy.settings = replace(settings, symbols=[*settings.symbols, normalized])
             strategy.bootstrap_states(self.states)
         return True

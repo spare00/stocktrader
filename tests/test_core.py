@@ -25,6 +25,7 @@ from alpaca_stream import (
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
+from modules.symbol_manager import SymbolManager
 from models import Bar, NewsEvent, Quote, Signal
 from opening_plan import (
     DEFAULT_OPENING_PLAN_FILE,
@@ -59,7 +60,6 @@ from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
-from strategies.news_impulse import NewsImpulseStrategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 from strategies.steady_intraday import SteadyIntradayStrategy
@@ -4108,6 +4108,93 @@ class CoreTradingTests(unittest.TestCase):
         self.assertFalse(trading_main.should_mark_hot_from_news(settings, negative))
         self.assertFalse(trading_main.should_mark_hot_from_news(settings, mixed))
 
+    def test_news_listener_accepts_analyst_price_target_headline(self):
+        from modules.news_listener import NewsListener
+
+        listener = NewsListener(symbol_cooldown_seconds=120, min_impact=0.5, positive_only=True)
+        event = NewsEvent(
+            symbols=("MCHP",),
+            timestamp_ms=1_000,
+            headline="Evercore ISI Group Maintains Outperform on Microchip Technology, Raises Price Target to $117",
+        )
+
+        classified = listener.process(event)
+
+        self.assertEqual([item.symbol for item in classified], ["MCHP"])
+        self.assertEqual(classified[0].sentiment, 1)
+        self.assertGreaterEqual(classified[0].impact, 0.5)
+
+    def test_warm_dynamic_news_symbol_backfills_bars_and_quote(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test")
+        state = SymbolState("MCHP")
+        warmed_bar = bar("MCHP", close=100.0, volume=2_000, end_ms=market_ms(2026, 4, 24, 9, 34))
+        warmed_quote = Quote("MCHP", bid=100.10, ask=100.12, bid_size=100, ask_size=100, timestamp_ms=market_ms(2026, 4, 24, 9, 35))
+
+        with (
+            patch("main.get_recent_bars", return_value={"MCHP": [warmed_bar]}),
+            patch("main.get_latest_quotes", return_value={"MCHP": warmed_quote}),
+        ):
+            warmed = trading_main.warm_dynamic_news_symbol(settings, state, "MCHP")
+
+        self.assertTrue(warmed)
+        self.assertEqual(list(state.bars), [warmed_bar])
+        self.assertEqual(state.quote, warmed_quote)
+
+    def test_warm_dynamic_news_symbol_skips_replay(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", replay_market_data=True)
+        state = SymbolState("MCHP")
+
+        with (
+            patch("main.get_recent_bars") as get_bars,
+            patch("main.get_latest_quotes") as get_quotes,
+        ):
+            warmed = trading_main.warm_dynamic_news_symbol(settings, state, "MCHP")
+
+        self.assertFalse(warmed)
+        get_bars.assert_not_called()
+        get_quotes.assert_not_called()
+
+    def test_news_dynamic_symbols_only_expand_during_regular_market(self):
+        open_event = NewsEvent(
+            symbols=("MCHP",),
+            timestamp_ms=market_ms(2026, 4, 24, 9, 45),
+            headline="MCHP beats estimates",
+        )
+        premarket_event = NewsEvent(
+            symbols=("MCHP",),
+            timestamp_ms=market_ms(2026, 4, 24, 8, 45),
+            headline="MCHP beats estimates",
+        )
+
+        self.assertTrue(trading_main.should_expand_symbols_from_news(open_event))
+        self.assertFalse(trading_main.should_expand_symbols_from_news(premarket_event))
+
+    def test_symbol_manager_adds_news_symbol_to_active_strategy_watchlist(self):
+        class Stream:
+            def __init__(self):
+                self.symbols = []
+
+            def add_symbol(self, symbol):
+                self.symbols.append(symbol)
+
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            strategy_names=["steady_intraday"],
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        states = {"AAPL": SymbolState("AAPL")}
+        stream = Stream()
+        manager = SymbolManager(states, stream, [strategy])
+
+        added = manager.add_symbol("mchp")
+
+        self.assertTrue(added)
+        self.assertIn("MCHP", states)
+        self.assertEqual(stream.symbols, ["MCHP"])
+        self.assertEqual(strategy.settings.symbols, ["AAPL", "MCHP"])
+
     def test_runtime_settings_snapshot_includes_tuning_parameters(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -4298,7 +4385,7 @@ class CoreTradingTests(unittest.TestCase):
     def test_available_strategy_names_lists_registry_order(self):
         self.assertEqual(
             available_strategy_names(),
-            ["gap_and_go", "macd_early_impulse", "maha7", "steady_intraday", "spike", "opening_impulse", "news_impulse"],
+            ["gap_and_go", "macd_early_impulse", "maha7", "steady_intraday", "spike", "opening_impulse"],
         )
 
     def test_steady_intraday_emits_pullback_reclaim_signal(self):
@@ -4366,7 +4453,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_build_strategies_can_build_news_impulse(self):
+    def test_build_strategies_rejects_removed_news_impulse_strategy(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -4374,43 +4461,10 @@ class CoreTradingTests(unittest.TestCase):
             strategy_names=["news_impulse"],
         )
 
-        strategies = build_strategies(settings)
+        with self.assertRaisesRegex(ValueError, "Unknown strategy: news_impulse"):
+            build_strategies(settings)
 
-        self.assertEqual([strategy.name for strategy in strategies], ["news_impulse"])
-        self.assertIsInstance(strategies[0], NewsImpulseStrategy)
-
-    def test_news_impulse_strategy_emits_buy_signal(self):
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            strategy_names=["news_impulse"],
-            news_impulse_change_pct=0.003,
-            news_impulse_min_volume_ratio=1.3,
-        )
-        strategy = NewsImpulseStrategy(settings)
-        state = SymbolState("AAPL")
-
-        state.add_bar(bar("AAPL", close=100.0, volume=1_000, end_ms=market_ms(2026, 4, 24, 9, 34)))
-        state.add_bar(bar("AAPL", close=100.2, volume=2_000, end_ms=market_ms(2026, 4, 24, 9, 35)))
-        state.mark_news(market_ms(2026, 4, 24, 9, 34), price=100.0)
-        for ts, bid, ask in (
-            (market_ms(2026, 4, 24, 9, 35), 100.00, 100.02),
-            (market_ms(2026, 4, 24, 9, 35), 100.08, 100.10),
-            (market_ms(2026, 4, 24, 9, 35), 100.16, 100.18),
-            (market_ms(2026, 4, 24, 9, 35), 100.24, 100.26),
-            (market_ms(2026, 4, 24, 9, 35), 100.32, 100.34),
-            (market_ms(2026, 4, 24, 9, 35), 100.42, 100.44),
-        ):
-            state.update_quote(Quote("AAPL", bid=bid, ask=ask, bid_size=200, ask_size=200, timestamp_ms=ts))
-
-        signal = strategy.evaluate(state)
-
-        self.assertIsNotNone(signal)
-        self.assertEqual(signal.strategy, "news_impulse")
-        self.assertEqual(signal.side, "BUY")
-        self.assertEqual(signal.position_size_multiplier, 0.5)
-
-    def test_position_sizing_multiplier_reduces_news_impulse_shares(self):
+    def test_position_sizing_multiplier_reduces_signal_shares(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -4419,7 +4473,7 @@ class CoreTradingTests(unittest.TestCase):
         )
         executor = LocalPaperExecutor(PositionTracker(settings))
         signal = Signal(
-            strategy="news_impulse",
+            strategy="opening_impulse",
             symbol="AAPL",
             side="BUY",
             price=100.0,
@@ -4427,7 +4481,7 @@ class CoreTradingTests(unittest.TestCase):
             change_pct=0.005,
             volume_ratio=2.0,
             spread_bps=4.0,
-            reason="news impulse early entry",
+            reason="reduced-size entry",
             position_size_multiplier=0.5,
         )
 

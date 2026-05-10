@@ -13,9 +13,11 @@ from pathlib import Path
 
 from ai_agent import SignalReviewer
 from alpaca_stream import AlpacaStreamAuthError, AlpacaStreamConnectionLimitError, build_market_data_stream
+from alpaca_client import get_latest_quotes, get_recent_bars
 from candle import SymbolState
 from config import load_settings
 from execution import build_executor
+from market_hours import is_regular_market_time
 from modules.news_listener import NewsListener
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote
@@ -46,8 +48,23 @@ NOISY_LOGGERS = (
 ALPACA_STREAM_LOGGER = "alpaca.data.live.websocket"
 POSITIVE_NEWS_TERMS = (
     "beats",
+    "beats estimate",
+    "beats estimates",
     "beat",
+    "beat estimate",
+    "beat estimates",
     "raises guidance",
+    "raises price target",
+    "raised price target",
+    "price target raised",
+    "maintains outperform",
+    "maintains overweight",
+    "reiterates outperform",
+    "reiterates buy",
+    "outperform",
+    "overweight",
+    "affirms guidance",
+    "affirms fy",
     "upgrades",
     "upgrade",
     "surge",
@@ -75,6 +92,11 @@ NEGATIVE_NEWS_TERMS = (
     "misses",
     "miss",
     "cuts guidance",
+    "lowers price target",
+    "lowered price target",
+    "price target lowered",
+    "underperform",
+    "underweight",
     "downgrade",
     "downgrades",
     "offering",
@@ -265,6 +287,38 @@ def is_high_impact_news(headline: str, summary: str = "") -> bool:
 
 def should_mark_hot_from_news(settings, event: NewsEvent) -> bool:
     return is_high_impact_news(event.headline, event.summary)
+
+
+def should_expand_symbols_from_news(event: NewsEvent) -> bool:
+    return is_regular_market_time(event.timestamp_ms)
+
+
+def warm_dynamic_news_symbol(settings, state: SymbolState, symbol: str, *, bar_limit: int = 5) -> bool:
+    """Backfill enough market context for a symbol discovered from news to be tradable quickly."""
+    if settings.replay_market_data:
+        return False
+
+    warmed = False
+    try:
+        bars = get_recent_bars(settings, [symbol], limit=bar_limit).get(symbol, [])
+    except Exception:
+        logging.debug("Could not warm recent bars for news symbol %s", symbol, exc_info=True)
+        bars = []
+    for bar in bars:
+        if all(existing.start_ms != bar.start_ms for existing in state.bars):
+            state.add_bar(bar)
+            warmed = True
+
+    try:
+        quote = get_latest_quotes(settings, [symbol]).get(symbol)
+    except Exception:
+        logging.debug("Could not warm latest quote for news symbol %s", symbol, exc_info=True)
+        quote = None
+    if quote is not None:
+        state.update_quote(quote)
+        warmed = True
+
+    return warmed
 
 
 def format_news_event_for_log(event: NewsEvent, *, max_headline_chars: int = 180) -> str:
@@ -655,13 +709,25 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 heartbeat.record_news()
                 if settings.news_log_events:
                     logging.info("News feed %s", format_news_event_for_log(event))
+                if not should_expand_symbols_from_news(event):
+                    logging.debug("Ignoring news for dynamic symbols outside regular market hours")
+                    continue
                 for classified in news_listener.process(event):
                     added = symbol_manager.add_symbol(classified.symbol)
+                    state = states.get(classified.symbol)
                     if added:
                         logging.info("Added symbol %s from news stream", classified.symbol)
-                    state = states.get(classified.symbol)
                     if state is None:
                         continue
+                    if added:
+                        warmed = await asyncio.to_thread(
+                            warm_dynamic_news_symbol,
+                            settings,
+                            state,
+                            classified.symbol,
+                        )
+                        if warmed:
+                            logging.info("Warmed symbol %s from recent market data", classified.symbol)
                     state.mark_news(
                         classified.timestamp_ms,
                         price=state.last_price,
