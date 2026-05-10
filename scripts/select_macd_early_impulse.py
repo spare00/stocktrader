@@ -27,6 +27,7 @@ from opening_plan import default_plan_file_for_strategy
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("macd_early_impulse")
 DEFAULT_DAILY_LOOKBACK_DAYS = 120
+AI_SCORE_DELTA_LIMIT = 15.0
 MIN_DAILY_BAR_COUNT = 35
 DEEP_NEGATIVE_LOOKBACK = 20
 DEEP_NEGATIVE_MACD_NORM_MAX = -0.003
@@ -419,7 +420,8 @@ def ai_macd_selection(ranked: list[dict[str, Any]], limit: int) -> dict[str, Any
             "Choose only from ranked symbols. Do not invent symbols. "
             "Include keys: strategy, adjustments, rejected, risk_note. "
             "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
-            "Keep ai_score_delta bounded between -2.0 and 2.0, and use 0 when no adjustment is needed."
+            f"Keep ai_score_delta bounded between -{AI_SCORE_DELTA_LIMIT:.1f} and {AI_SCORE_DELTA_LIMIT:.1f}, "
+            "and use 0 when no adjustment is needed."
         ),
         payload,
     )
@@ -439,7 +441,10 @@ def validated_macd_selection(plan: dict[str, Any], ranked: list[dict[str, Any]],
         adjustment = raw_adjustments.get(symbol) or raw_adjustments.get(symbol.lower()) or {}
         if not isinstance(adjustment, dict):
             adjustment = {}
-        ai_delta = max(-2.0, min(2.0, float(adjustment.get("ai_score_delta", 0.0) or 0.0)))
+        ai_delta = max(
+            -AI_SCORE_DELTA_LIMIT,
+            min(AI_SCORE_DELTA_LIMIT, float(adjustment.get("ai_score_delta", 0.0) or 0.0)),
+        )
         ai_reason = str(adjustment.get("ai_reason", "")).strip()
         ranked_item = dict(item)
         ranked_item["symbol"] = symbol

@@ -4013,6 +4013,28 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["selection_stage"], "ranked")
         self.assertEqual(plan["symbols"], ["ZERO", "TURN"])
 
+    def test_macd_ai_selection_can_reorder_meaningful_score_gap(self):
+        ranked = [
+            {"symbol": "AAPL", "score": 112.0, "macd_zone": "zero_reclaim"},
+            {"symbol": "MSFT", "score": 101.0, "macd_zone": "negative_reclaim"},
+            {"symbol": "NVDA", "score": 70.0, "macd_zone": "positive_impulse"},
+        ]
+        ai_plan = {
+            "adjustments": {
+                "AAPL": {"ai_score_delta": -30.0, "ai_reason": "too extended"},
+                "MSFT": {"ai_score_delta": 30.0, "ai_reason": "cleaner daily MACD"},
+                "FAKE": {"ai_score_delta": 15.0, "ai_reason": "not allowed"},
+            },
+            "rejected": ["FAKE"],
+            "risk_note": "bounded test",
+        }
+
+        validated = select_macd_early_impulse.validated_macd_selection(ai_plan, ranked, 2)
+
+        self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
+        self.assertEqual(validated["ranked"][0]["ai_score_delta"], select_macd_early_impulse.AI_SCORE_DELTA_LIMIT)
+        self.assertEqual(validated["ranked"][1]["ai_score_delta"], -select_macd_early_impulse.AI_SCORE_DELTA_LIMIT)
+
     def test_stoch_macd_selector_prefers_daily_confirmed_stack(self):
         def daily_bars_from_closes(symbol: str, closes: list[float]) -> list[Bar]:
             base_ms = market_ms(2026, 1, 1, 16, 0)
