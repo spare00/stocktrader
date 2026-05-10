@@ -1,4 +1,4 @@
-"""Stub selector: writes data/macd_early_impulse_plan.json from opening_universe (no heavy filters)."""
+"""Select MACD early-impulse symbols from a daily close MACD reclaim setup."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, time
+from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -20,17 +20,23 @@ from ai_client import request_json_response
 from config import Settings, load_settings
 from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
-from models import Bar, Quote
+from models import Bar
 from opening_plan import default_plan_file_for_strategy
 
 
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("macd_early_impulse")
-PREMARKET_OPEN = time(4, 0)
-NEAR_HIGH_TOLERANCE_PCT = 0.003
-MIN_BAR_COUNT = 20
-RECENT_HIGH_LOOKBACK = 15
-EMA_TREND_PERIOD = 12
+DEFAULT_DAILY_LOOKBACK_DAYS = 120
+MIN_DAILY_BAR_COUNT = 35
+DEEP_NEGATIVE_LOOKBACK = 20
+DEEP_NEGATIVE_MACD_NORM_MAX = -0.003
+GOLDEN_CROSS_LOOKBACK = 20
+RISING_LOOKBACK = 3
+DAILY_VOLUME_LOOKBACK = 20
+DAILY_VOLUME_RATIO_MIN = 1.0
+DAILY_EMA_FAST = 20
+DAILY_EMA_SLOW = 50
+DAILY_MAX_EMA_EXTENSION_PCT = 0.25
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -61,12 +67,26 @@ def load_universe(path: Path | None, raw_symbols: str) -> list[str]:
 class MACDEarlyImpulseCandidate:
     symbol: str
     score: float
-    hist_norm: float
-    volume_ratio: float
+    daily_macd: float
+    daily_signal: float
+    daily_hist: float
+    daily_macd_norm: float
+    daily_hist_norm: float
+    recent_negative_low: float
+    recent_negative_low_norm: float
+    recovery_from_low_norm: float
+    hist_growth_norm: float
+    macd_zone: str
+    daily_volume_ratio: float
+    ema_fast: float
+    ema_slow: float
+    ema_extension_pct: float
+    above_key_ma_structure: bool
+    quality_flags: tuple[str, ...]
     last_price: float
-    session_high: float
-    macd_hist: float
-    selection_stage: str = "filtered"
+    last_daily_change_pct: float
+    days: int
+    selection_stage: str = "ranked"
 
 
 @dataclass(frozen=True)
@@ -97,32 +117,81 @@ def _ema_series(values: list[float], period: int) -> list[float]:
     return out
 
 
-def _macd_histogram(closes: list[float]) -> list[float]:
-    ema12 = _ema_series(closes, 12)
-    ema26 = _ema_series(closes, 26)
+def _macd_components(values: list[float]) -> tuple[list[float], list[float], list[float]]:
+    ema12 = _ema_series(values, 12)
+    ema26 = _ema_series(values, 26)
     macd_line = [a - b for a, b in zip(ema12, ema26)]
     signal_line = _ema_series(macd_line, 9)
-    return [m - s for m, s in zip(macd_line, signal_line)]
+    hist = [m - s for m, s in zip(macd_line, signal_line)]
+    return macd_line, signal_line, hist
 
 
 def _is_rising(values: list[float]) -> bool:
     return len(values) >= 2 and all(values[index] > values[index - 1] for index in range(1, len(values)))
 
 
-def load_market_data(settings: Settings, symbols: list[str]) -> tuple[dict[str, list[Bar]], dict[str, Quote]]:
+def _daily_closes(bars: list[Bar]) -> list[float]:
+    return [float(bar.close) for bar in sorted((bar for bar in bars if bar.close > 0), key=lambda item: item.start_ms)]
+
+
+def _recent_cross_above(values: list[float], threshold: float = 0.0, lookback: int = GOLDEN_CROSS_LOOKBACK) -> bool:
+    start = max(1, len(values) - max(1, lookback))
+    return any(values[index - 1] <= threshold < values[index] for index in range(start, len(values)))
+
+
+def _is_improving(values: list[float], lookback: int = RISING_LOOKBACK) -> bool:
+    if len(values) < lookback + 1:
+        return False
+    recent = values[-lookback:]
+    previous = values[-(lookback + 1) : -1]
+    return values[-1] > values[-2] and sum(recent) / len(recent) > sum(previous) / len(previous)
+
+
+def _latest_daily_change_pct(closes: list[float]) -> float:
+    if len(closes) < 2 or closes[-2] <= 0:
+        return 0.0
+    return ((closes[-1] - closes[-2]) / closes[-2]) * 100.0
+
+
+def _volume_ratio(bars: list[Bar], lookback: int = DAILY_VOLUME_LOOKBACK) -> float:
+    if len(bars) < 2:
+        return 0.0
+    latest = bars[-1].volume
+    baseline_items = [bar.volume for bar in bars[-(lookback + 1) : -1] if bar.volume > 0]
+    baseline = median(baseline_items or [0.0])
+    return latest / baseline if baseline > 0 else 0.0
+
+
+def _macd_zone(macd_value: float, crossed_zero_recently: bool) -> str:
+    if macd_value < 0:
+        return "negative_reclaim"
+    if crossed_zero_recently:
+        return "zero_reclaim"
+    return "positive_impulse"
+
+
+def _recent_golden_cross(hist: list[float], lookback: int = GOLDEN_CROSS_LOOKBACK) -> bool:
+    start = max(1, len(hist) - max(1, lookback))
+    return any(hist[index - 1] <= 0 < hist[index] for index in range(start, len(hist)))
+
+
+def _bounded_score(value: float, *, scale: float, maximum: float) -> float:
+    return max(0.0, min(maximum, value * scale))
+
+
+def load_market_data(settings: Settings, symbols: list[str], lookback_days: int) -> dict[str, list[Bar]]:
     try:
         from alpaca.data.timeframe import TimeFrame
 
-        from alpaca_client import get_bars_between, get_latest_quotes, make_clients
+        from alpaca_client import get_bars_between, make_clients
     except Exception as exc:
         raise RuntimeError("Alpaca market-data dependencies unavailable.") from exc
 
     clients = make_clients(settings)
-    now = datetime.now(tz=MARKET_TZ)
-    start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=MARKET_TZ)
-    intraday = get_bars_between(clients, symbols, TimeFrame.Minute, start_of_day, now)
-    quotes = get_latest_quotes(settings, symbols)
-    return intraday, quotes
+    end = datetime.now(tz=MARKET_TZ) + timedelta(days=1)
+    start = end - timedelta(days=max(lookback_days * 2, lookback_days + 30))
+    daily = get_bars_between(clients, symbols, TimeFrame.Day, start, end)
+    return {symbol: sorted(bars, key=lambda item: item.start_ms)[-lookback_days:] for symbol, bars in daily.items()}
 
 
 def _selector_settings() -> Settings:
@@ -136,28 +205,9 @@ def _selector_settings() -> Settings:
         )
 
 
-def _usable_price(quote: Quote | None, bars: list[Bar]) -> float:
-    if quote is not None and quote.ask > 0:
-        return quote.ask
-    if bars:
-        return bars[-1].close
-    return 0.0
-
-
-def _momentum_relaxed(last_three_bars: tuple[Bar, Bar, Bar]) -> bool:
-    """(close[-1] > close[-3]) OR at least two bullish (green) bars in the last three."""
-    b_oldest, _b_mid, b_newest = last_three_bars
-    if b_newest.close > b_oldest.close:
-        return True
-    green = sum(1 for b in last_three_bars if b.close > b.open)
-    return green >= 2
-
-
 def evaluate_symbol(
     symbol: str,
     bars: list[Bar],
-    quote: Quote | None,
-    settings: Settings,
     *,
     stage_counts: dict[str, int] | None = None,
 ) -> tuple[MACDEarlyImpulseCandidate | None, CandidateReject | None]:
@@ -165,104 +215,143 @@ def evaluate_symbol(
         if stage_counts is not None:
             stage_counts[key] = stage_counts.get(key, 0) + 1
 
-    if len(bars) < MIN_BAR_COUNT:
-        return None, CandidateReject(symbol, "bars", f"need >= {MIN_BAR_COUNT} bars, got {len(bars)}")
-
-    closes = [float(bar.close) for bar in bars if bar.close > 0]
-    if len(closes) < MIN_BAR_COUNT:
-        return None, CandidateReject(symbol, "close", "insufficient positive closes")
-
-    hist = _macd_histogram(closes)
-    if len(hist) < 2:
-        return None, CandidateReject(symbol, "macd", "insufficient histogram points")
-
-    price = _usable_price(quote, bars)
-    if price <= 0:
-        return None, CandidateReject(symbol, "price", "invalid last price")
+    ordered = sorted((bar for bar in bars if bar.close > 0), key=lambda item: item.start_ms)
+    closes = _daily_closes(ordered)
+    if len(closes) < MIN_DAILY_BAR_COUNT:
+        return None, CandidateReject(symbol, "bars", f"need >= {MIN_DAILY_BAR_COUNT} daily bars, got {len(closes)}")
+    price = closes[-1]
 
     _bump("passed_macd_data")
 
-    hist_norm = hist[-1] / price
-    if settings.macd_require_positive_hist and hist[-1] <= 0:
-        return None, CandidateReject(symbol, "negative_hist", f"histogram {hist[-1]:.5f} not positive")
-    if hist_norm < settings.macd_hist_threshold:
-        return None, CandidateReject(symbol, "weak_macd", f"hist_norm {hist_norm:.5f} < {settings.macd_hist_threshold}")
+    macd_line, signal_line, hist = _macd_components(closes)
+    if len(hist) < max(MIN_DAILY_BAR_COUNT, GOLDEN_CROSS_LOOKBACK + 1, RISING_LOOKBACK + 1):
+        return None, CandidateReject(symbol, "macd", "insufficient daily MACD points")
 
-    _bump("passed_hist_norm")
-
-    ema_trend = _ema_series(closes, EMA_TREND_PERIOD)
-    if not ema_trend or price < ema_trend[-1]:
-        return None, CandidateReject(symbol, "below_ema", f"price below EMA{EMA_TREND_PERIOD}")
-
-    _bump("passed_ema")
-
-    last3 = (bars[-3], bars[-2], bars[-1])
-    if not _momentum_relaxed(last3):
-        return None, CandidateReject(
-            symbol,
-            "momentum",
-            "need close[-1]>close[-3] or >=2 green bars in last 3",
+    quality_flags: list[str] = []
+    recent_macd = macd_line[-DEEP_NEGATIVE_LOOKBACK:]
+    recent_negative_low = min(recent_macd)
+    recent_negative_low_norm = recent_negative_low / price if price > 0 else 0.0
+    deep_negative = recent_negative_low_norm <= DEEP_NEGATIVE_MACD_NORM_MAX
+    if deep_negative:
+        _bump("passed_deep_negative")
+    else:
+        quality_flags.append(
+            f"shallow MACD washout ({recent_negative_low_norm:.5f} > {DEEP_NEGATIVE_MACD_NORM_MAX:.5f})"
         )
 
-    _bump("passed_momentum")
+    golden_cross = _recent_golden_cross(hist)
+    if golden_cross:
+        _bump("passed_golden_cross")
+    else:
+        quality_flags.append("no recent bullish histogram cross")
 
-    recent_bars = bars[-RECENT_HIGH_LOOKBACK:]
-    recent_high = max((bar.high for bar in recent_bars if bar.high > 0), default=0.0)
-    if recent_high <= 0:
-        return None, CandidateReject(symbol, "high", "invalid recent high")
-    if price < recent_high * (1.0 - NEAR_HIGH_TOLERANCE_PCT):
-        return None, CandidateReject(symbol, "near_high", "price too far below recent high")
+    recent_hist = hist[-RISING_LOOKBACK:]
+    recent_line = macd_line[-RISING_LOOKBACK:]
+    hist_expanding = _is_improving(hist)
+    macd_line_rising = _is_rising(recent_line)
+    if hist_expanding and macd_line_rising:
+        _bump("passed_rising")
+    else:
+        if not hist_expanding:
+            quality_flags.append("daily histogram not expanding")
+        if not macd_line_rising:
+            quality_flags.append("daily MACD line not rising")
 
-    _bump("passed_near_high")
+    daily_volume_ratio = _volume_ratio(ordered)
+    if daily_volume_ratio >= DAILY_VOLUME_RATIO_MIN:
+        _bump("passed_volume")
+    else:
+        quality_flags.append(f"daily volume ratio {daily_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}")
 
-    min_hist_len = max(2, settings.macd_hist_rise_bars + 1)
-    recent_hist = hist[-min_hist_len:]
-    if len(recent_hist) < min_hist_len or not _is_rising(recent_hist):
-        return None, CandidateReject(symbol, "chop", "histogram not rising enough")
+    ema_fast_series = _ema_series(closes, DAILY_EMA_FAST)
+    ema_slow_series = _ema_series(closes, DAILY_EMA_SLOW)
+    ema_fast = ema_fast_series[-1] if ema_fast_series else 0.0
+    ema_slow = ema_slow_series[-1] if ema_slow_series else 0.0
+    above_key_ma_structure = price > ema_fast and (ema_slow <= 0 or price >= ema_slow * 0.98)
+    if above_key_ma_structure:
+        _bump("passed_ma_structure")
+    else:
+        quality_flags.append(f"price {price:.2f} not above EMA{DAILY_EMA_FAST}/near EMA{DAILY_EMA_SLOW}")
 
-    _bump("passed_chop")
+    ema_extension_pct = (price - ema_fast) / ema_fast if ema_fast > 0 else 0.0
+    not_overextended = ema_extension_pct <= DAILY_MAX_EMA_EXTENSION_PCT
+    if not_overextended:
+        _bump("passed_not_overextended")
+    else:
+        quality_flags.append(f"price extension {ema_extension_pct:.2%} > {DAILY_MAX_EMA_EXTENSION_PCT:.2%}")
 
-    latest_volume = bars[-1].volume
-    baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
-    volume_ratio = (latest_volume / baseline) if baseline > 0 else 0.0
-    if volume_ratio < settings.macd_volume_ratio:
-        return None, CandidateReject(symbol, "volume", f"volume_ratio {volume_ratio:.2f} < {settings.macd_volume_ratio}")
-
-    _bump("passed_volume")
-
-    breakout_score = ((price - recent_high) / price) * 100.0 if price > 0 else 0.0
-    score = (hist_norm * 1000.0) + breakout_score
+    crossed_zero_recently = _recent_cross_above(macd_line, 0.0, lookback=GOLDEN_CROSS_LOOKBACK)
+    recovery_from_low_norm = (macd_line[-1] - recent_negative_low) / price if price > 0 else 0.0
+    daily_macd_norm = macd_line[-1] / price if price > 0 else 0.0
+    daily_hist_norm = hist[-1] / price if price > 0 else 0.0
+    hist_growth_norm = (hist[-1] - hist[-RISING_LOOKBACK]) / price if price > 0 and len(hist) >= RISING_LOOKBACK else 0.0
+    zero_bonus = 8.0 if crossed_zero_recently else 0.0
+    negative_reclaim_bonus = 4.0 if macd_line[-1] < 0 and hist[-1] > 0 else 0.0
+    hist_positive_bonus = 8.0 if hist[-1] > 0 else -8.0
+    cross_bonus = 12.0 if golden_cross else -6.0
+    rising_bonus = 10.0 if macd_line_rising else -8.0
+    hist_expansion_bonus = 12.0 if hist_expanding else -10.0
+    volume_score = min(daily_volume_ratio, 3.0) * 4.0
+    ma_score = 10.0 if above_key_ma_structure else -10.0
+    extension_penalty = max(0.0, ema_extension_pct - DAILY_MAX_EMA_EXTENSION_PCT) * 100.0
+    score = (
+        _bounded_score(abs(recent_negative_low_norm), scale=1000.0, maximum=25.0)
+        + _bounded_score(recovery_from_low_norm, scale=1000.0, maximum=25.0)
+        + _bounded_score(max(0.0, daily_hist_norm), scale=1000.0, maximum=18.0)
+        + _bounded_score(max(0.0, hist_growth_norm), scale=1000.0, maximum=12.0)
+        + zero_bonus
+        + negative_reclaim_bonus
+        + hist_positive_bonus
+        + cross_bonus
+        + rising_bonus
+        + hist_expansion_bonus
+        + volume_score
+        + ma_score
+        - extension_penalty
+    )
     candidate = MACDEarlyImpulseCandidate(
         symbol=symbol,
         score=round(score, 6),
-        hist_norm=round(hist_norm, 6),
-        volume_ratio=round(volume_ratio, 4),
+        daily_macd=round(macd_line[-1], 6),
+        daily_signal=round(signal_line[-1], 6),
+        daily_hist=round(hist[-1], 6),
+        daily_macd_norm=round(daily_macd_norm, 6),
+        daily_hist_norm=round(daily_hist_norm, 6),
+        recent_negative_low=round(recent_negative_low, 6),
+        recent_negative_low_norm=round(recent_negative_low_norm, 6),
+        recovery_from_low_norm=round(recovery_from_low_norm, 6),
+        hist_growth_norm=round(hist_growth_norm, 6),
+        macd_zone=_macd_zone(macd_line[-1], crossed_zero_recently),
+        daily_volume_ratio=round(daily_volume_ratio, 4),
+        ema_fast=round(ema_fast, 4),
+        ema_slow=round(ema_slow, 4),
+        ema_extension_pct=round(ema_extension_pct, 6),
+        above_key_ma_structure=above_key_ma_structure,
+        quality_flags=tuple(quality_flags),
         last_price=round(price, 4),
-        session_high=round(recent_high, 4),
-        macd_hist=round(hist[-1], 6),
+        last_daily_change_pct=round(_latest_daily_change_pct(closes), 4),
+        days=len(ordered),
     )
     return candidate, None
 
 
-def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]], quotes: dict[str, Quote], settings: Settings) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject], dict[str, int]]:
+def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]]) -> tuple[list[MACDEarlyImpulseCandidate], list[CandidateReject], dict[str, int]]:
     ranked: list[MACDEarlyImpulseCandidate] = []
     rejected: list[CandidateReject] = []
     stage_counts: dict[str, int] = {
         "universe_symbols": len(symbols),
         "passed_macd_data": 0,
-        "passed_hist_norm": 0,
-        "passed_ema": 0,
-        "passed_momentum": 0,
-        "passed_near_high": 0,
-        "passed_chop": 0,
+        "passed_deep_negative": 0,
+        "passed_golden_cross": 0,
+        "passed_rising": 0,
         "passed_volume": 0,
+        "passed_ma_structure": 0,
+        "passed_not_overextended": 0,
     }
     for symbol in symbols:
         candidate, reject = evaluate_symbol(
             symbol,
             bars_by_symbol.get(symbol, []),
-            quotes.get(symbol),
-            settings,
             stage_counts=stage_counts,
         )
         if candidate is not None:
@@ -278,7 +367,6 @@ def deterministic_plan(
     rejected: list[CandidateReject],
     strategy: str,
     limit: int,
-    runtime_settings: Settings,
     *,
     filter_stage_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
@@ -289,26 +377,27 @@ def deterministic_plan(
     if filter_stage_counts:
         settings["filter_stage_counts"] = dict(filter_stage_counts)
         settings["filter_thresholds"] = {
-            "hist_norm_min": runtime_settings.macd_hist_threshold,
-            "volume_ratio_min": runtime_settings.macd_volume_ratio,
-            "hist_rise_bars": runtime_settings.macd_hist_rise_bars,
-            "require_positive_hist": runtime_settings.macd_require_positive_hist,
-            "min_bar_count": MIN_BAR_COUNT,
-            "near_high_tolerance_pct": NEAR_HIGH_TOLERANCE_PCT,
-            "recent_high_lookback_bars": RECENT_HIGH_LOOKBACK,
-            "ema_trend_period": EMA_TREND_PERIOD,
-            "momentum_rule": "(close[-1] > close[-3]) OR (>=2 green bars in last 3)",
-            "chop_rule": "histogram rises for configured bars",
+            "min_daily_bar_count": MIN_DAILY_BAR_COUNT,
+            "deep_negative_lookback": DEEP_NEGATIVE_LOOKBACK,
+            "deep_negative_macd_norm_max": DEEP_NEGATIVE_MACD_NORM_MAX,
+            "golden_cross_lookback": GOLDEN_CROSS_LOOKBACK,
+            "rising_lookback": RISING_LOOKBACK,
+            "daily_volume_ratio_min": DAILY_VOLUME_RATIO_MIN,
+            "daily_volume_lookback": DAILY_VOLUME_LOOKBACK,
+            "ema_fast": DAILY_EMA_FAST,
+            "ema_slow": DAILY_EMA_SLOW,
+            "max_ema_extension_pct": DAILY_MAX_EMA_EXTENSION_PCT,
+            "macd_input": "daily closes",
         }
     return {
         "strategy": strategy,
-        "selection_stage": "filtered",
-        "note": "MACD-based ranking aligned with runtime filters: positive rising histogram, EMA trend, volume, near-high.",
+        "selection_stage": "ranked",
+        "note": "Daily MACD ranker: scores recovery/continuation, expanding histogram, rising line, volume, MA structure, and overextension instead of cutting candidates.",
         "symbols": selected,
         "ranked": ranked,
         "rejected": [asdict(row) for row in rejected],
         "settings": settings,
-        "risk_note": "MACD momentum + breakout candidates with runtime-aligned volume and structure filters.",
+        "risk_note": "Selector returns the top ranked daily MACD watchlist; macd_early_impulse still waits for intraday MACD/volume/structure before trading.",
     }
 
 
@@ -363,7 +452,7 @@ def validated_macd_selection(plan: dict[str, Any], ranked: list[dict[str, Any]],
 
     normalized_ranked.sort(key=lambda row: float(row.get("score", 0.0) or 0.0), reverse=True)
     selected = [str(item.get("symbol", "")) for item in normalized_ranked[:limit] if str(item.get("symbol", ""))]
-    selection_stage = "filtered" if ranked else str(plan.get("selection_stage") or "filtered")
+    selection_stage = "ranked" if ranked else str(plan.get("selection_stage") or "ranked")
     return {
         "strategy": "macd_early_impulse",
         "selection_stage": selection_stage,
@@ -376,7 +465,7 @@ def validated_macd_selection(plan: dict[str, Any], ranked: list[dict[str, Any]],
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build macd_early_impulse plan from opening universe.")
+    parser = argparse.ArgumentParser(description="Build macd_early_impulse plan from daily close MACD reclaim candidates.")
     parser.add_argument(
         "--universe-file",
         type=Path,
@@ -385,6 +474,7 @@ def main() -> int:
     )
     parser.add_argument("--symbols", default="", help="Comma-separated symbols; overrides universe file.")
     parser.add_argument("--top", type=int, default=12, help="Max symbols to include.")
+    parser.add_argument("--daily-lookback-days", type=int, default=DEFAULT_DAILY_LOOKBACK_DAYS)
     parser.add_argument(
         "--plan-output",
         type=Path,
@@ -396,9 +486,11 @@ def main() -> int:
 
     symbols = load_universe(args.universe_file, args.symbols)
     settings = _selector_settings()
-    bars_by_symbol, quotes = load_market_data(settings, symbols)
-    candidates, rejected, stage_counts = rank_candidates(symbols, bars_by_symbol, quotes, settings)
-    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top, settings, filter_stage_counts=stage_counts)
+    if args.daily_lookback_days < MIN_DAILY_BAR_COUNT:
+        raise ValueError(f"--daily-lookback-days must be at least {MIN_DAILY_BAR_COUNT}")
+    bars_by_symbol = load_market_data(settings, symbols, args.daily_lookback_days)
+    candidates, rejected, stage_counts = rank_candidates(symbols, bars_by_symbol)
+    plan = deterministic_plan(candidates, rejected, "macd_early_impulse", args.top, filter_stage_counts=stage_counts)
     selected_symbols = list(plan["symbols"])
     result: dict[str, Any] = {
         "strategy": "macd_early_impulse",

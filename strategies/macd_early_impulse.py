@@ -22,7 +22,9 @@ PREMARKET_OPEN = time(4, 0)
 _MIN_REGULAR_BARS = 20
 _NEAR_HIGH_TOLERANCE_PCT = 0.003
 _RECENT_HIGH_LOOKBACK = 15
+_RECLAIM_HIGH_LOOKBACK = 10
 _OVEREXTEND_MAX_PCT = 0.003
+_VWAP_EXTENSION_MAX_PCT = 0.025
 _EMA_TREND_PERIOD = 12
 
 
@@ -178,18 +180,21 @@ class MACDEarlyImpulseStrategy(Strategy):
         macd = self._compute_macd(state)
         if macd is None:
             return self._reject(state, "macd", "could not compute MACD")
-        _, _, hist = macd
+        macd_line, signal_line, hist = macd
         min_hist_len = max(2, self.settings.macd_hist_rise_bars + 1)
         if len(hist) < min_hist_len:
             return self._reject(state, "macd", "insufficient histogram history")
 
         h1 = hist[-1]
-        recent_hist = hist[-min_hist_len:]
-        if not self._is_rising(recent_hist):
+        if macd_line[-1] <= signal_line[-1]:
+            return self._reject(state, "macd_below_signal", "MACD line not above signal")
+        if len(macd_line) < 2 or macd_line[-1] <= macd_line[-2]:
+            return self._reject(state, "macd_slope", "MACD line not rising")
+        if not self._histogram_expanding(hist, min_hist_len):
             return self._reject(
                 state,
-                "weak_hist",
-                f"histogram not rising enough ({','.join(f'{h:.5f}' for h in recent_hist)})",
+                "hist_fade",
+                f"histogram not expanding ({','.join(f'{h:.5f}' for h in hist[-min_hist_len:])})",
             )
         if self.settings.macd_require_positive_hist and h1 <= 0:
             return self._reject(state, "negative_hist", f"histogram {h1:.5f} not positive")
@@ -218,14 +223,18 @@ class MACDEarlyImpulseStrategy(Strategy):
         vwap = self._session_vwap(rb)
         if vwap is not None and last.ask < vwap:
             return self._reject(state, "below_vwap", "price below vwap")
+        if vwap is not None:
+            vwap_extension = (last.ask - vwap) / vwap if vwap > 0 else 0.0
+            if vwap_extension > _VWAP_EXTENSION_MAX_PCT:
+                return self._reject(state, "vwap_overextended", f"VWAP extension {vwap_extension:.3%} too high")
 
         recent_high = max(bar.high for bar in rb[-_RECENT_HIGH_LOOKBACK:])
         near_high = last.ask >= recent_high * (1.0 - _NEAR_HIGH_TOLERANCE_PCT)
-        if not near_high:
+        if not near_high or not self._price_reclaim_confirmed(rb, last.ask, vwap):
             return self._reject(
                 state,
                 "price_structure",
-                f"not near recent high ({recent_high:.2f}) while above vwap ({vwap})",
+                f"no VWAP/high reclaim near recent high ({recent_high:.2f}) while above vwap ({vwap})",
             )
 
         spread_bps = last.spread_bps
@@ -338,6 +347,26 @@ class MACDEarlyImpulseStrategy(Strategy):
     @staticmethod
     def _is_rising(values: list[float]) -> bool:
         return len(values) >= 2 and all(values[index] > values[index - 1] for index in range(1, len(values)))
+
+    @staticmethod
+    def _histogram_expanding(hist: list[float], min_hist_len: int) -> bool:
+        if len(hist) < max(3, min_hist_len):
+            return False
+        recent = hist[-min_hist_len:]
+        previous = hist[-(min_hist_len + 1) : -1]
+        return hist[-1] > 0 and hist[-1] > hist[-2] and sum(recent) / len(recent) > sum(previous) / len(previous)
+
+    @staticmethod
+    def _price_reclaim_confirmed(session_bars, current_price: float, vwap: float | None) -> bool:
+        if len(session_bars) < 2:
+            return False
+        latest = session_bars[-1]
+        previous = session_bars[-2]
+        reclaimed_vwap = vwap is not None and latest.close >= vwap and previous.close <= vwap
+        prior_bars = session_bars[-(_RECLAIM_HIGH_LOOKBACK + 1) : -1]
+        prior_high = max((bar.high for bar in prior_bars if bar.high > 0), default=0.0)
+        reclaimed_high = prior_high > 0 and current_price >= prior_high * (1.0 - _NEAR_HIGH_TOLERANCE_PCT)
+        return reclaimed_vwap or reclaimed_high
 
     @staticmethod
     def _session_vwap(session_bars) -> float | None:

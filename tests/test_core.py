@@ -50,6 +50,7 @@ import scripts.select_market_universe as select_market_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
 import scripts.select_gap_and_go as select_gap_and_go
 import scripts.select_maha7 as select_maha7
+import scripts.select_macd_early_impulse as select_macd_early_impulse
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
 import scripts.select_steady_intraday as select_steady_intraday
@@ -3834,6 +3835,177 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
+
+    def test_macd_enters_on_minute_reacceleration_reclaim(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.2,
+            macd_chop_range_pct=0.0001,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.08,
+                low=101.80,
+                close=102.02,
+                volume=2_000,
+                vwap=101.88,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=102.01,
+                ask=102.03,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0014, 0.0022],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.reason, "macd early impulse entry")
+
+    def test_macd_rejects_minute_histogram_fade_entry(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.2,
+            macd_chop_range_pct=0.0001,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(25):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=2_000 if index == 24 else 1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=101.92,
+                ask=101.94,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0022, 0.0020, 0.0018],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_macd_selector_ranks_daily_macd_reclaim_reversal(self):
+        def daily_bars_from_changes(symbol: str, changes: list[float]) -> list[Bar]:
+            price = 100.0
+            bars: list[Bar] = []
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars.append(daily_bar_with_volume(symbol, price, price * 0.99, price * 1.01, 1_000_000, base_ms))
+            for index, change in enumerate(changes, start=1):
+                price *= 1.0 + change
+                volume = 2_000_000 if index == len(changes) else 1_000_000
+                bars.append(
+                    daily_bar_with_volume(
+                        symbol,
+                        price,
+                        price * 0.99,
+                        price * 1.01,
+                        volume,
+                        base_ms + index * 86_400_000,
+                    )
+                )
+            return bars
+
+        reversal_changes = [0.001] * 20 + [-0.04] * 8 + [0.015] * 8 + [0.02] * 5
+        zero_reclaim_changes = [0.002] * 20 + [-0.04] * 8 + [0.015] * 8 + [0.03] * 8
+        stale_changes = [0.001] * 20 + [-0.002] * 20
+
+        candidates, rejected, stage_counts = select_macd_early_impulse.rank_candidates(
+            ["TURN", "ZERO", "STALE"],
+            {
+                "TURN": daily_bars_from_changes("TURN", reversal_changes),
+                "ZERO": daily_bars_from_changes("ZERO", zero_reclaim_changes),
+                "STALE": daily_bars_from_changes("STALE", stale_changes),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        self.assertEqual(set(selected), {"TURN", "ZERO", "STALE"})
+        self.assertLess(selected["TURN"].daily_macd, 0)
+        self.assertEqual(selected["TURN"].macd_zone, "negative_reclaim")
+        self.assertGreater(selected["TURN"].daily_hist, 0)
+        self.assertEqual(selected["TURN"].quality_flags, ())
+        self.assertGreaterEqual(selected["TURN"].daily_volume_ratio, 1.0)
+        self.assertTrue(selected["TURN"].above_key_ma_structure)
+        self.assertGreater(selected["ZERO"].daily_macd, 0)
+        self.assertEqual(selected["ZERO"].macd_zone, "zero_reclaim")
+        self.assertLessEqual(selected["ZERO"].ema_extension_pct, select_macd_early_impulse.DAILY_MAX_EMA_EXTENSION_PCT)
+        self.assertEqual(rejected, [])
+        self.assertLess(selected["STALE"].score, selected["TURN"].score)
+        self.assertTrue(selected["STALE"].quality_flags)
+        self.assertEqual(stage_counts["passed_golden_cross"], 2)
+        self.assertEqual(stage_counts["passed_not_overextended"], 3)
+
+        plan = select_macd_early_impulse.deterministic_plan(candidates, rejected, "macd_early_impulse", 2)
+        self.assertEqual(plan["selection_stage"], "ranked")
+        self.assertEqual(plan["symbols"], ["ZERO", "TURN"])
 
     def test_setup_logging_creates_rotating_log_file(self):
         old_log_dir = trading_main.LOG_DIR
