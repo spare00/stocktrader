@@ -154,15 +154,15 @@ This selector is pre-market only: it ranks symbols using previous-day bars,
 premarket bars, and the current premarket quote. It does not depend on the
 regular-session open or any post-open breakout behavior.
 
-For `stoch_macd_reversal`, build a daily ready-before-buy watchlist:
+For `stoch_macd_reversal`, build a daily confirmation-stack watchlist:
 
 ```bash
 .venv/bin/python scripts/select_stoch_macd_reversal.py --top 12
 ```
 
-This selector uses daily OHLCV bars to rank symbols that have already reached
-the STOCH ready stage and are curling toward, but ideally not yet past, the
-intraday buy stage. The live strategy still waits for minute STOCH/MACD
+This selector uses daily OHLCV bars to rank the same confirmation stack used by
+the live handler: EMA 5 above SuperTrend (7,3), MACD/CCC above signal and
+non-negative, and STOCH %K above %D. The live strategy still waits for minute
 confirmation before entering.
 
 It also supports an embedded AI refinement pass:

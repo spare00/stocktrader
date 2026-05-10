@@ -4013,7 +4013,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["selection_stage"], "ranked")
         self.assertEqual(plan["symbols"], ["ZERO", "TURN"])
 
-    def test_stoch_macd_selector_prefers_daily_ready_before_buy(self):
+    def test_stoch_macd_selector_prefers_daily_confirmed_stack(self):
         def daily_bars_from_closes(symbol: str, closes: list[float]) -> list[Bar]:
             base_ms = market_ms(2026, 1, 1, 16, 0)
             bars: list[Bar] = []
@@ -4026,30 +4026,32 @@ class CoreTradingTests(unittest.TestCase):
             return bars
 
         base = [100 + index * 0.08 for index in range(35)]
-        ready = base + [102, 100, 98, 96, 94, 92, 90, 88, 87, 86, 86.5, 87.2, 88.2, 89.4, 90.8]
-        hot = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 108, 113]
-        stale = base + [102, 101.8, 101.6, 101.5, 101.4, 101.3, 101.2, 101.1, 101.0, 100.9, 100.8, 100.7]
+        confirmed = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 108, 113]
+        weak_stoch = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 101, 99]
+        weak_macd = base + [102, 101.8, 101.6, 101.5, 101.4, 101.3, 101.2, 101.1, 101.0, 100.9, 100.8, 100.7]
 
         candidates, rejected, stage_counts = select_stoch_macd_reversal.rank_candidates(
-            ["READY", "HOT", "STALE"],
+            ["CONFIRMED", "WEAK_STOCH", "WEAK_MACD"],
             {
-                "READY": daily_bars_from_closes("READY", ready),
-                "HOT": daily_bars_from_closes("HOT", hot),
-                "STALE": daily_bars_from_closes("STALE", stale),
+                "CONFIRMED": daily_bars_from_closes("CONFIRMED", confirmed),
+                "WEAK_STOCH": daily_bars_from_closes("WEAK_STOCH", weak_stoch),
+                "WEAK_MACD": daily_bars_from_closes("WEAK_MACD", weak_macd),
             },
         )
 
         selected = {candidate.symbol: candidate for candidate in candidates}
         self.assertEqual(rejected, [])
-        self.assertEqual(selected["READY"].setup_stage, "ready_before_buy")
-        self.assertLessEqual(selected["READY"].stoch_min_ready, select_stoch_macd_reversal.READY_OVERSOLD_MAX)
-        self.assertGreater(selected["READY"].stoch_k_slope, 0)
-        self.assertEqual(selected["HOT"].setup_stage, "not_ready")
-        self.assertGreater(selected["HOT"].stoch_k, select_stoch_macd_reversal.BUY_MAX_K)
-        self.assertGreater(selected["READY"].score, selected["HOT"].score)
-        self.assertGreater(selected["READY"].score, selected["STALE"].score)
-        self.assertGreaterEqual(stage_counts["passed_ready_washout"], 2)
-        self.assertEqual(stage_counts["passed_pre_buy_zone"], 1)
+        self.assertEqual(selected["CONFIRMED"].setup_stage, "confirmed_stack")
+        self.assertGreater(selected["CONFIRMED"].ema_confirm, selected["CONFIRMED"].supertrend)
+        self.assertGreater(selected["CONFIRMED"].daily_macd, selected["CONFIRMED"].daily_signal)
+        self.assertGreaterEqual(selected["CONFIRMED"].daily_macd, 0)
+        self.assertGreater(selected["CONFIRMED"].stoch_k, selected["CONFIRMED"].stoch_d)
+        self.assertEqual(selected["WEAK_STOCH"].setup_stage, "not_confirmed")
+        self.assertGreater(selected["CONFIRMED"].score, selected["WEAK_STOCH"].score)
+        self.assertGreater(selected["CONFIRMED"].score, selected["WEAK_MACD"].score)
+        self.assertGreaterEqual(stage_counts["passed_trend_confirmed"], 1)
+        self.assertGreaterEqual(stage_counts["passed_macd_confirmed"], 1)
+        self.assertGreaterEqual(stage_counts["passed_stoch_bullish"], 1)
 
         plan = select_stoch_macd_reversal.deterministic_plan(
             candidates,
@@ -4059,7 +4061,7 @@ class CoreTradingTests(unittest.TestCase):
             filter_stage_counts=stage_counts,
         )
         self.assertEqual(plan["strategy"], "stoch_macd_reversal")
-        self.assertEqual(plan["symbols"][0], "READY")
+        self.assertEqual(plan["symbols"][0], "CONFIRMED")
         self.assertEqual(plan["settings"]["filter_thresholds"]["indicator_input"], "daily OHLCV bars")
 
     def test_setup_logging_creates_rotating_log_file(self):

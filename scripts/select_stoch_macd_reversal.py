@@ -1,4 +1,4 @@
-"""Select STOCH/MACD reversal symbols from a daily ready-before-buy setup."""
+"""Select STOCH/MACD reversal symbols from a daily confirmation setup."""
 
 from __future__ import annotations
 
@@ -31,13 +31,9 @@ MIN_DAILY_BAR_COUNT = 45
 STOCH_PERIOD = 14
 STOCH_D_PERIOD = 3
 STOCH_SMOOTH_K = 3
-READY_LOOKBACK = 8
-READY_OVERSOLD_MAX = 20.0
-BUY_MAX_K = 82.0
-PRE_BUY_K_MAX = 70.0
-PRE_BUY_D_DISTANCE_MAX = 12.0
-HOT_K_PENALTY_MIN = 82.0
-MACD_RISING_LOOKBACK = 3
+DAILY_EMA_CONFIRM = 5
+SUPERTREND_PERIOD = 7
+SUPERTREND_MULTIPLIER = 3.0
 DAILY_VOLUME_LOOKBACK = 20
 DAILY_VOLUME_RATIO_MIN = 0.8
 DAILY_EMA_FAST = 20
@@ -67,13 +63,12 @@ class StochMACDReversalCandidate:
     setup_stage: str
     stoch_k: float
     stoch_d: float
-    stoch_min_ready: float
-    stoch_recovery: float
-    stoch_k_slope: float
     daily_macd: float
     daily_signal: float
     daily_hist: float
-    daily_hist_growth: float
+    ema_confirm: float
+    supertrend: float
+    supertrend_bullish: bool
     daily_volume_ratio: float
     ema_fast: float
     ema_slow: float
@@ -178,16 +173,73 @@ def _latest_daily_change_pct(closes: list[float]) -> float:
     return ((closes[-1] - closes[-2]) / closes[-2]) * 100.0
 
 
-def _is_improving(values: list[float], lookback: int = MACD_RISING_LOOKBACK) -> bool:
-    if len(values) < lookback + 1:
-        return False
-    recent = values[-lookback:]
-    previous = values[-(lookback + 1) : -1]
-    return values[-1] > values[-2] and sum(recent) / len(recent) > sum(previous) / len(previous)
-
-
 def _bounded(value: float, *, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _supertrend(bars: list[Bar], period: int = SUPERTREND_PERIOD, multiplier: float = SUPERTREND_MULTIPLIER) -> tuple[float, bool] | None:
+    if period <= 0 or multiplier <= 0 or len(bars) < period + 1:
+        return None
+
+    true_ranges: list[float] = []
+    for index, bar in enumerate(bars):
+        if index == 0:
+            true_ranges.append(bar.high - bar.low)
+            continue
+        prev_close = bars[index - 1].close
+        true_ranges.append(
+            max(
+                bar.high - bar.low,
+                abs(bar.high - prev_close),
+                abs(bar.low - prev_close),
+            )
+        )
+
+    atr_values: list[float | None] = []
+    for index in range(len(true_ranges)):
+        if index + 1 < period:
+            atr_values.append(None)
+        elif index + 1 == period:
+            atr_values.append(sum(true_ranges[:period]) / period)
+        else:
+            prev_atr = atr_values[-1]
+            if prev_atr is None:
+                return None
+            atr_values.append(((prev_atr * (period - 1)) + true_ranges[index]) / period)
+
+    first_atr_index = next((index for index, value in enumerate(atr_values) if value is not None), None)
+    if first_atr_index is None:
+        return None
+
+    first_bar = bars[first_atr_index]
+    first_atr = atr_values[first_atr_index]
+    if first_atr is None:
+        return None
+    hl2 = (first_bar.high + first_bar.low) / 2
+    final_upper = hl2 + multiplier * first_atr
+    final_lower = hl2 - multiplier * first_atr
+    bullish = first_bar.close >= hl2
+    supertrend = final_lower if bullish else final_upper
+
+    for index in range(first_atr_index + 1, len(bars)):
+        bar = bars[index]
+        atr = atr_values[index]
+        if atr is None:
+            continue
+        basic_upper = ((bar.high + bar.low) / 2) + multiplier * atr
+        basic_lower = ((bar.high + bar.low) / 2) - multiplier * atr
+        prev_close = bars[index - 1].close
+        if basic_upper < final_upper or prev_close > final_upper:
+            final_upper = basic_upper
+        if basic_lower > final_lower or prev_close < final_lower:
+            final_lower = basic_lower
+        if bar.close > final_upper:
+            bullish = True
+        elif bar.close < final_lower:
+            bullish = False
+        supertrend = final_lower if bullish else final_upper
+
+    return supertrend, bullish
 
 
 def _selector_settings() -> Settings:
@@ -234,45 +286,37 @@ def evaluate_symbol(
     price = closes[-1]
     k_values, d_values = _stoch_components(ordered)
     macd_line, signal_line, hist = _macd_components(closes)
-    if len(k_values) < READY_LOOKBACK + 2 or len(hist) < MACD_RISING_LOOKBACK + 1:
-        return None, CandidateReject(symbol, "indicators", "insufficient STOCH/MACD points")
+    ema_confirm_series = _ema_series(closes, DAILY_EMA_CONFIRM)
+    supertrend = _supertrend(ordered)
+    if not k_values or not d_values or not hist or not macd_line or not signal_line or not ema_confirm_series or supertrend is None:
+        return None, CandidateReject(symbol, "indicators", "insufficient daily EMA/SuperTrend/STOCH/MACD points")
 
     _bump("passed_indicator_data")
 
     quality_flags: list[str] = []
     k_now = k_values[-1]
     d_now = d_values[-1]
-    k_prev = k_values[-2]
-    d_prev = d_values[-2]
-    ready_window = k_values[-READY_LOOKBACK:]
-    stoch_min_ready = min(ready_window)
-    had_ready = stoch_min_ready <= READY_OVERSOLD_MAX
-    k_slope = k_now - k_prev
-    stoch_recovery = k_now - stoch_min_ready
-    k_above_d = k_now > d_now
-    crossed_up = k_prev <= d_prev and k_now > d_now
-    pre_buy_zone = had_ready and k_now <= PRE_BUY_K_MAX and k_slope > 0 and (not k_above_d or crossed_up or (k_now - d_now) <= PRE_BUY_D_DISTANCE_MAX)
-    buy_zone = had_ready and k_above_d and k_slope > 0 and k_now <= BUY_MAX_K
-    hot_zone = k_now >= HOT_K_PENALTY_MIN
+    stoch_bullish = k_now > d_now
+    if stoch_bullish:
+        _bump("passed_stoch_bullish")
+    else:
+        quality_flags.append(f"STOCH not bullish k={k_now:.1f} d={d_now:.1f}")
 
-    if had_ready:
-        _bump("passed_ready_washout")
+    ccc = macd_line[-1]
+    macd_signal = signal_line[-1]
+    macd_confirmed = ccc > macd_signal and ccc >= 0
+    if macd_confirmed:
+        _bump("passed_macd_confirmed")
     else:
-        quality_flags.append(f"no recent stochastic washout <= {READY_OVERSOLD_MAX:.1f}")
-    if pre_buy_zone:
-        _bump("passed_pre_buy_zone")
-    elif buy_zone:
-        quality_flags.append("already at buy-zone; lower priority than pre-buy")
-    else:
-        quality_flags.append(f"not curling from ready zone k={k_now:.1f} d={d_now:.1f}")
+        quality_flags.append(f"MACD/CCC not confirmed ccc={ccc:.4f} signal={macd_signal:.4f}")
 
-    hist_improving = _is_improving(hist)
-    macd_line_rising = macd_line[-1] > macd_line[-2]
-    macd_constructive = hist_improving and (hist[-1] > hist[-2]) and (macd_line_rising or hist[-1] > 0)
-    if macd_constructive:
-        _bump("passed_macd_turn")
+    ema_confirm = ema_confirm_series[-1]
+    supertrend_value, supertrend_bullish = supertrend
+    trend_confirmed = supertrend_bullish and ema_confirm > supertrend_value
+    if trend_confirmed:
+        _bump("passed_trend_confirmed")
     else:
-        quality_flags.append("daily MACD not yet improving")
+        quality_flags.append(f"EMA{DAILY_EMA_CONFIRM} not above bullish SuperTrend")
 
     daily_volume_ratio = _daily_volume_ratio(ordered)
     if daily_volume_ratio >= DAILY_VOLUME_RATIO_MIN:
@@ -291,29 +335,24 @@ def evaluate_symbol(
     else:
         quality_flags.append(f"price extension {ema_extension_pct:.2%} > {DAILY_MAX_EMA_EXTENSION_PCT:.2%}")
 
-    setup_stage = "ready_before_buy" if pre_buy_zone else "buy_zone" if buy_zone else "not_ready"
-    ready_score = 22.0 if had_ready else -18.0
-    pre_buy_bonus = 26.0 if pre_buy_zone else 8.0 if buy_zone else -12.0
-    stoch_depth_score = _bounded((READY_OVERSOLD_MAX - stoch_min_ready) * 1.2, low=0.0, high=24.0)
-    stoch_recovery_score = _bounded(stoch_recovery * 0.8, low=0.0, high=24.0)
-    stoch_slope_score = _bounded(k_slope * 2.0, low=-12.0, high=16.0)
-    macd_score = 18.0 if macd_constructive else -12.0
-    hist_growth = hist[-1] - hist[-MACD_RISING_LOOKBACK]
-    hist_growth_score = _bounded((hist_growth / price if price > 0 else 0.0) * 3000.0, low=-10.0, high=18.0)
+    setup_stage = "confirmed_stack" if trend_confirmed and macd_confirmed and stoch_bullish else "not_confirmed"
+    trend_score = 26.0 if trend_confirmed else -18.0
+    macd_score = 26.0 if macd_confirmed else -18.0
+    stoch_score = 18.0 if stoch_bullish else -12.0
+    macd_strength_score = _bounded((ccc / price if price > 0 else 0.0) * 2000.0, low=0.0, high=22.0)
+    hist_score = _bounded((hist[-1] / price if price > 0 else 0.0) * 2000.0, low=-8.0, high=16.0)
+    trend_distance_score = _bounded(((ema_confirm - supertrend_value) / price if price > 0 else 0.0) * 1000.0, low=-12.0, high=18.0)
     volume_score = min(daily_volume_ratio, 3.0) * 4.0
     extension_penalty = max(0.0, ema_extension_pct - DAILY_MAX_EMA_EXTENSION_PCT) * 100.0
-    hot_penalty = 18.0 if hot_zone else 0.0
     score = (
-        ready_score
-        + pre_buy_bonus
-        + stoch_depth_score
-        + stoch_recovery_score
-        + stoch_slope_score
+        trend_score
         + macd_score
-        + hist_growth_score
+        + stoch_score
+        + macd_strength_score
+        + hist_score
+        + trend_distance_score
         + volume_score
         - extension_penalty
-        - hot_penalty
     )
 
     candidate = StochMACDReversalCandidate(
@@ -322,13 +361,12 @@ def evaluate_symbol(
         setup_stage=setup_stage,
         stoch_k=round(k_now, 4),
         stoch_d=round(d_now, 4),
-        stoch_min_ready=round(stoch_min_ready, 4),
-        stoch_recovery=round(stoch_recovery, 4),
-        stoch_k_slope=round(k_slope, 4),
-        daily_macd=round(macd_line[-1], 6),
-        daily_signal=round(signal_line[-1], 6),
+        daily_macd=round(ccc, 6),
+        daily_signal=round(macd_signal, 6),
         daily_hist=round(hist[-1], 6),
-        daily_hist_growth=round(hist_growth, 6),
+        ema_confirm=round(ema_confirm, 4),
+        supertrend=round(supertrend_value, 4),
+        supertrend_bullish=supertrend_bullish,
         daily_volume_ratio=round(daily_volume_ratio, 4),
         ema_fast=round(ema_fast, 4),
         ema_slow=round(ema_slow, 4),
@@ -347,9 +385,9 @@ def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]]) ->
     stage_counts: dict[str, int] = {
         "universe_symbols": len(symbols),
         "passed_indicator_data": 0,
-        "passed_ready_washout": 0,
-        "passed_pre_buy_zone": 0,
-        "passed_macd_turn": 0,
+        "passed_trend_confirmed": 0,
+        "passed_macd_confirmed": 0,
+        "passed_stoch_bullish": 0,
         "passed_volume": 0,
         "passed_not_overextended": 0,
     }
@@ -380,10 +418,9 @@ def deterministic_plan(
             "stoch_period": STOCH_PERIOD,
             "stoch_d_period": STOCH_D_PERIOD,
             "stoch_smooth_k": STOCH_SMOOTH_K,
-            "ready_lookback": READY_LOOKBACK,
-            "ready_oversold_max": READY_OVERSOLD_MAX,
-            "pre_buy_k_max": PRE_BUY_K_MAX,
-            "buy_max_k": BUY_MAX_K,
+            "ema_confirm": DAILY_EMA_CONFIRM,
+            "supertrend_period": SUPERTREND_PERIOD,
+            "supertrend_multiplier": SUPERTREND_MULTIPLIER,
             "daily_volume_ratio_min": DAILY_VOLUME_RATIO_MIN,
             "daily_volume_lookback": DAILY_VOLUME_LOOKBACK,
             "ema_fast": DAILY_EMA_FAST,
@@ -394,12 +431,12 @@ def deterministic_plan(
     return {
         "strategy": strategy,
         "selection_stage": "ranked",
-        "note": "Daily STOCH/MACD ranker: prefers symbols after stochastic ready washout and before intraday buy confirmation.",
+        "note": "Daily STOCH/MACD ranker: scores the same confirmation stack as the handler using daily bars.",
         "symbols": [row.symbol for row in top],
         "ranked": [asdict(row) for row in top],
         "rejected": [asdict(row) for row in rejected],
         "settings": settings,
-        "risk_note": "Selector uses daily bars to build a watchlist; stoch_macd_reversal still waits for minute STOCH/MACD confirmation before trading.",
+        "risk_note": "Selector uses daily bars to build a watchlist; stoch_macd_reversal still waits for minute EMA/SuperTrend/MACD/STOCH confirmation before trading.",
     }
 
 
@@ -409,7 +446,7 @@ def ai_stoch_macd_selection(ranked: list[dict[str, Any]], limit: int) -> dict[st
         "strategy": "stoch_macd_reversal",
         "selection_rules": {
             "must_choose_from_ranked": True,
-            "focus": "prefer ready_before_buy daily setups over already-hot buy-zone names",
+            "focus": "prefer daily EMA/SuperTrend, MACD/CCC, and STOCH confirmation stacks",
         },
         "ranked": ranked,
         "limit": limit,
@@ -466,7 +503,7 @@ def validated_stoch_macd_selection(plan: dict[str, Any], ranked: list[dict[str, 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build stoch_macd_reversal plan from daily ready-before-buy candidates.")
+    parser = argparse.ArgumentParser(description="Build stoch_macd_reversal plan from daily confirmation-stack candidates.")
     parser.add_argument(
         "--universe-file",
         type=Path,
