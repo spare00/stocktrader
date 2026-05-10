@@ -39,6 +39,7 @@ DAILY_VOLUME_RATIO_MIN = 0.8
 DAILY_EMA_FAST = 20
 DAILY_EMA_SLOW = 50
 DAILY_MAX_EMA_EXTENSION_PCT = 0.18
+AI_SCORE_DELTA_LIMIT = 15.0
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -458,7 +459,8 @@ def ai_stoch_macd_selection(ranked: list[dict[str, Any]], limit: int) -> dict[st
             "Choose only from ranked symbols. Do not invent symbols. "
             "Include keys: strategy, adjustments, rejected, risk_note. "
             "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
-            "Keep ai_score_delta bounded between -2.0 and 2.0, and use 0 when no adjustment is needed."
+            f"Keep ai_score_delta bounded between -{AI_SCORE_DELTA_LIMIT:.1f} and {AI_SCORE_DELTA_LIMIT:.1f}, "
+            "and use 0 when no adjustment is needed."
         ),
         payload,
     )
@@ -478,7 +480,7 @@ def validated_stoch_macd_selection(plan: dict[str, Any], ranked: list[dict[str, 
         adjustment = raw_adjustments.get(symbol) or raw_adjustments.get(symbol.lower()) or {}
         if not isinstance(adjustment, dict):
             adjustment = {}
-        ai_delta = max(-2.0, min(2.0, float(adjustment.get("ai_score_delta", 0.0) or 0.0)))
+        ai_delta = max(-AI_SCORE_DELTA_LIMIT, min(AI_SCORE_DELTA_LIMIT, float(adjustment.get("ai_score_delta", 0.0) or 0.0)))
         ai_reason = str(adjustment.get("ai_reason", "")).strip()
         ranked_item = dict(item)
         ranked_item["symbol"] = symbol

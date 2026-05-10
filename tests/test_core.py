@@ -4064,6 +4064,28 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["symbols"][0], "CONFIRMED")
         self.assertEqual(plan["settings"]["filter_thresholds"]["indicator_input"], "daily OHLCV bars")
 
+    def test_stoch_macd_ai_selection_can_reorder_meaningful_score_gap(self):
+        ranked = [
+            {"symbol": "AAPL", "score": 112.0, "setup_stage": "confirmed_stack"},
+            {"symbol": "MSFT", "score": 101.0, "setup_stage": "confirmed_stack"},
+            {"symbol": "NVDA", "score": 70.0, "setup_stage": "not_confirmed"},
+        ]
+        ai_plan = {
+            "adjustments": {
+                "AAPL": {"ai_score_delta": -30.0, "ai_reason": "too extended"},
+                "MSFT": {"ai_score_delta": 30.0, "ai_reason": "cleaner daily stack"},
+                "FAKE": {"ai_score_delta": 15.0, "ai_reason": "not allowed"},
+            },
+            "rejected": ["FAKE"],
+            "risk_note": "bounded test",
+        }
+
+        validated = select_stoch_macd_reversal.validated_stoch_macd_selection(ai_plan, ranked, 2)
+
+        self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
+        self.assertEqual(validated["ranked"][0]["ai_score_delta"], select_stoch_macd_reversal.AI_SCORE_DELTA_LIMIT)
+        self.assertEqual(validated["ranked"][1]["ai_score_delta"], -select_stoch_macd_reversal.AI_SCORE_DELTA_LIMIT)
+
     def test_setup_logging_creates_rotating_log_file(self):
         old_log_dir = trading_main.LOG_DIR
         old_log_file = trading_main.LOG_FILE
