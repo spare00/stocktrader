@@ -61,7 +61,7 @@ class Maha7Candidate:
 def load_universe(path: Path) -> list[str]:
     symbols: list[str] = []
     if not path.exists():
-        raise FileNotFoundError(f"Missing universe file: {path}. Run scripts/select_market_universe.py first.")
+        raise FileNotFoundError(f"Missing universe file: {path}. Run strategy_selectors/select_market_universe.py first.")
 
     text = path.read_text(encoding="utf-8")
     for raw_line in text.splitlines():

@@ -66,7 +66,7 @@ def selector_command_hint(strategy_name: str) -> str:
     cls = STRATEGY_REGISTRY.get(key)
     if cls and cls.selector_command:
         return cls.selector_command
-    return f".venv/bin/python scripts/select_{key}.py"
+    return f".venv/bin/python strategy_selectors/select_{key}.py"
 
 
 def build_strategies(settings: "Settings"):

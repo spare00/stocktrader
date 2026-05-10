@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 from config import Settings, load_settings
 from env_vars import format_symbols_env_line
 from models import Bar, Quote
-from scripts.select_opening_impulse import usable_quote
+from strategy_selectors.select_opening_impulse import usable_quote
 
 
 MARKET_TZ = ZoneInfo("America/New_York")

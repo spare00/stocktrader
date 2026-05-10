@@ -9,7 +9,7 @@ from config import Settings
 from env_vars import EnvSpec, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
-from scripts.select_gap_and_go import (
+from strategy_selectors.select_gap_and_go import (
     latest_valid_quote,
     premarket_high_price,
     premarket_volume_ratio,
@@ -47,7 +47,7 @@ class GapAndGoStrategy(Strategy):
         ("gap_and_go_symbol_loss_lock_count", "GAP_AND_GO_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.gap_and_go",)
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_gap_and_go.py --top 5"
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_gap_and_go.py --top 5"
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:

@@ -63,7 +63,7 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_allow_pullback_reclaim", "STEADY_INTRADAY_ALLOW_PULLBACK_RECLAIM", bool_env, True),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.steady_intraday",)
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_steady_intraday.py --top 12"
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_steady_intraday.py --top 12"
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:

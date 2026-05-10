@@ -10,7 +10,7 @@ from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
-from scripts.select_gap_and_go import latest_valid_quote, regular_bars
+from strategy_selectors.select_gap_and_go import latest_valid_quote, regular_bars
 from strategies.base import Strategy
 
 
@@ -75,7 +75,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.macd_early_impulse",)
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_macd_early_impulse.py --top 12"
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12"
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:

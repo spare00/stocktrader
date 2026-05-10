@@ -31,12 +31,12 @@ SETTING_BOUNDS = {
 # Kept local (no strategies.registry import) so scripts can call this while the
 # registry is still importing strategy modules that depend on this file.
 _SELECTOR_COMMAND_HINTS: dict[str, str] = {
-    "opening_impulse": ".venv/bin/python scripts/select_opening_impulse.py --top 12",
-    "gap_and_go": ".venv/bin/python scripts/select_gap_and_go.py --top 5",
-    "maha7": ".venv/bin/python scripts/select_maha7.py --top 12",
-    "steady_intraday": ".venv/bin/python scripts/select_steady_intraday.py --top 12",
-    "macd_early_impulse": ".venv/bin/python scripts/select_macd_early_impulse.py --top 12",
-    "stoch_macd_reversal": ".venv/bin/python scripts/select_stoch_macd_reversal.py --top 12",
+    "opening_impulse": ".venv/bin/python strategy_selectors/select_opening_impulse.py --top 12",
+    "gap_and_go": ".venv/bin/python strategy_selectors/select_gap_and_go.py --top 5",
+    "maha7": ".venv/bin/python strategy_selectors/select_maha7.py --top 12",
+    "steady_intraday": ".venv/bin/python strategy_selectors/select_steady_intraday.py --top 12",
+    "macd_early_impulse": ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12",
+    "stoch_macd_reversal": ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12",
 }
 
 
@@ -52,7 +52,7 @@ def default_plan_file_for_settings(settings: Settings) -> Path:
 
 def selector_command_for_strategy(strategy_name: str) -> str:
     key = strategy_name.strip().lower()
-    return _SELECTOR_COMMAND_HINTS.get(key, f".venv/bin/python scripts/select_{key}.py")
+    return _SELECTOR_COMMAND_HINTS.get(key, f".venv/bin/python strategy_selectors/select_{key}.py")
 
 
 def load_opening_plan(path: Path) -> dict[str, Any]:

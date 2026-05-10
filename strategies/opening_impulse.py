@@ -128,7 +128,7 @@ class OpeningImpulseStrategy(Strategy):
         ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.opening_impulse",)
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_opening_impulse.py --top 12"
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_opening_impulse.py --top 12"
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:

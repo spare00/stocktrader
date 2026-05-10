@@ -123,31 +123,31 @@ To see what `main.py` can run without checking the code:
 Refresh a broad tradable/liquid universe weekly or periodically. This is the global market-selection stage. It intentionally avoids strategy-specific pattern filtering and only keeps stocks that can realistically be traded intraday:
 
 ```bash
-.venv/bin/python scripts/select_market_universe.py --top 300
+.venv/bin/python strategy_selectors/select_market_universe.py --top 300
 ```
 
 Before each market session, run the selector for the strategy you plan to trade. For `opening_impulse`, rank the broad universe with opening-impulse criteria:
 
 ```bash
-.venv/bin/python scripts/select_opening_impulse.py --top 12
+.venv/bin/python strategy_selectors/select_opening_impulse.py --top 12
 ```
 
 For `maha7`, build the broad universe first, then create a plan from that liquid list:
 
 ```bash
-.venv/bin/python scripts/select_maha7.py --top 12
+.venv/bin/python strategy_selectors/select_maha7.py --top 12
 ```
 
 Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the strategy-specific plan file that `main.py` uses directly:
 
 ```bash
-.venv/bin/python scripts/select_opening_impulse.py --top 12 --use-ai
+.venv/bin/python strategy_selectors/select_opening_impulse.py --top 12 --use-ai
 ```
 
 For `gap_and_go`, use its dedicated selector:
 
 ```bash
-.venv/bin/python scripts/select_gap_and_go.py --top 5
+.venv/bin/python strategy_selectors/select_gap_and_go.py --top 5
 ```
 
 This selector is pre-market only: it ranks symbols using previous-day bars,
@@ -157,7 +157,7 @@ regular-session open or any post-open breakout behavior.
 For `stoch_macd_reversal`, build a daily confirmation-stack watchlist:
 
 ```bash
-.venv/bin/python scripts/select_stoch_macd_reversal.py --top 12
+.venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12
 ```
 
 This selector uses daily OHLCV bars to rank the same confirmation stack used by
@@ -168,7 +168,7 @@ confirmation before entering.
 It also supports an embedded AI refinement pass:
 
 ```bash
-.venv/bin/python scripts/select_gap_and_go.py --top 5 --use-ai
+.venv/bin/python strategy_selectors/select_gap_and_go.py --top 5 --use-ai
 ```
 
 Run the monitor with keys from `.env` and tunables from `profiles/paper.env`:
@@ -226,19 +226,19 @@ The `data/` files act like embedded memory for the workflow. The broad market se
 By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
 
 ```bash
-.venv/bin/python scripts/select_opening_impulse.py --days 10 --opening-minutes 30 --top 12
+.venv/bin/python strategy_selectors/select_opening_impulse.py --days 10 --opening-minutes 30 --top 12
 ```
 
 The minimum expected opening fluctuation follows the configured profit target automatically: `min_opening_range_pct = TARGET_PROFIT_PCT + min(TARGET_PROFIT_PCT, opening_range_buffer_pct)`. With the default `TARGET_PROFIT_PCT=0.01` and `--opening-range-buffer-pct 0.01`, candidates need about a `2%` median opening-window range. A larger target adds the same cushion instead of doubling without limit. Override it only when you intentionally want a different screen:
 
 ```bash
-.venv/bin/python scripts/select_opening_impulse.py --min-opening-range-pct 0.015
+.venv/bin/python strategy_selectors/select_opening_impulse.py --min-opening-range-pct 0.015
 ```
 
 By default candidates must also show either a short recent daily uptrend or a bottom-reversal pattern. The screen now requires a basic opening follow-through profile too: non-negative median opening-window close movement, at least `0.1` median close/high capture, and at least half of sampled openings closing above the opening price. This keeps the output focused on names that have historically converted opening attention into follow-through instead of only early wick volatility. Override those gates only when you intentionally want to study spike-and-fade behavior:
 
 ```bash
-.venv/bin/python scripts/select_opening_impulse.py --min-close-capture-ratio 0 --min-positive-close-day-ratio 0 --min-median-opening-close-bps -100
+.venv/bin/python strategy_selectors/select_opening_impulse.py --min-close-capture-ratio 0 --min-positive-close-day-ratio 0 --min-median-opening-close-bps -100
 ```
 
 ## Test

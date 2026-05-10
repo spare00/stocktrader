@@ -47,16 +47,16 @@ def _without_plan_setting_env():
         os.environ.update(saved)
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown
-import scripts.select_market_universe as select_market_universe
+import strategy_selectors.select_market_universe as select_market_universe
 import scripts.analyze_trade_journal as analyze_trade_journal
-import scripts.select_gap_and_go as select_gap_and_go
-import scripts.select_maha7 as select_maha7
-import scripts.select_macd_early_impulse as select_macd_early_impulse
-import scripts.select_stoch_macd_reversal as select_stoch_macd_reversal
-from scripts.select_market_universe import daily_metrics, score_symbol
-import scripts.select_opening_impulse as select_opening_impulse
-import scripts.select_steady_intraday as select_steady_intraday
-from scripts.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
+import strategy_selectors.select_gap_and_go as select_gap_and_go
+import strategy_selectors.select_maha7 as select_maha7
+import strategy_selectors.select_macd_early_impulse as select_macd_early_impulse
+import strategy_selectors.select_stoch_macd_reversal as select_stoch_macd_reversal
+from strategy_selectors.select_market_universe import daily_metrics, score_symbol
+import strategy_selectors.select_opening_impulse as select_opening_impulse
+import strategy_selectors.select_steady_intraday as select_steady_intraday
+from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
@@ -386,19 +386,19 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(default_plan_file_for_strategy("steady_intraday"), Path("data/steady_intraday_plan.json"))
         self.assertEqual(
             selector_command_for_strategy("gap_and_go"),
-            ".venv/bin/python scripts/select_gap_and_go.py --top 5",
+            ".venv/bin/python strategy_selectors/select_gap_and_go.py --top 5",
         )
         self.assertEqual(
             selector_command_for_strategy("maha7"),
-            ".venv/bin/python scripts/select_maha7.py --top 12",
+            ".venv/bin/python strategy_selectors/select_maha7.py --top 12",
         )
         self.assertEqual(
             selector_command_for_strategy("steady_intraday"),
-            ".venv/bin/python scripts/select_steady_intraday.py --top 12",
+            ".venv/bin/python strategy_selectors/select_steady_intraday.py --top 12",
         )
         self.assertEqual(
             selector_command_for_strategy("stoch_macd_reversal"),
-            ".venv/bin/python scripts/select_stoch_macd_reversal.py --top 12",
+            ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -3026,7 +3026,7 @@ class CoreTradingTests(unittest.TestCase):
     def test_maha7_ai_selection_parses_json_response(self):
         ranked = [{"symbol": "AAPL", "score": 7.2, "selection_stage": "intraday"}]
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
-        with patch("scripts.select_maha7.request_json_response", return_value='{"strategy":"maha7","adjustments":{}}'):
+        with patch("strategy_selectors.select_maha7.request_json_response", return_value='{"strategy":"maha7","adjustments":{}}'):
             result = select_maha7.ai_maha7_selection(settings, ranked, limit=1)
         self.assertEqual(result["strategy"], "maha7")
 
@@ -4644,7 +4644,7 @@ class CoreTradingTests(unittest.TestCase):
         )
 
         self.assertIn("Strategy plan is not ready", guide)
-        self.assertIn(".venv/bin/python scripts/select_maha7.py --top 12", guide)
+        self.assertIn(".venv/bin/python strategy_selectors/select_maha7.py --top 12", guide)
         self.assertIn("scripts/run_paper.sh -s maha7", guide)
 
     def test_risk_rejects_entries_outside_regular_market_hours(self):

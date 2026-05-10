@@ -74,7 +74,7 @@ def load_universe(path: Path | None, raw_symbols: str = "") -> list[str]:
                 if symbol:
                     symbols.append(symbol)
     else:
-        raise FileNotFoundError(f"Missing universe file: {path}. Run scripts/select_market_universe.py first.")
+        raise FileNotFoundError(f"Missing universe file: {path}. Run strategy_selectors/select_market_universe.py first.")
     return list(dict.fromkeys(symbols))
 
 

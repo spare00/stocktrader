@@ -91,7 +91,7 @@ class Maha7Strategy(Strategy):
         ("maha7_disable_ma7_exit", "MAHA7_DISABLE_MA7_EXIT", bool_env, False),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.maha7",)
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_maha7.py --top 12"
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_maha7.py --top 12"
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:

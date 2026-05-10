@@ -10,7 +10,7 @@ from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
-from scripts.select_gap_and_go import latest_valid_quote, regular_bars
+from strategy_selectors.select_gap_and_go import latest_valid_quote, regular_bars
 from strategies.base import Strategy
 from strategies.macd_early_impulse import _ema_series
 
@@ -48,7 +48,7 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.stoch_macd_reversal",)
-    selector_command: ClassVar[str] = ".venv/bin/python scripts/select_stoch_macd_reversal.py --top 12"
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12"
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
