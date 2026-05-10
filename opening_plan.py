@@ -36,6 +36,7 @@ _SELECTOR_COMMAND_HINTS: dict[str, str] = {
     "maha7": ".venv/bin/python scripts/select_maha7.py --top 12",
     "steady_intraday": ".venv/bin/python scripts/select_steady_intraday.py --top 12",
     "macd_early_impulse": ".venv/bin/python scripts/select_macd_early_impulse.py --top 12",
+    "stoch_macd_reversal": ".venv/bin/python scripts/select_stoch_macd_reversal.py --top 12",
 }
 
 

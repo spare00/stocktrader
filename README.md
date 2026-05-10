@@ -69,8 +69,9 @@ Strategies:
 - `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold
+- `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when EMA 5 is above SuperTrend (7,3), MACD/CCC is above signal and non-negative, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
 
-Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7`.
+Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal`.
 When running `main.py`, you can also override that directly with `--strategy`.
 
 Strategy entry windows are configured independently, in minutes from the
@@ -81,6 +82,7 @@ minutes. Supported window variables:
 - `OPENING_IMPULSE_START_MINUTE` / `OPENING_IMPULSE_END_MINUTE`
 - `GAP_AND_GO_START_MINUTE` / `GAP_AND_GO_END_MINUTE`
 - `MAHA7_START_MINUTE` / `MAHA7_END_MINUTE` (defaults to `30` / `300`, or `10:00` / `14:30` ET)
+- `STOCH_MACD_START_MINUTE` / `STOCH_MACD_END_MINUTE`
 - `SPIKE_START_MINUTE` / `SPIKE_END_MINUTE` (unset by default, so spike has no strategy-specific window)
 
 MAHA7 also supports `MAHA7_TREND_MIN_BARS` defaulting to `3`,
@@ -151,6 +153,17 @@ For `gap_and_go`, use its dedicated selector:
 This selector is pre-market only: it ranks symbols using previous-day bars,
 premarket bars, and the current premarket quote. It does not depend on the
 regular-session open or any post-open breakout behavior.
+
+For `stoch_macd_reversal`, build a daily ready-before-buy watchlist:
+
+```bash
+.venv/bin/python scripts/select_stoch_macd_reversal.py --top 12
+```
+
+This selector uses daily OHLCV bars to rank symbols that have already reached
+the STOCH ready stage and are curling toward, but ideally not yet past, the
+intraday buy stage. The live strategy still waits for minute STOCH/MACD
+confirmation before entering.
 
 It also supports an embedded AI refinement pass:
 

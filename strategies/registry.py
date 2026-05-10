@@ -11,11 +11,13 @@ from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 from strategies.steady_intraday import SteadyIntradayStrategy
+from strategies.stoch_macd_reversal import StochMACDReversalStrategy
 
 # Registration order (used by available_strategy_names); lookup is by `name`.
 _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     GapAndGoStrategy,
     MACDEarlyImpulseStrategy,
+    StochMACDReversalStrategy,
     Maha7Strategy,
     SteadyIntradayStrategy,
     SpikeStrategy,

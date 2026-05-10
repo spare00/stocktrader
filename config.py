@@ -233,6 +233,23 @@ class Settings:
     macd_early_impulse_max_trades_per_symbol_per_session: int = 1
     macd_early_impulse_symbol_loss_lock_count: int = 1
 
+    stoch_macd_start_minute: int = 0
+    stoch_macd_end_minute: int = 360
+    stoch_macd_min_bars: int = 35
+    stoch_macd_ema_period: int = 5
+    stoch_macd_supertrend_enabled: bool = True
+    stoch_macd_supertrend_period: int = 7
+    stoch_macd_supertrend_multiplier: float = 3.0
+    stoch_macd_min_volume_ratio: float = 0.65
+    stoch_macd_max_spread_bps: float = 18.0
+    stoch_macd_stop_loss_pct: float = 0.0045
+    stoch_macd_target_profit_pct: float = 0.012
+    stoch_macd_trailing_activation_pct: float = 0.004
+    stoch_macd_trailing_stop_pct: float = 0.005
+    stoch_macd_min_hold_seconds: int = 30
+    stoch_macd_max_trades_per_symbol_per_session: int = 2
+    stoch_macd_symbol_loss_lock_count: int = 1
+
     ai_review: bool = False
     news_hot_positive_only: bool = True
     news_hot_min_sentiment_score: float = 0.5

@@ -52,6 +52,7 @@ import scripts.analyze_trade_journal as analyze_trade_journal
 import scripts.select_gap_and_go as select_gap_and_go
 import scripts.select_maha7 as select_maha7
 import scripts.select_macd_early_impulse as select_macd_early_impulse
+import scripts.select_stoch_macd_reversal as select_stoch_macd_reversal
 from scripts.select_market_universe import daily_metrics, score_symbol
 import scripts.select_opening_impulse as select_opening_impulse
 import scripts.select_steady_intraday as select_steady_intraday
@@ -63,6 +64,7 @@ from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 from strategies.steady_intraday import SteadyIntradayStrategy
+from strategies.stoch_macd_reversal import StochMACDReversalStrategy
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -393,6 +395,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(
             selector_command_for_strategy("steady_intraday"),
             ".venv/bin/python scripts/select_steady_intraday.py --top 12",
+        )
+        self.assertEqual(
+            selector_command_for_strategy("stoch_macd_reversal"),
+            ".venv/bin/python scripts/select_stoch_macd_reversal.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -4007,6 +4013,55 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["selection_stage"], "ranked")
         self.assertEqual(plan["symbols"], ["ZERO", "TURN"])
 
+    def test_stoch_macd_selector_prefers_daily_ready_before_buy(self):
+        def daily_bars_from_closes(symbol: str, closes: list[float]) -> list[Bar]:
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars: list[Bar] = []
+            for index, close in enumerate(closes):
+                previous = closes[index - 1] if index else close
+                high = max(close, previous) * 1.012
+                low = min(close, previous) * 0.988
+                volume = 2_000_000 if index == len(closes) - 1 else 1_000_000
+                bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
+            return bars
+
+        base = [100 + index * 0.08 for index in range(35)]
+        ready = base + [102, 100, 98, 96, 94, 92, 90, 88, 87, 86, 86.5, 87.2, 88.2, 89.4, 90.8]
+        hot = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 108, 113]
+        stale = base + [102, 101.8, 101.6, 101.5, 101.4, 101.3, 101.2, 101.1, 101.0, 100.9, 100.8, 100.7]
+
+        candidates, rejected, stage_counts = select_stoch_macd_reversal.rank_candidates(
+            ["READY", "HOT", "STALE"],
+            {
+                "READY": daily_bars_from_closes("READY", ready),
+                "HOT": daily_bars_from_closes("HOT", hot),
+                "STALE": daily_bars_from_closes("STALE", stale),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        self.assertEqual(rejected, [])
+        self.assertEqual(selected["READY"].setup_stage, "ready_before_buy")
+        self.assertLessEqual(selected["READY"].stoch_min_ready, select_stoch_macd_reversal.READY_OVERSOLD_MAX)
+        self.assertGreater(selected["READY"].stoch_k_slope, 0)
+        self.assertEqual(selected["HOT"].setup_stage, "not_ready")
+        self.assertGreater(selected["HOT"].stoch_k, select_stoch_macd_reversal.BUY_MAX_K)
+        self.assertGreater(selected["READY"].score, selected["HOT"].score)
+        self.assertGreater(selected["READY"].score, selected["STALE"].score)
+        self.assertGreaterEqual(stage_counts["passed_ready_washout"], 2)
+        self.assertEqual(stage_counts["passed_pre_buy_zone"], 1)
+
+        plan = select_stoch_macd_reversal.deterministic_plan(
+            candidates,
+            rejected,
+            "stoch_macd_reversal",
+            2,
+            filter_stage_counts=stage_counts,
+        )
+        self.assertEqual(plan["strategy"], "stoch_macd_reversal")
+        self.assertEqual(plan["symbols"][0], "READY")
+        self.assertEqual(plan["settings"]["filter_thresholds"]["indicator_input"], "daily OHLCV bars")
+
     def test_setup_logging_creates_rotating_log_file(self):
         old_log_dir = trading_main.LOG_DIR
         old_log_file = trading_main.LOG_FILE
@@ -4385,7 +4440,15 @@ class CoreTradingTests(unittest.TestCase):
     def test_available_strategy_names_lists_registry_order(self):
         self.assertEqual(
             available_strategy_names(),
-            ["gap_and_go", "macd_early_impulse", "maha7", "steady_intraday", "spike", "opening_impulse"],
+            [
+                "gap_and_go",
+                "macd_early_impulse",
+                "stoch_macd_reversal",
+                "maha7",
+                "steady_intraday",
+                "spike",
+                "opening_impulse",
+            ],
         )
 
     def test_steady_intraday_emits_pullback_reclaim_signal(self):
@@ -4898,6 +4961,227 @@ class CoreTradingTests(unittest.TestCase):
         ):
             add_bar(*row)
         return state
+
+    def _stoch_macd_state(self, closes: list[float] | None = None, *, symbol: str = "AAPL") -> SymbolState:
+        closes = closes or [
+            100.0,
+            99.8,
+            99.6,
+            99.4,
+            99.2,
+            99.0,
+            98.8,
+            98.6,
+            98.4,
+            98.2,
+            98.0,
+            97.8,
+            97.6,
+            97.4,
+            97.2,
+            97.0,
+            96.8,
+            96.6,
+            96.4,
+            96.2,
+            96.0,
+            95.8,
+            95.6,
+            95.4,
+            95.2,
+            95.0,
+            94.8,
+            94.6,
+            94.4,
+            94.2,
+            94.0,
+            93.9,
+            93.8,
+            93.7,
+            93.6,
+            93.8,
+            94.1,
+            94.5,
+            95.0,
+            95.6,
+        ]
+        state = SymbolState(symbol)
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    symbol=symbol,
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=120_000 if index == len(closes) - 1 else 100_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        last = closes[-1]
+        state.update_quote(Quote(symbol, last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
+        return state
+
+    def test_stoch_macd_reversal_emits_buy_on_confirmed_indicator_stack(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([70.0, 96.3], [68.0, 80.97]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.01, 0.01],
+                [-0.02, -0.01],
+                [0.01, 0.02],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "stoch_macd_reversal")
+        self.assertEqual(signal.side, "BUY")
+        self.assertIn("confirmed trend", signal.reason)
+        self.assertLess(signal.stop_price, signal.price)
+        self.assertEqual(signal.position_size_multiplier, 0.8)
+
+    def test_stoch_macd_reversal_rejects_without_bullish_stoch(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([70.0, 75.0], [72.0, 80.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.01, 0.02],
+                [0.00, 0.01],
+                [0.01, 0.01],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(94.0, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=95.0,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_rejects_bearish_supertrend_bounce(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
+        state = self._stoch_macd_state(closes)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=(
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 30.0, 36.0, 42.0],
+                [46.0, 38.0, 28.0, 18.0, 15.0, 17.0, 21.0, 27.0, 33.0, 39.0],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.01, 0.02],
+                [0.00, 0.01],
+                [0.01, 0.01],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
+        state = self._stoch_macd_state(closes)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=(
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 30.0, 36.0, 42.0],
+                [46.0, 38.0, 28.0, 18.0, 15.0, 17.0, 21.0, 27.0, 33.0, 39.0],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.01, 0.02],
+                [0.00, 0.01],
+                [0.01, 0.01],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+
+    def test_stoch_macd_reversal_exits_on_bearish_indicator_stack(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_min_hold_seconds=0)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [100.0 + index * 0.2 for index in range(35)] + [107.2, 107.4, 107.5, 107.45, 107.35]
+        state = self._stoch_macd_state(closes)
+        position = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=10,
+            entry_price=106.5,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=107.5,
+            stop_price=105.5,
+            max_price=107.6,
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([90.0, 70.0], [85.0, 75.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.02, 0.00],
+                [0.01, 0.01],
+                [0.01, -0.01],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(107.0, False),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=106.8,
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "stoch_macd indicator sell")
 
     @staticmethod
     def _maha7_selector_bars(symbol: str, base: float, start_ms: int, final_pullback: bool, volume: float) -> list[Bar]:
