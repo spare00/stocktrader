@@ -15,7 +15,7 @@ from ai_agent import SignalReviewer
 from alpaca_stream import AlpacaStreamAuthError, AlpacaStreamConnectionLimitError, build_market_data_stream
 from alpaca_client import get_latest_quotes, get_recent_bars
 from candle import SymbolState
-from config import load_settings
+from config import Settings, load_settings
 from execution import build_executor
 from market_hours import is_regular_market_time
 from modules.news_listener import NewsListener
@@ -471,8 +471,34 @@ def load_opening_universe_symbols(path: Path = OPENING_UNIVERSE_FILE) -> list[st
     return list(dict.fromkeys(symbols))
 
 
+def hydrate_symbols_from_strategy_plans(settings: Settings) -> Settings:
+    """When SYMBOLS is unset/empty, union tickers from each active strategy's ``data/<strategy>_plan.json`` if present."""
+    if settings.symbols:
+        return settings
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw_name in settings.strategy_names:
+        path = default_plan_file_for_strategy(raw_name.strip().lower())
+        if not path.exists():
+            continue
+        plan = load_opening_plan(path)
+        for sym in parse_plan_symbols(plan):
+            if sym not in seen:
+                seen.add(sym)
+                merged.append(sym)
+    if not merged:
+        return settings
+    return replace(settings, symbols=merged)
+
+
 def expand_symbols_for_macd(settings):
     if "macd_early_impulse" not in settings.strategy_names:
+        return settings
+    # Respect SYMBOLS when it names an explicit watchlist (same rule as opening_plan).
+    # Otherwise MACD would merge opening_universe.txt / defaults on top of e.g. SYMBOLS=INTC for mock tests.
+    if symbols_env_blocks_plan():
+        return settings
+    if not settings.symbols:
         return settings
     opening_universe = load_opening_universe_symbols()
     macd_universe = opening_universe or list(MACD_DEFAULT_UNIVERSE)
@@ -659,7 +685,15 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 print(strategy_plan_guide(opening_plan_path, plan_strategy, retry_exc), file=sys.stderr)
                 raise SystemExit(2) from None
         settings = apply_opening_plan(settings, opening_plan_path)
+    settings = hydrate_symbols_from_strategy_plans(settings)
     settings = expand_symbols_for_macd(settings)
+    if not settings.symbols:
+        print(
+            "No symbols to trade: set SYMBOLS in `.env`/your profile, or add symbols under "
+            "data/<strategy>_plan.json for each active strategy (see strategies registry).",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     log_file = strategy_log_file(settings)
     setup_logging(log_file, settings.strategy_names)
     if opening_plan_path is not None:

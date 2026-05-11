@@ -34,7 +34,7 @@ class Settings:
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.4-mini"
 
-    symbols: list[str] = field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "TSLA", "META"])
+    symbols: list[str] = field(default_factory=list)
 
     gap_and_go_start_minute: int = 0
     gap_and_go_end_minute: int = 30
@@ -259,11 +259,6 @@ class Settings:
     news_listener_symbol_cooldown_seconds: int = 120
 
 
-# Used by load_settings and opening_plan: same list must stay in sync.
-DEFAULT_SYMBOLS_CSV = "AAPL,MSFT,NVDA,TSLA,META"
-DEFAULT_SYMBOLS_SET = frozenset(s.strip().upper() for s in DEFAULT_SYMBOLS_CSV.split(",") if s.strip())
-
-
 COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_api_key", "ALPACA_API_KEY", _str_env, None),
     ("alpaca_secret_key", "ALPACA_SECRET_KEY", _str_env, None),
@@ -277,7 +272,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("execution_mode", "EXECUTION_MODE", _lower_env, "local"),
     ("openai_api_key", "OPENAI_API_KEY", _str_env, None),
     ("openai_model", "OPENAI_MODEL", _str_env, "gpt-5.4-mini"),
-    ("symbols", "SYMBOLS", _csv_env, DEFAULT_SYMBOLS_CSV),
+    ("symbols", "SYMBOLS", _csv_env, ""),
     ("target_profit_pct", "TARGET_PROFIT_PCT", _float_env, 0.01),
     ("stop_loss_pct", "STOP_LOSS_PCT", _float_env, 0.005),
     ("max_hold_seconds", "MAX_HOLD_SECONDS", _int_env, 120),
@@ -333,8 +328,6 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
     if not validate:
         return settings
 
-    if not settings.symbols:
-        raise ValueError("SYMBOLS must include at least one ticker.")
     if strategy_names is None and not settings.strategy_names:
         raise ValueError("STRATEGIES must include at least one strategy.")
     if not settings.alpaca_api_key or not settings.alpaca_secret_key:

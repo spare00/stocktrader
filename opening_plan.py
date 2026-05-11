@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from config import DEFAULT_SYMBOLS_SET, Settings
+from config import Settings
 
 
 DEFAULT_OPENING_PLAN_FILE = Path("data/opening_impulse_plan.json")
@@ -60,16 +60,12 @@ def load_opening_plan(path: Path) -> dict[str, Any]:
 
 
 def symbols_env_blocks_plan() -> bool:
-    """True when SYMBOLS was set to an explicit non-default list (overrides plan tickers)."""
+    """True when SYMBOLS names at least one ticker (watchlist overrides strategy plan files)."""
     raw = os.getenv("SYMBOLS")
     if raw is None or not raw.strip():
         return False
     tickers = frozenset(part.strip().upper() for part in raw.split(",") if part.strip())
-    if not tickers:
-        return False
-    if tickers == DEFAULT_SYMBOLS_SET:
-        return False
-    return True
+    return bool(tickers)
 
 
 def parse_plan_symbols(plan: dict[str, Any]) -> list[str]:
@@ -95,7 +91,7 @@ def bounded_int(value: Any, low: int, high: int) -> int:
 def plan_overrides(settings: Settings, plan: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     symbols = parse_plan_symbols(plan)
-    # Plan tickers apply unless SYMBOLS names a non-default list (see symbols_env_blocks_plan).
+    # Plan tickers apply unless SYMBOLS names an explicit watchlist (see symbols_env_blocks_plan).
     if symbols and not symbols_env_blocks_plan():
         overrides["symbols"] = symbols
 

@@ -358,18 +358,16 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(updated.symbols, ["RIG"])
 
-    def test_opening_plan_applies_when_symbols_env_is_default_placeholder_list(self):
-        """Copied .env often sets SYMBOLS to the same default CSV as config — plan should still win."""
-        from config import DEFAULT_SYMBOLS_CSV
-
+    def test_opening_plan_applies_when_symbols_env_empty_allows_plan(self):
+        """When SYMBOLS is unset/empty, plan tickers apply."""
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
-            symbols=["AAPL"],
+            symbols=[],
         )
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             "os.environ",
-            {"SYMBOLS": DEFAULT_SYMBOLS_CSV},
+            {"SYMBOLS": ""},
             clear=False,
         ):
             path = Path(tmpdir) / "opening_plan.json"
@@ -378,6 +376,57 @@ class CoreTradingTests(unittest.TestCase):
             updated = apply_opening_plan(settings, path)
 
         self.assertEqual(updated.symbols, ["INTC", "PANW"])
+
+    def test_expand_symbols_for_macd_skips_merge_when_symbols_env_blocks_plan(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["INTC"],
+            strategy_names=["macd_early_impulse"],
+        )
+        with patch.dict(os.environ, {"SYMBOLS": "INTC"}, clear=False), patch(
+            "main.load_opening_universe_symbols",
+            return_value=["AAPL", "MSFT"],
+        ):
+            updated = trading_main.expand_symbols_for_macd(settings)
+        self.assertEqual(updated.symbols, ["INTC"])
+
+    def test_expand_symbols_for_macd_merges_when_watchlist_not_env_blocked(self):
+        """MACD merges opening universe when SYMBOLS does not name an explicit override."""
+        base_syms = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=list(base_syms),
+            strategy_names=["macd_early_impulse"],
+        )
+        with patch.dict(os.environ, {"SYMBOLS": ""}, clear=False), patch(
+            "main.load_opening_universe_symbols",
+            return_value=["ZZTOP"],
+        ):
+            updated = trading_main.expand_symbols_for_macd(settings)
+        self.assertIn("ZZTOP", updated.symbols)
+        self.assertEqual(len(updated.symbols), len(set(base_syms + ["ZZTOP"])))
+
+    def test_hydrate_symbols_from_strategy_plans_unions_plan_files(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[],
+            strategy_names=["maha7", "gap_and_go"],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "maha7_plan.json").write_text('{"symbols":["AAA","BBB"]}')
+            (data_dir / "gap_and_go_plan.json").write_text('{"symbols":["BBB","CCC"]}')
+
+            def fake_plan_path(name: str) -> Path:
+                return Path(tmpdir) / "data" / f"{name.strip().lower()}_plan.json"
+
+            with patch.object(trading_main, "default_plan_file_for_strategy", side_effect=fake_plan_path):
+                updated = trading_main.hydrate_symbols_from_strategy_plans(settings)
+        self.assertEqual(updated.symbols, ["AAA", "BBB", "CCC"])
 
     def test_default_opening_plan_path_is_strategy_specific(self):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
@@ -4501,6 +4550,7 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
+            symbols=["NVDA"],
             strategy_names=["steady_intraday"],
         )
         strategy = SteadyIntradayStrategy(settings)
