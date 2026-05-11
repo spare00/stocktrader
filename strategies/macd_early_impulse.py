@@ -145,7 +145,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             return None
 
         if not self.is_symbol_allowed(state.symbol):
-            return self._reject(state, "symbol", "symbol not in selected MACD universe")
+            return None
 
         if not self._within_entry_window(state.last_event_ms):
             return None
