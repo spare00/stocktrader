@@ -45,6 +45,8 @@ class SpikeStrategy(Strategy):
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "bar":
             return None
+        if not self.is_symbol_allowed(state.symbol):
+            return None
 
         lookback = self.settings.spike_lookback_seconds
         threshold_ms = state.bars[-1].end_ms - (lookback * 1000)

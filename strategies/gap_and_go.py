@@ -123,8 +123,7 @@ class GapAndGoStrategy(Strategy):
             )
 
     def evaluate(self, state: SymbolState) -> Signal | None:
-        # Only trade symbols chosen by the selector (plan / SYMBOLS watchlist).
-        if state.symbol not in self.settings.symbols:
+        if not self.is_symbol_allowed(state.symbol):
             return None
         if state.last_event_kind not in {"quote", "bar"}:
             return None

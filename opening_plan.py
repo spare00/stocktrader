@@ -60,7 +60,7 @@ def load_opening_plan(path: Path) -> dict[str, Any]:
 
 
 def symbols_env_blocks_plan() -> bool:
-    """True when SYMBOLS names at least one ticker (watchlist overrides strategy plan files)."""
+    """True when legacy plan application should not copy plan tickers into Settings.symbols."""
     raw = os.getenv("SYMBOLS")
     if raw is None or not raw.strip():
         return False
@@ -91,7 +91,7 @@ def bounded_int(value: Any, low: int, high: int) -> int:
 def plan_overrides(settings: Settings, plan: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     symbols = parse_plan_symbols(plan)
-    # Plan tickers apply unless SYMBOLS names an explicit watchlist (see symbols_env_blocks_plan).
+    # Legacy helper: main.py now keeps plan tickers strategy-local instead.
     if symbols and not symbols_env_blocks_plan():
         overrides["symbols"] = symbols
 

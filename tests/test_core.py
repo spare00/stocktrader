@@ -377,56 +377,43 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(updated.symbols, ["INTC", "PANW"])
 
-    def test_expand_symbols_for_macd_skips_merge_when_symbols_env_blocks_plan(self):
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            symbols=["INTC"],
-            strategy_names=["macd_early_impulse"],
-        )
-        with patch.dict(os.environ, {"SYMBOLS": "INTC"}, clear=False), patch(
-            "main.load_opening_universe_symbols",
-            return_value=["AAPL", "MSFT"],
-        ):
-            updated = trading_main.expand_symbols_for_macd(settings)
-        self.assertEqual(updated.symbols, ["INTC"])
-
-    def test_expand_symbols_for_macd_merges_when_watchlist_not_env_blocked(self):
-        """MACD merges opening universe when SYMBOLS does not name an explicit override."""
-        base_syms = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            symbols=list(base_syms),
-            strategy_names=["macd_early_impulse"],
-        )
-        with patch.dict(os.environ, {"SYMBOLS": ""}, clear=False), patch(
-            "main.load_opening_universe_symbols",
-            return_value=["ZZTOP"],
-        ):
-            updated = trading_main.expand_symbols_for_macd(settings)
-        self.assertIn("ZZTOP", updated.symbols)
-        self.assertEqual(len(updated.symbols), len(set(base_syms + ["ZZTOP"])))
-
-    def test_hydrate_symbols_from_strategy_plans_unions_plan_files(self):
+    def test_empty_global_symbols_can_run_with_strategy_local_plan_symbols(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=[],
-            strategy_names=["maha7", "gap_and_go"],
+            strategy_names=["steady_intraday"],
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir) / "data"
-            data_dir.mkdir(parents=True)
-            (data_dir / "maha7_plan.json").write_text('{"symbols":["AAA","BBB"]}')
-            (data_dir / "gap_and_go_plan.json").write_text('{"symbols":["BBB","CCC"]}')
+            plan_path = Path(tmpdir) / "steady_intraday_plan.json"
+            plan_path.write_text('{"symbols":["AAA","BBB"]}')
 
-            def fake_plan_path(name: str) -> Path:
-                return Path(tmpdir) / "data" / f"{name.strip().lower()}_plan.json"
+            with patch.object(trading_main, "default_plan_file_for_strategy", return_value=plan_path):
+                strategy_symbols = trading_main.load_strategy_local_symbols(settings)
 
-            with patch.object(trading_main, "default_plan_file_for_strategy", side_effect=fake_plan_path):
-                updated = trading_main.hydrate_symbols_from_strategy_plans(settings)
-        self.assertEqual(updated.symbols, ["AAA", "BBB", "CCC"])
+        initial_symbols = sorted(set(settings.symbols).union(*(set(symbols) for symbols in strategy_symbols.values())))
+        self.assertEqual(settings.symbols, [])
+        self.assertEqual(strategy_symbols, {"steady_intraday": ["AAA", "BBB"]})
+        self.assertEqual(initial_symbols, ["AAA", "BBB"])
+
+    def test_explicit_plan_path_loads_single_strategy_local_symbols(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[],
+            strategy_names=["macd_early_impulse"],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "macd_plan.json"
+            plan_path.write_text('{"symbols":["MSFT","NVDA"]}')
+
+            strategy_symbols = trading_main.load_strategy_local_symbols(
+                settings,
+                {"macd_early_impulse": plan_path},
+            )
+
+        self.assertEqual(settings.symbols, [])
+        self.assertEqual(strategy_symbols, {"macd_early_impulse": ["MSFT", "NVDA"]})
 
     def test_default_opening_plan_path_is_strategy_specific(self):
         self.assertEqual(DEFAULT_OPENING_PLAN_FILE, Path("data/opening_impulse_plan.json"))
@@ -4319,13 +4306,17 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(trading_main.should_expand_symbols_from_news(open_event))
         self.assertFalse(trading_main.should_expand_symbols_from_news(premarket_event))
 
-    def test_symbol_manager_adds_news_symbol_to_active_strategy_watchlist(self):
+    def test_symbol_manager_adds_news_symbol_to_global_universe(self):
         class Stream:
             def __init__(self):
                 self.symbols = []
+                self.removed = []
 
             def add_symbol(self, symbol):
                 self.symbols.append(symbol)
+
+            def remove_symbol(self, symbol):
+                self.removed.append(symbol)
 
         settings = Settings(
             alpaca_api_key="test",
@@ -4343,7 +4334,40 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(added)
         self.assertIn("MCHP", states)
         self.assertEqual(stream.symbols, ["MCHP"])
-        self.assertEqual(strategy.settings.symbols, ["AAPL", "MCHP"])
+        self.assertEqual(strategy.settings.symbols, ["AAPL"])
+        self.assertIn("MCHP", strategy.allowed_symbols)
+        self.assertEqual(manager.symbol_refcount_for("MCHP"), 1)
+
+    def test_symbol_manager_keeps_shared_stream_until_last_owner_removes_symbol(self):
+        class Stream:
+            def __init__(self):
+                self.added = []
+                self.removed = []
+
+            def add_symbol(self, symbol):
+                self.added.append(symbol)
+
+            def remove_symbol(self, symbol):
+                self.removed.append(symbol)
+
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=[], strategy_names=["maha7"])
+        strategy = Maha7Strategy(settings)
+        states = {}
+        stream = Stream()
+        manager = SymbolManager(states, stream, [strategy])
+
+        manager.add_global_symbols(["TSLA"])
+        manager.register_strategy_symbols("maha7", ["TSLA"])
+        self.assertEqual(manager.symbol_refcount_for("TSLA"), 2)
+        self.assertEqual(stream.added, ["TSLA"])
+
+        manager.register_strategy_symbols("maha7", [])
+        self.assertEqual(manager.symbol_refcount_for("TSLA"), 1)
+        self.assertEqual(stream.removed, [])
+
+        manager.remove_global_symbols(["TSLA"])
+        self.assertEqual(manager.symbol_refcount_for("TSLA"), 0)
+        self.assertEqual(stream.removed, ["TSLA"])
 
     def test_runtime_settings_snapshot_includes_tuning_parameters(self):
         settings = Settings(

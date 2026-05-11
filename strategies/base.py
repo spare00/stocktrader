@@ -21,6 +21,7 @@ class Strategy(ABC):
     plan_file: ClassVar[Path | None] = None
     selector_command: ClassVar[str | None] = None
     requires_plan: ClassVar[bool] = True
+    _symbol_manager: Any = None
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
@@ -30,6 +31,25 @@ class Strategy(ABC):
     @abstractmethod
     def evaluate(self, state: SymbolState) -> Signal | None:
         raise NotImplementedError
+
+    @property
+    def allowed_symbols(self) -> set[str]:
+        manager = getattr(self, "_symbol_manager", None)
+        if manager is not None:
+            return manager.effective_symbols(self.name)
+        settings = getattr(self, "settings", None)
+        return {str(symbol).strip().upper() for symbol in getattr(settings, "symbols", []) if str(symbol).strip()}
+
+    def set_symbol_manager(self, manager: Any) -> None:
+        self._symbol_manager = manager
+
+    def is_symbol_allowed(self, symbol: str) -> bool:
+        normalized = symbol.strip().upper()
+        manager = getattr(self, "_symbol_manager", None)
+        if manager is not None:
+            return normalized in manager.effective_symbols(self.name)
+        allowed = self.allowed_symbols
+        return not allowed or normalized in allowed
 
     def bootstrap_states(self, states: dict[str, SymbolState]) -> None:
         return None

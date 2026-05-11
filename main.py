@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import os
-import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -22,18 +21,18 @@ from modules.news_listener import NewsListener
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote
 from opening_plan import (
-    apply_opening_plan,
     default_plan_file_for_strategy,
     default_plan_file_for_settings,
     load_opening_plan,
     parse_plan_symbols,
+    plan_overrides,
     selector_command_for_strategy,
     symbols_env_blocks_plan,
 )
 from risk import RiskManager
 from runtime_safety import flatten_on_shutdown, manage_all_exits
 from strategies import available_strategy_names, build_strategies
-from strategies.registry import diagnostic_loggers_for, merge_strategy_runtime_snapshots, strategies_requiring_plan
+from strategies.registry import diagnostic_loggers_for, merge_strategy_runtime_snapshots
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
@@ -76,17 +75,6 @@ POSITIVE_NEWS_TERMS = (
     "launches",
     "strong earnings",
     "record revenue",
-)
-OPENING_UNIVERSE_FILE = Path("data/opening_universe.txt")
-MACD_DEFAULT_UNIVERSE = (
-    "AAPL",
-    "AMD",
-    "AMZN",
-    "META",
-    "MSFT",
-    "NVDA",
-    "QQQ",
-    "TSLA",
 )
 NEGATIVE_NEWS_TERMS = (
     "misses",
@@ -457,60 +445,34 @@ def resolve_strategy_plan_path(settings, explicit_path: Path | None, strategy_na
     return default_plan_file_for_settings(settings)
 
 
-def load_opening_universe_symbols(path: Path = OPENING_UNIVERSE_FILE) -> list[str]:
-    if not path.exists():
-        return []
-    symbols: list[str] = []
-    text = path.read_text(encoding="utf-8")
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0]
-        for raw_symbol in line.replace(",", " ").split():
-            symbol = raw_symbol.strip().upper()
-            if symbol:
-                symbols.append(symbol)
-    return list(dict.fromkeys(symbols))
-
-
-def hydrate_symbols_from_strategy_plans(settings: Settings) -> Settings:
-    """When SYMBOLS is unset/empty, union tickers from each active strategy's ``data/<strategy>_plan.json`` if present."""
-    if settings.symbols:
-        return settings
-    merged: list[str] = []
-    seen: set[str] = set()
+def load_strategy_local_symbols(settings: Settings, plan_paths: dict[str, Path] | None = None) -> dict[str, list[str]]:
+    """Load selector/plan symbols into strategy-local universes."""
+    symbols_by_strategy: dict[str, list[str]] = {}
+    plan_paths = plan_paths or {}
     for raw_name in settings.strategy_names:
-        path = default_plan_file_for_strategy(raw_name.strip().lower())
+        strategy_name = raw_name.strip().lower()
+        if not strategy_name:
+            continue
+        path = plan_paths.get(strategy_name) or default_plan_file_for_strategy(strategy_name)
         if not path.exists():
+            symbols_by_strategy[strategy_name] = []
             continue
         plan = load_opening_plan(path)
-        for sym in parse_plan_symbols(plan):
-            if sym not in seen:
-                seen.add(sym)
-                merged.append(sym)
-    if not merged:
-        return settings
-    return replace(settings, symbols=merged)
+        symbols_by_strategy[strategy_name] = parse_plan_symbols(plan)
+    return symbols_by_strategy
 
 
-def expand_symbols_for_macd(settings):
-    if "macd_early_impulse" not in settings.strategy_names:
+def apply_strategy_plan_settings(settings: Settings, strategy_name: str, explicit_path: Path | None = None) -> Settings:
+    """Apply bounded plan settings without moving plan symbols into the global universe."""
+    path = resolve_strategy_plan_path(settings, explicit_path, strategy_name=strategy_name)
+    if not path.exists():
         return settings
-    # Respect SYMBOLS when it names an explicit watchlist (same rule as opening_plan).
-    # Otherwise MACD would merge opening_universe.txt / defaults on top of e.g. SYMBOLS=INTC for mock tests.
-    if symbols_env_blocks_plan():
+    plan = load_opening_plan(path)
+    overrides = plan_overrides(settings, plan)
+    overrides.pop("symbols", None)
+    if not overrides:
         return settings
-    if not settings.symbols:
-        return settings
-    opening_universe = load_opening_universe_symbols()
-    macd_universe = opening_universe or list(MACD_DEFAULT_UNIVERSE)
-    merged = list(dict.fromkeys([symbol.strip().upper() for symbol in (settings.symbols + macd_universe) if symbol.strip()]))
-    if merged == settings.symbols:
-        return settings
-    logging.info(
-        "MACD watchlist expanded to %s symbols using %s",
-        len(merged),
-        OPENING_UNIVERSE_FILE if opening_universe else "built-in default universe",
-    )
-    return replace(settings, symbols=merged)
+    return replace(settings, **overrides)
 
 
 def _strategy_name_from(strategy_name_or_settings) -> str:
@@ -566,82 +528,6 @@ def strategy_plan_guide(path: Path, strategy_name_or_settings, error: Exception)
     )
 
 
-def run_strategy_selector(strategy_name: str) -> tuple[bool, str]:
-    command = selector_command_for_strategy(strategy_name)
-    try:
-        subprocess.run(command, shell=True, check=True)
-    except subprocess.CalledProcessError as exc:
-        return False, f"selector failed with exit code {exc.returncode}"
-    return True, "selector completed"
-
-
-def ensure_strategy_plan_ready(
-    path: Path,
-    strategy_name: str,
-    *,
-    max_wait_seconds: int,
-    retry_seconds: int,
-    min_symbols: int,
-) -> list[str]:
-    """
-    Ensure the strategy plan exists and has selected symbols.
-
-    Automatically runs the strategy selector and retries until the plan validates
-    or the max wait window is reached.
-    """
-    start = time.monotonic()
-    attempt = 0
-    last_error: Exception | None = None
-    wait_step = max(1, retry_seconds)
-    max_wait = max(0, max_wait_seconds)
-    required_symbols = max(1, int(min_symbols))
-
-    while True:
-        attempt += 1
-        ok, detail = run_strategy_selector(strategy_name)
-        if ok:
-            try:
-                symbols = validate_strategy_plan(path, strategy_name, min_symbols=required_symbols)
-                if attempt > 1:
-                    logging.info(
-                        "Strategy plan %s ready for %s after %s attempts (symbols=%s, minimum=%s)",
-                        path,
-                        strategy_name,
-                        attempt,
-                        len(symbols),
-                        required_symbols,
-                    )
-                return symbols
-            except (FileNotFoundError, ValueError) as exc:
-                last_error = exc
-                logging.info(
-                    "Selector run %s for %s did not produce a ready plan yet: %s",
-                    attempt,
-                    strategy_name,
-                    exc,
-                )
-        else:
-            last_error = ValueError(detail)
-            logging.warning("Selector run %s for %s failed: %s", attempt, strategy_name, detail)
-
-        elapsed = int(time.monotonic() - start)
-        if elapsed >= max_wait:
-            break
-        sleep_for = min(wait_step, max_wait - elapsed)
-        logging.info(
-            "Waiting %ss before retrying selector for %s (%ss/%ss elapsed)",
-            sleep_for,
-            strategy_name,
-            elapsed,
-            max_wait,
-        )
-        time.sleep(sleep_for)
-
-    if last_error is not None:
-        raise last_error
-    raise ValueError(f"Strategy plan for {strategy_name} is not ready.")
-
-
 async def main(args: argparse.Namespace | None = None) -> None:
     args = args or parse_args()
     if args.list_strategies:
@@ -649,45 +535,29 @@ async def main(args: argparse.Namespace | None = None) -> None:
         return
     requested_strategies = [args.strategy] if args.strategy else None
     settings = load_settings(strategy_names=requested_strategies)
-    plan_required_for = strategies_requiring_plan(settings.strategy_names)
-    opening_plan_path: Path | None = None
-    if plan_required_for:
-        plan_strategy = plan_required_for[0]
-        opening_plan_path = resolve_strategy_plan_path(settings, args.opening_plan, strategy_name=plan_strategy)
-        auto_selector = str(os.getenv("AUTO_RUN_SELECTOR", "1")).strip().lower() not in {"0", "false", "no", "off"}
-        auto_selector_max_wait_seconds = int(os.getenv("AUTO_SELECTOR_MAX_WAIT_SECONDS", "1800"))
-        auto_selector_retry_seconds = int(os.getenv("AUTO_SELECTOR_RETRY_SECONDS", "60"))
-        auto_selector_min_symbols = int(os.getenv("AUTO_SELECTOR_MIN_SYMBOLS", "20"))
-        try:
-            validate_strategy_plan(opening_plan_path, plan_strategy, min_symbols=auto_selector_min_symbols)
-        except (FileNotFoundError, ValueError) as exc:
-            if not auto_selector:
-                print(strategy_plan_guide(opening_plan_path, plan_strategy, exc), file=sys.stderr)
-                raise SystemExit(2) from None
-            logging.info(
-                "Auto selector enabled for %s. Ensuring plan %s is ready "
-                "(max wait %ss, retry %ss, minimum symbols %s).",
-                plan_strategy,
-                opening_plan_path,
-                auto_selector_max_wait_seconds,
-                auto_selector_retry_seconds,
-                auto_selector_min_symbols,
-            )
-            try:
-                ensure_strategy_plan_ready(
-                    opening_plan_path,
-                    plan_strategy,
-                    max_wait_seconds=auto_selector_max_wait_seconds,
-                    retry_seconds=auto_selector_retry_seconds,
-                    min_symbols=auto_selector_min_symbols,
-                )
-            except (FileNotFoundError, ValueError) as retry_exc:
-                print(strategy_plan_guide(opening_plan_path, plan_strategy, retry_exc), file=sys.stderr)
-                raise SystemExit(2) from None
-        settings = apply_opening_plan(settings, opening_plan_path)
-    settings = hydrate_symbols_from_strategy_plans(settings)
-    settings = expand_symbols_for_macd(settings)
-    if not settings.symbols:
+    loaded_plan_paths: dict[str, Path] = {}
+    if args.opening_plan and len(settings.strategy_names) != 1:
+        print(
+            "--opening-plan can only target a single active strategy; use per-strategy data/<strategy>_plan.json files.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    for raw_strategy in settings.strategy_names:
+        strategy_name = raw_strategy.strip().lower()
+        if not strategy_name:
+            continue
+        plan_path = resolve_strategy_plan_path(
+            settings,
+            args.opening_plan if len(settings.strategy_names) == 1 else None,
+            strategy_name=strategy_name,
+        )
+        if not plan_path.exists():
+            continue
+        loaded_plan_paths[strategy_name] = plan_path
+        settings = apply_strategy_plan_settings(settings, strategy_name, plan_path)
+    strategy_local_symbols = load_strategy_local_symbols(settings, loaded_plan_paths)
+    initial_symbols = sorted(set(settings.symbols).union(*(set(symbols) for symbols in strategy_local_symbols.values())))
+    if not initial_symbols:
         print(
             "No symbols to trade: set SYMBOLS in `.env`/your profile, or add symbols under "
             "data/<strategy>_plan.json for each active strategy (see strategies registry).",
@@ -696,28 +566,35 @@ async def main(args: argparse.Namespace | None = None) -> None:
         raise SystemExit(2)
     log_file = strategy_log_file(settings)
     setup_logging(log_file, settings.strategy_names)
-    if opening_plan_path is not None:
-        logging.info("Loaded opening plan from %s", opening_plan_path)
-    if opening_plan_path is not None and symbols_env_blocks_plan():
+    for strategy_name, plan_path in loaded_plan_paths.items():
+        logging.info("Loaded %s plan from %s", strategy_name, plan_path)
+    if loaded_plan_paths and symbols_env_blocks_plan():
         logging.info(
-            "Watchlist: SYMBOLS from environment overrides strategy plan (%s)",
+            "Global watchlist: SYMBOLS from environment is shared by all strategies (%s)",
             os.getenv("SYMBOLS", "").strip(),
         )
 
     settings_snapshot = runtime_settings_snapshot(settings)
-    states = {symbol: SymbolState(symbol) for symbol in settings.symbols}
-    stream = build_market_data_stream(settings)
+    settings_snapshot["global_symbols"] = list(settings.symbols)
+    settings_snapshot["strategy_symbols"] = strategy_local_symbols
+    settings_snapshot["effective_symbols"] = {
+        strategy: sorted(set(settings.symbols) | set(local_symbols))
+        for strategy, local_symbols in strategy_local_symbols.items()
+    }
+    stream_settings = replace(settings, symbols=initial_symbols)
+    states = {symbol: SymbolState(symbol) for symbol in initial_symbols}
+    stream = build_market_data_stream(stream_settings)
     strategies = build_strategies(settings)
-    for strategy in strategies:
-        strategy.bootstrap_states(states)
-    symbol_manager = SymbolManager(states, stream, strategies)
+    symbol_manager = SymbolManager(states, stream, strategies, global_symbols=settings.symbols)
+    for strategy_name, symbols in strategy_local_symbols.items():
+        symbol_manager.register_strategy_symbols(strategy_name, symbols)
     strategies_by_name = {strategy.name: strategy for strategy in strategies}
     news_listener = NewsListener(
         symbol_cooldown_seconds=settings.news_listener_symbol_cooldown_seconds,
         min_impact=settings.news_listener_min_impact,
         positive_only=settings.news_listener_positive_only,
     )
-    executor = build_executor(settings)
+    executor = build_executor(stream_settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
     rejection_logs = RejectionLogThrottler()
@@ -725,7 +602,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
     logging.info(
         "Monitoring %s with execution mode %s and strategies %s",
-        ", ".join(settings.symbols),
+        ", ".join(initial_symbols),
         settings.execution_mode,
         ", ".join(settings.strategy_names),
     )
@@ -772,11 +649,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
             state = states.get(event.symbol)
             if state is None:
-                if symbol_manager.add_symbol(event.symbol):
-                    logging.info("Added symbol %s from market data stream", event.symbol)
-                    state = states.get(event.symbol)
-                if state is None:
-                    continue
+                logging.debug("Ignoring market data for unsubscribed symbol %s", event.symbol)
+                continue
 
             if isinstance(event, Quote):
                 heartbeat.record_quote()

@@ -71,6 +71,10 @@ class AlpacaRestPollingStream:
             return
         self._symbols.append(normalized)
 
+    def remove_symbol(self, symbol: str) -> None:
+        normalized = symbol.strip().upper()
+        self._symbols = [existing for existing in self._symbols if existing != normalized]
+
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote]:
         clients = make_clients(self.settings)
         while True:
@@ -116,6 +120,19 @@ class AlpacaStockStream:
             return
         self._clients.stream.subscribe_bars(self._on_bar, normalized)
         self._clients.stream.subscribe_quotes(self._on_quote, normalized)
+
+    def remove_symbol(self, symbol: str) -> None:
+        normalized = symbol.strip().upper()
+        if not normalized or normalized not in self._symbols:
+            return
+        self._symbols.remove(normalized)
+        if self._clients is None:
+            return
+        stream = self._clients.stream
+        if hasattr(stream, "unsubscribe_bars"):
+            stream.unsubscribe_bars(normalized)
+        if hasattr(stream, "unsubscribe_quotes"):
+            stream.unsubscribe_quotes(normalized)
 
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote | NewsEvent]:
         queue: asyncio.Queue[Bar | Heartbeat | Quote | NewsEvent | BaseException | None] = asyncio.Queue()

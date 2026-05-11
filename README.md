@@ -14,7 +14,7 @@ cp .env.example .env
 cp profiles/paper.env.example profiles/paper.env
 ```
 
-Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and local machine overrides; the profile files are for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. **`SYMBOLS` is optional in `profiles/paper.env`:** if unset, `main.py` uses tickers from `data/<strategy>_plan.json` (run the selector first). Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
+Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and local machine overrides; the profile files are for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. **`SYMBOLS` is optional in `profiles/paper.env`:** if set, it creates global symbols shared by every active strategy; selector plan symbols stay strategy-local. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
 
 For Alpaca paper mode, run:
 
@@ -126,7 +126,7 @@ Refresh a broad tradable/liquid universe weekly or periodically. This is the glo
 .venv/bin/python strategy_selectors/select_market_universe.py --top 300
 ```
 
-Before each market session, run the selector for the strategy you plan to trade. For `opening_impulse`, rank the broad universe with opening-impulse criteria:
+Before each market session, you can run the selector for the strategy you plan to trade. These selectors are optional pre-session tools that write strategy-local plan files; `main.py` does not run them automatically. For `opening_impulse`, rank the broad universe with opening-impulse criteria:
 
 ```bash
 .venv/bin/python strategy_selectors/select_opening_impulse.py --top 12
@@ -138,7 +138,7 @@ For `maha7`, build the broad universe first, then create a plan from that liquid
 .venv/bin/python strategy_selectors/select_maha7.py --top 12
 ```
 
-Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the strategy-specific plan file that `main.py` uses directly:
+Add `--use-ai` if you want the selector to ask OpenAI to refine the final ranked shortlist and write the strategy-specific plan file that `main.py` reads as that strategy's local universe:
 
 ```bash
 .venv/bin/python strategy_selectors/select_opening_impulse.py --top 12 --use-ai
@@ -202,13 +202,13 @@ Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clien
 
 Set **`REPLAY_MARKET_DATA=true`** when the mock serves historical bars/quotes. Replay mode keeps the mocked event timestamps as the trading clock, so wall-clock heartbeats do not trigger max-hold, min-hold, cooldown, or shutdown flatten behavior.
 
-**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from the selector. If **`SYMBOLS` is not set** after loading config files, those plan symbols become the watch list. If **`SYMBOLS` is set** in `.env` or `profiles/*.env`, that list can override the plan (see `opening_plan.symbols_env_blocks_plan()`).
+**Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from each selector and feeds only that strategy's local universe. If **`SYMBOLS` is set** in `.env` or `profiles/*.env`, those tickers become global symbols visible to every active strategy. The runtime stream is still shared; only the logical strategy universe is separated.
 
 **Configure tickers only in files:** Put `SYMBOLS=...` in `.env` or `profiles/<name>.env`. Do not rely on shell exports — **`scripts/run_paper.sh` begins with `unset SYMBOLS`** so a stray export from tmux or an old session never reaches `main.py`. Selectors print a `SYMBOLS=...` line for pasting into those files only (JSON field `symbols_env_line`). Running `.venv/bin/python main.py` directly still inherits the shell; prefer `scripts/run_paper.sh` or clear exports first.
 
 **If you run `main.py` without the wrapper:** Run `unset SYMBOLS` when the watch list looks wrong, or align your shell with the same rule as the wrapper.
 
-If you want `main.py` to trade the selector output directly, run the selector first, then start the bot with the strategy you want:
+If you want `main.py` to trade a selector output, run the selector first, then start the bot with the strategy you want:
 
 ```bash
 scripts/run_paper.sh --strategy opening_impulse
@@ -217,11 +217,11 @@ scripts/run_paper.sh --strategy gap_and_go
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
 
-The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not used inside `main.py`, so at runtime the watch list is normally the **`symbols`** written into `data/<strategy>_plan.json`, unless **`SYMBOLS`** is set in the environment to override that list.
+The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not run inside `main.py`. At runtime, `SYMBOLS` is the shared global universe, `data/<strategy>_plan.json` is that strategy's local universe, and news events can dynamically add hot symbols to the global universe.
 
 The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default and write their own strategy plan files, such as `data/opening_impulse_plan.json` and `data/gap_and_go_plan.json`.
 
-`main.py` now expects the active strategy's plan file to exist. If the file is missing or empty, it stops and tells you which selector command to run first.
+`main.py` can start with empty global `SYMBOLS` when active strategies have local plan symbols. If no global symbols and no local plan symbols exist, it stops with "No symbols to trade."
 
 By default it looks at prior completed regular-market opening windows (`09:30-10:00` New York time) rather than whatever bars happen to be most recent. That makes it suitable to run at 08:00 before the market opens:
 

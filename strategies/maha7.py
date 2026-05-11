@@ -153,6 +153,8 @@ class Maha7Strategy(Strategy):
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "bar":
             return None
+        if not self.is_symbol_allowed(state.symbol):
+            return None
         if not self._within_entry_window(state.last_event_ms):
             return self._reject(state, "window", "outside configured entry window")
 

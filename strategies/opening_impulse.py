@@ -197,6 +197,8 @@ class OpeningImpulseStrategy(Strategy):
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind not in {"quote", "bar"}:
             return None
+        if not self.is_symbol_allowed(state.symbol):
+            return None
 
         if not self._within_trading_window(state.last_event_ms):
             return None
