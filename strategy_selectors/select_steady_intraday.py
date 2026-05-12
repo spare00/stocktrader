@@ -174,7 +174,6 @@ def is_selectable_candidate(candidate: SteadyIntradayCandidate) -> bool:
         "price ",
         "spread ",
         "dollar_volume ",
-        "daily ATR too low",
         "daily ATR too high",
         "daily quote gap ",
         "daily close_position ",
@@ -185,11 +184,7 @@ def is_selectable_candidate(candidate: SteadyIntradayCandidate) -> bool:
         "EMA mid slope not positive",
         "daily close not positive",
         "missing VWAP",
-        "price not above VWAP buffer",
-        "ATR too low",
         "ATR too high",
-        "range too compressed",
-        "daily range too compressed",
         "insufficient quote or market data",
     }
     for flag in candidate.quality_flags:

@@ -1304,6 +1304,24 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["screened_out"][0]["symbol"], "WIDE")
         self.assertTrue(any(flag.startswith("spread ") for flag in plan["screened_out"][0]["quality_flags"]))
 
+    def test_steady_intraday_selector_keeps_soft_not_ready_flags_selectable(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["CALM"])
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        quotes = {"CALM": Quote("CALM", bid=100.87, ask=100.93, bid_size=100, ask_size=100, timestamp_ms=start_ms)}
+
+        plan = select_steady_intraday.build_plan(
+            ["CALM"],
+            1,
+            bars_by_symbol={"CALM": self._steady_intraday_selector_bars("CALM", start_ms, trigger=False)},
+            quotes=quotes,
+            settings=settings,
+            stage="intraday",
+            min_dollar_volume=1_000_000,
+        )
+
+        self.assertEqual(plan["symbols"], ["CALM"])
+        self.assertTrue(any(flag in {"ATR too low", "range too compressed"} for flag in plan["ranked"][0]["quality_flags"]))
+
     def test_steady_intraday_selector_uses_daily_volatility_bounds_for_daily_stage(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["TREND"])
         start_ms = market_ms(2026, 2, 1, 9, 30)
