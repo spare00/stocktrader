@@ -1304,6 +1304,32 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["screened_out"][0]["symbol"], "WIDE")
         self.assertTrue(any(flag.startswith("spread ") for flag in plan["screened_out"][0]["quality_flags"]))
 
+    def test_steady_intraday_selector_fills_requested_top_from_ranked_scores(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["GOOD", "WIDE"])
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        bars_by_symbol = {
+            "GOOD": self._steady_intraday_selector_bars("GOOD", start_ms, trigger=True),
+            "WIDE": self._steady_intraday_selector_bars("WIDE", start_ms, trigger=True),
+        }
+        quotes = {
+            "GOOD": Quote("GOOD", bid=102.13, ask=102.17, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+            "WIDE": Quote("WIDE", bid=100.00, ask=104.00, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+        }
+
+        plan = select_steady_intraday.build_plan(
+            ["WIDE", "GOOD"],
+            2,
+            bars_by_symbol=bars_by_symbol,
+            quotes=quotes,
+            settings=settings,
+            stage="intraday",
+            min_dollar_volume=1_000_000,
+        )
+
+        self.assertEqual(plan["symbols"], ["GOOD", "WIDE"])
+        self.assertEqual([row["symbol"] for row in plan["ranked"]], ["GOOD", "WIDE"])
+        self.assertEqual(plan["screened_out"][0]["symbol"], "WIDE")
+
     def test_steady_intraday_selector_keeps_soft_not_ready_flags_selectable(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["CALM"])
         start_ms = market_ms(2026, 4, 24, 9, 30)
@@ -1387,7 +1413,8 @@ class CoreTradingTests(unittest.TestCase):
             min_dollar_volume=1_000_000,
         )
 
-        self.assertEqual(plan["symbols"], ["OKAY"])
+        self.assertEqual(plan["symbols"], ["OKAY", "GAPDN"])
+        self.assertEqual(plan["ranked"][1]["symbol"], "GAPDN")
         self.assertEqual(plan["screened_out"][0]["symbol"], "GAPDN")
         self.assertTrue(any(flag.startswith("daily quote gap ") for flag in plan["screened_out"][0]["quality_flags"]))
 

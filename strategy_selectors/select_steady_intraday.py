@@ -440,15 +440,16 @@ def required_intraday_bar_count(settings: Settings) -> int:
 
 def deterministic_plan(candidates: list[SteadyIntradayCandidate], top: int) -> dict:
     selected_candidates = [candidate for candidate in candidates if is_selectable_candidate(candidate)]
-    selected = [candidate.symbol for candidate in selected_candidates[:top]]
-    if not selected:
-        raise ValueError("No selectable steady_intraday candidates passed liquidity, trend, spread, volatility, and VWAP filters")
     screened_out = [candidate for candidate in candidates if not is_selectable_candidate(candidate)]
+    selected_pool = (selected_candidates + screened_out)[:top]
+    selected = [candidate.symbol for candidate in selected_pool]
+    if not selected:
+        raise ValueError("No steady_intraday candidates could be ranked from the available market data")
     return {
         "strategy": "steady_intraday",
         "selection_stage": candidates[0].selection_stage,
         "symbols": selected,
-        "ranked": [asdict(candidate) for candidate in selected_candidates[:top]],
+        "ranked": [asdict(candidate) for candidate in selected_pool],
         "screened_out": [asdict(candidate) for candidate in screened_out[:top]],
         "settings": {
             "MAX_OPEN_POSITIONS": 2,
