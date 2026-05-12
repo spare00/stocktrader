@@ -230,8 +230,8 @@ class Settings:
     macd_momentum_exit_min_profit_pct: float = 0.0015
     macd_early_loss_cut_seconds: int = 75
     macd_early_loss_cut_pct: float = 0.0022
-    macd_early_impulse_max_trades_per_symbol_per_session: int = 1
-    macd_early_impulse_symbol_loss_lock_count: int = 1
+    macd_early_impulse_max_trades_per_symbol_per_session: int = 2
+    macd_early_impulse_symbol_loss_lock_count: int = 2
 
     stoch_macd_start_minute: int = 0
     stoch_macd_end_minute: int = 360

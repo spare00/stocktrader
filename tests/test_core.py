@@ -3956,7 +3956,7 @@ class CoreTradingTests(unittest.TestCase):
         state = SymbolState("SMR")
         base_ms = market_ms(2026, 5, 8, 13, 0)
         for index in range(25):
-            close = 100.0 + index * 0.08
+            close = 100.0 + index * 0.03
             state.add_bar(
                 Bar(
                     "SMR",
@@ -3993,6 +3993,125 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
+
+    def test_macd_runner_mode_allows_strong_reclaim_without_perfect_histogram(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_chop_range_pct=0.0001,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        strategy._runner_plan_ranks["SMR"] = 1
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(24):
+            close = 100.0 + index * 0.10
+            volume = 1_000
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.06,
+                    high=close + 0.10,
+                    low=close - 0.10,
+                    close=close,
+                    volume=volume,
+                    vwap=close - 0.18,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=102.22,
+                high=102.54,
+                low=102.18,
+                close=102.46,
+                volume=1_000,
+                vwap=102.18,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=102.45,
+                ask=102.47,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.18, 0.24, 0.29, 0.33],
+                [0.14, 0.19, 0.24, 0.29],
+                [0.030, 0.050, 0.045, 0.040],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.reason, "macd early impulse entry")
+        self.assertLess(signal.stop_price, signal.price * (1.0 - settings.macd_stop_loss_pct))
+
+    def test_macd_runner_mode_holds_through_small_early_pullback(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        strategy._runner_plan_ranks["SMR"] = 1
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(5):
+            close = 100.0 + index * 0.20
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.05,
+                    high=close + 0.10,
+                    low=close - 0.10,
+                    close=close,
+                    volume=1_200,
+                    vwap=close - 0.12,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=99.69,
+                ask=99.71,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=base_ms + 60_000,
+            )
+        )
+        position = Position(
+            symbol="SMR",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=base_ms,
+            target_price=101.0,
+            stop_price=99.45,
+            initial_stop_price=99.45,
+            max_price=100.2,
+            last_high_ts=base_ms,
+            original_shares=10,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
 
     def test_macd_selector_ranks_daily_macd_reclaim_reversal(self):
         def daily_bars_from_changes(symbol: str, changes: list[float]) -> list[Bar]:
