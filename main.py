@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 from dataclasses import replace
+from datetime import datetime, time as dt_time
 import hashlib
 import json
 import logging
@@ -17,11 +18,12 @@ from alpaca_stream import (
     AlpacaStreamEndedError,
     build_market_data_stream,
 )
-from alpaca_client import get_latest_quotes, get_recent_bars
+from alpaca.data.timeframe import TimeFrame
+from alpaca_client import get_bars_between, get_latest_quotes, get_recent_bars, make_clients
 from candle import SymbolState
 from config import Settings, load_settings
 from execution import build_executor
-from market_hours import is_regular_market_time
+from market_hours import MARKET_TZ, is_regular_market_time
 from modules.news_listener import NewsListener
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote
@@ -329,11 +331,28 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
         return counts
 
     symbols = list(states.keys())
+    bars_map: dict[str, list[Bar]] = {symbol: [] for symbol in symbols}
     try:
-        bars_map = get_recent_bars(settings, symbols, limit=limit)
+        clients = make_clients(settings)
+        now = datetime.now(tz=MARKET_TZ)
+        premarket_start = datetime.combine(now.date(), dt_time(4, 0), tzinfo=MARKET_TZ)
+        if now > premarket_start:
+            bars_map = get_bars_between(clients, symbols, TimeFrame.Minute, premarket_start, now)
+    except Exception:
+        logging.exception("Indicator preload: current-day premarket bar fetch failed")
+
+    try:
+        recent_map = get_recent_bars(settings, symbols, limit=limit)
     except Exception:
         logging.exception("Indicator preload: get_recent_bars failed")
-        return counts
+        recent_map = {symbol: [] for symbol in symbols}
+    for symbol in symbols:
+        seen = {bar.start_ms for bar in bars_map.get(symbol, [])}
+        for bar in recent_map.get(symbol, []):
+            if bar.start_ms in seen:
+                continue
+            bars_map.setdefault(symbol, []).append(bar)
+            seen.add(bar.start_ms)
 
     for symbol in symbols:
         state = states[symbol]
