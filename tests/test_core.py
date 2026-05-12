@@ -1,4 +1,5 @@
 import contextlib
+import asyncio
 import os
 import unittest
 import sys
@@ -19,6 +20,7 @@ from alpaca_stream import (
     AlpacaRestPollingStream,
     AlpacaStockStream,
     AlpacaStreamConnectionLimitError,
+    AlpacaStreamEndedError,
     AlpacaStreamLock,
     build_market_data_stream,
 )
@@ -4613,6 +4615,51 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsInstance(build_market_data_stream(stream_settings), AlpacaStockStream)
         self.assertIsInstance(build_market_data_stream(rest_settings), AlpacaRestPollingStream)
+
+    def test_alpaca_stream_raises_when_websocket_task_ends_silently(self):
+        class FakeStream:
+            def __init__(self):
+                self.stopped = False
+
+            def subscribe_bars(self, callback, symbol):
+                return None
+
+            def subscribe_quotes(self, callback, symbol):
+                return None
+
+            def subscribe_news(self, callback, symbol):
+                return None
+
+            async def _run_forever(self):
+                return None
+
+            async def stop_ws(self):
+                self.stopped = True
+
+        class FakeClients:
+            def __init__(self):
+                self.stream = FakeStream()
+                self.news_stream = FakeStream()
+
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            heartbeat_seconds=5,
+        )
+        clients = FakeClients()
+
+        async def consume_once():
+            stream = AlpacaStockStream(settings)
+            with patch("alpaca_stream.make_clients", return_value=clients):
+                async for _event in stream.events():
+                    self.fail("silent stream completion should not yield an event")
+
+        with self.assertRaises(AlpacaStreamEndedError):
+            asyncio.run(consume_once())
+
+        self.assertTrue(clients.stream.stopped)
+        self.assertTrue(clients.news_stream.stopped)
 
     def test_alpaca_stream_lock_rejects_duplicate_local_stream(self):
         settings = Settings(

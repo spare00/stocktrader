@@ -11,7 +11,12 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from ai_agent import SignalReviewer
-from alpaca_stream import AlpacaStreamAuthError, AlpacaStreamConnectionLimitError, build_market_data_stream
+from alpaca_stream import (
+    AlpacaStreamAuthError,
+    AlpacaStreamConnectionLimitError,
+    AlpacaStreamEndedError,
+    build_market_data_stream,
+)
 from alpaca_client import get_latest_quotes, get_recent_bars
 from candle import SymbolState
 from config import Settings, load_settings
@@ -767,5 +772,7 @@ if __name__ == "__main__":
         logging.error("Alpaca stream authentication failed: %s", exc)
     except AlpacaStreamConnectionLimitError as exc:
         logging.error("%s", exc)
+    except AlpacaStreamEndedError as exc:
+        logging.error("Alpaca stream stopped unexpectedly: %s", exc)
     except KeyboardInterrupt:
         logging.info("Stopped")

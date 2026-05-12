@@ -26,6 +26,10 @@ class AlpacaStreamConnectionLimitError(RuntimeError):
     pass
 
 
+class AlpacaStreamEndedError(RuntimeError):
+    pass
+
+
 class AlpacaStreamLock:
     def __init__(self, settings: Settings):
         key = f"{settings.alpaca_api_key or 'missing'}:{settings.alpaca_data_feed}:{settings.alpaca_paper}"
@@ -195,7 +199,9 @@ class AlpacaStockStream:
         clients.news_stream.subscribe_news(on_news, "*")
 
         stock_stream_task = asyncio.create_task(clients.stream._run_forever())
+        stock_stream_task.set_name("alpaca_stock_stream")
         news_stream_task = asyncio.create_task(clients.news_stream._run_forever())
+        news_stream_task.set_name("alpaca_news_stream")
 
         def on_stream_done(task: asyncio.Task) -> None:
             if task.cancelled():
@@ -204,7 +210,7 @@ class AlpacaStockStream:
             if exc is not None:
                 queue.put_nowait(exc)
             else:
-                queue.put_nowait(None)
+                queue.put_nowait(AlpacaStreamEndedError(f"{task.get_name()} ended unexpectedly"))
 
         stock_stream_task.add_done_callback(on_stream_done)
         news_stream_task.add_done_callback(on_stream_done)
@@ -226,14 +232,28 @@ class AlpacaStockStream:
             raise
         finally:
             heartbeat_task.cancel()
-            await clients.stream.stop_ws()
-            await clients.news_stream.stop_ws()
-            await asyncio.gather(stock_stream_task, news_stream_task, heartbeat_task, return_exceptions=True)
+            await asyncio.gather(
+                self._stop_ws(clients.stream, "stock"),
+                self._stop_ws(clients.news_stream, "news"),
+                return_exceptions=True,
+            )
+            for task in (stock_stream_task, news_stream_task):
+                task.cancel()
+            await asyncio.wait(
+                (stock_stream_task, news_stream_task, heartbeat_task),
+                timeout=5,
+            )
             self._clients = None
             self._on_bar = None
             self._on_quote = None
             self._on_news = None
             stream_lock.release()
+
+    async def _stop_ws(self, stream, name: str) -> None:
+        try:
+            await asyncio.wait_for(stream.stop_ws(), timeout=5)
+        except asyncio.TimeoutError:
+            raise AlpacaStreamEndedError(f"timed out stopping {name} Alpaca websocket")
 
 
 def build_market_data_stream(settings: Settings) -> AlpacaStockStream | AlpacaRestPollingStream:
