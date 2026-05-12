@@ -24,10 +24,12 @@ class SymbolManager:
         strategies=None,
         *,
         global_symbols: Iterable[str] = (),
+        settings=None,
     ):
         self.states = states
         self.stream = stream
         self.strategies = list(strategies or [])
+        self.settings = settings
         self.global_symbols: set[str] = set()
         self.strategy_symbols: dict[str, set[str]] = {}
         self.symbol_refcount: Counter[str] = Counter()
@@ -90,7 +92,10 @@ class SymbolManager:
         previous = self.symbol_refcount.get(symbol, 0)
         self.symbol_refcount[symbol] = previous + 1
         if symbol not in self.states:
-            self.states[symbol] = SymbolState(symbol)
+            max_bars = 3000
+            if self.settings is not None:
+                max_bars = int(self.settings.indicator_max_bars_per_symbol)
+            self.states[symbol] = SymbolState(symbol, indicator_max_bars=max_bars)
         if previous == 0:
             self.subscribe_symbol(symbol)
             self._bootstrap_symbol(symbol)

@@ -7,7 +7,7 @@ from models import Bar, Quote
 @dataclass
 class SymbolState:
     symbol: str
-    bars: deque[Bar] = field(default_factory=lambda: deque(maxlen=600))
+    indicator_max_bars: int = 3000
     quotes: deque[Quote] = field(default_factory=lambda: deque(maxlen=2400))
     quote: Quote | None = None
     last_news_ms: int | None = None
@@ -17,9 +17,17 @@ class SymbolState:
     is_high_impact_news: bool = False
     last_event_kind: str | None = None
     last_event_ms: int | None = None
+    bars: deque[Bar] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        cap = max(1, int(self.indicator_max_bars))
+        object.__setattr__(self, "bars", deque(maxlen=cap))
 
     def add_bar(self, bar: Bar) -> None:
         self.bars.append(bar)
+        cap = max(1, int(self.indicator_max_bars))
+        while len(self.bars) > cap:
+            self.bars.popleft()
         self.last_event_kind = "bar"
         self.last_event_ms = bar.end_ms
 

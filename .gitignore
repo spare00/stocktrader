@@ -223,3 +223,6 @@ __marimo__/
 
 # Vim
 *.swp
+
+# macOS
+.DS_Store

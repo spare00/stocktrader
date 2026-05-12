@@ -14,6 +14,7 @@ from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategy_selectors.select_gap_and_go import latest_valid_quote, regular_bars
 from strategies.base import Strategy
+from modules.indicator_history import continuous_indicator_bars
 
 
 LOG = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             int_env,
             2,
         ),
+        ("macd_macd_warmup_bars", "MACD_MACD_WARMUP_BARS", int_env, 120),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.macd_early_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12"
@@ -122,6 +124,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             "early_loss_cut_pct": s.macd_early_loss_cut_pct,
             "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": s.macd_early_impulse_symbol_loss_lock_count,
+            "macd_warmup_bars": s.macd_macd_warmup_bars,
         }
 
     def __init__(self, settings: Settings):
@@ -156,6 +159,8 @@ class MACDEarlyImpulseStrategy(Strategy):
 
         seeded = 0
         for symbol, state in states.items():
+            if len(state.bars) >= self.settings.macd_macd_warmup_bars:
+                continue
             if not state.bars:
                 for bar in intraday_bars.get(symbol, []):
                     state.add_bar(bar)
@@ -181,11 +186,19 @@ class MACDEarlyImpulseStrategy(Strategy):
         if len(rb) < _MIN_REGULAR_BARS:
             return self._reject(state, "bars", f"need >= {_MIN_REGULAR_BARS} regular bars, have {len(rb)}")
 
+        ib = continuous_indicator_bars(state, self.settings)
+        if len(ib) < self.settings.macd_macd_warmup_bars:
+            return self._reject(
+                state,
+                "macd_warmup",
+                f"need >= {self.settings.macd_macd_warmup_bars} indicator bars, have {len(ib)}",
+            )
+
         mins = self._minutes_since_open(state)
         if self.settings.macd_skip_midday and 60 <= mins <= 120:
             return self._reject(state, "midday", f"skip midday {mins}m since open")
 
-        closes = [float(bar.close) for bar in rb]
+        closes = [float(bar.close) for bar in ib]
         ema_trend = _ema_series(closes, _EMA_TREND_PERIOD)
         if not ema_trend or last.ask < ema_trend[-1]:
             return self._reject(state, "below_ema", f"price below EMA{_EMA_TREND_PERIOD}")
@@ -402,10 +415,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         return range_pct < self.settings.macd_chop_range_pct
 
     def _compute_macd(self, state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
-        rb = self._regular_bars(state)
-        if len(rb) < 5:
+        ib = continuous_indicator_bars(state, self.settings)
+        if len(ib) < self.settings.macd_macd_warmup_bars:
             return None
-        closes = [float(bar.close) for bar in rb]
+        closes = [float(bar.close) for bar in ib]
         if not closes or any(c <= 0 for c in closes):
             return None
 
@@ -459,13 +472,12 @@ class MACDEarlyImpulseStrategy(Strategy):
         total_value = sum(bar.vwap * bar.volume for bar in session_bars if bar.volume > 0)
         return total_value / total_volume if total_value > 0 else None
 
-    @staticmethod
-    def _volume_ratio(state: SymbolState) -> float:
-        rb = regular_bars(state)
-        if len(rb) < 2:
+    def _volume_ratio(self, state: SymbolState) -> float:
+        ib = continuous_indicator_bars(state, self.settings)
+        if len(ib) < 2:
             return 0.0
-        latest_volume = rb[-1].volume
-        baseline = median([bar.volume for bar in rb[:-1] if bar.volume > 0] or [0.0])
+        latest_volume = ib[-1].volume
+        baseline = median([bar.volume for bar in ib[:-1] if bar.volume > 0] or [0.0])
         return latest_volume / baseline if baseline > 0 else 0.0
 
     def _load_runner_plan_ranks(self) -> None:
@@ -517,9 +529,13 @@ class MACDEarlyImpulseStrategy(Strategy):
         if len(rb) < 10:
             return position.symbol.strip().upper() in self._runner_plan_ranks
         vwap = self._session_vwap(rb)
-        closes = [float(bar.close) for bar in rb]
-        ema_trend = _ema_series(closes, _EMA_TREND_PERIOD)
-        ema_value = ema_trend[-1] if ema_trend else position.entry_price
+        ib = continuous_indicator_bars(state, self.settings)
+        if len(ib) < self.settings.macd_macd_warmup_bars:
+            ema_value = position.entry_price
+        else:
+            closes = [float(bar.close) for bar in ib]
+            ema_trend = _ema_series(closes, _EMA_TREND_PERIOD)
+            ema_value = ema_trend[-1] if ema_trend else position.entry_price
         volume_ratio = self._volume_ratio(state)
         return self._runner_mode(position.symbol, rb, current_price, ema_value, vwap, volume_ratio)
 

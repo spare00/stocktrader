@@ -3770,6 +3770,7 @@ class CoreTradingTests(unittest.TestCase):
             macd_min_hold_seconds=60,
             macd_trailing_activation_pct=0.003,
             macd_trailing_stop_pct=0.0045,
+            macd_macd_warmup_bars=25,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         state = SymbolState("SMR")
@@ -3809,6 +3810,7 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["SMR"],
             macd_min_hold_seconds=60,
             macd_target_profit_pct=0.012,
+            macd_macd_warmup_bars=25,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         state = SymbolState("SMR")
@@ -3845,6 +3847,7 @@ class CoreTradingTests(unittest.TestCase):
             macd_hist_threshold=0.00001,
             macd_volume_ratio=1.0,
             macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         state = SymbolState("SMR")
@@ -3888,6 +3891,7 @@ class CoreTradingTests(unittest.TestCase):
             macd_hist_threshold=0.00001,
             macd_volume_ratio=1.2,
             macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         state = SymbolState("SMR")
@@ -3953,6 +3957,7 @@ class CoreTradingTests(unittest.TestCase):
             macd_hist_threshold=0.00001,
             macd_volume_ratio=1.2,
             macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         state = SymbolState("SMR")
@@ -4002,6 +4007,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["SMR"],
             macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         strategy._runner_plan_ranks["SMR"] = 1
@@ -4067,6 +4073,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["SMR"],
+            macd_macd_warmup_bars=5,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         strategy._runner_plan_ranks["SMR"] = 1
@@ -4513,6 +4520,9 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["alpaca_api_key_fingerprint"], trading_main.credential_fingerprint("test"))
         self.assertEqual(snapshot["alpaca_market_data_mode"], "stream")
         self.assertFalse(snapshot["replay_market_data"])
+        self.assertEqual(snapshot["indicator_preload_bars"], 1000)
+        self.assertEqual(snapshot["indicator_max_bars_per_symbol"], 3000)
+        self.assertFalse(snapshot["indicator_include_afterhours"])
         self.assertEqual(snapshot["stream"]["alpaca_market_data_poll_seconds"], 5.0)
         self.assertEqual(snapshot["stream"]["alpaca_fill_timeout_seconds"], 5.0)
         self.assertEqual(snapshot["stream"]["max_entry_chase_pct"], 0.003)
@@ -5403,7 +5413,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
     def test_stoch_macd_reversal_can_enter_near_0940_with_premarket_warmup(self):
-        settings = Settings(symbols=["AAPL"])
+        settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=26)
         strategy = StochMACDReversalStrategy(settings)
         state = self._stoch_macd_premarket_warmup_state()
 

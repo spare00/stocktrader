@@ -286,14 +286,15 @@ def should_expand_symbols_from_news(event: NewsEvent) -> bool:
     return is_regular_market_time(event.timestamp_ms)
 
 
-def warm_dynamic_news_symbol(settings, state: SymbolState, symbol: str, *, bar_limit: int = 5) -> bool:
+def warm_dynamic_news_symbol(settings, state: SymbolState, symbol: str, *, bar_limit: int | None = None) -> bool:
     """Backfill enough market context for a symbol discovered from news to be tradable quickly."""
     if settings.replay_market_data:
         return False
 
+    limit = bar_limit if bar_limit is not None else max(5, settings.indicator_preload_bars)
     warmed = False
     try:
-        bars = get_recent_bars(settings, [symbol], limit=bar_limit).get(symbol, [])
+        bars = get_recent_bars(settings, [symbol], limit=limit).get(symbol, [])
     except Exception:
         logging.debug("Could not warm recent bars for news symbol %s", symbol, exc_info=True)
         bars = []
@@ -312,6 +313,53 @@ def warm_dynamic_news_symbol(settings, state: SymbolState, symbol: str, *, bar_l
         warmed = True
 
     return warmed
+
+
+def preload_indicator_bars_for_states(settings: Settings, states: dict[str, SymbolState]) -> dict[str, int]:
+    """Append recent minute bars into each symbol state for continuous indicator warmup."""
+    counts: dict[str, int] = {symbol: 0 for symbol in states}
+    if settings.replay_market_data or settings.indicator_preload_bars <= 0 or not states:
+        return counts
+    if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+        logging.info("Indicator preload skipped: missing Alpaca credentials")
+        return counts
+
+    limit = min(settings.indicator_preload_bars, settings.indicator_max_bars_per_symbol)
+    if limit <= 0:
+        return counts
+
+    symbols = list(states.keys())
+    try:
+        bars_map = get_recent_bars(settings, symbols, limit=limit)
+    except Exception:
+        logging.exception("Indicator preload: get_recent_bars failed")
+        return counts
+
+    for symbol in symbols:
+        state = states[symbol]
+        seen = {bar.start_ms for bar in state.bars}
+        for bar in bars_map.get(symbol, []):
+            if bar.start_ms in seen:
+                continue
+            state.add_bar(bar)
+            seen.add(bar.start_ms)
+            counts[symbol] += 1
+        if counts[symbol]:
+            logging.info("Loaded %s historical bars for %s", counts[symbol], symbol)
+
+    total = sum(counts.values())
+    if total:
+        nonzero = [counts[s] for s in symbols if counts[s]]
+        mx = max(nonzero) if nonzero else 0
+        logging.info(
+            "Indicator preload completed: symbols=%s total_bars=%s max_bars_single_symbol=%s",
+            len(symbols),
+            total,
+            mx,
+        )
+    else:
+        logging.info("Indicator preload completed: no bars returned for symbols=%s", len(symbols))
+    return counts
 
 
 def format_news_event_for_log(event: NewsEvent, *, max_headline_chars: int = 180) -> str:
@@ -342,6 +390,9 @@ def runtime_settings_snapshot(settings) -> dict:
         "alpaca_market_data_mode": settings.alpaca_market_data_mode,
         "regular_market_only": settings.regular_market_only,
         "replay_market_data": settings.replay_market_data,
+        "indicator_preload_bars": settings.indicator_preload_bars,
+        "indicator_max_bars_per_symbol": settings.indicator_max_bars_per_symbol,
+        "indicator_include_afterhours": settings.indicator_include_afterhours,
         "ai_review": settings.ai_review,
         "news_hot_positive_only": settings.news_hot_positive_only,
         "news_hot_min_sentiment_score": settings.news_hot_min_sentiment_score,
@@ -649,10 +700,18 @@ async def main(args: argparse.Namespace | None = None) -> None:
         for strategy, local_symbols in strategy_local_symbols.items()
     }
     stream_settings = replace(settings, symbols=initial_symbols)
-    states = {symbol: SymbolState(symbol) for symbol in initial_symbols}
+    states = {
+        symbol: SymbolState(symbol, indicator_max_bars=stream_settings.indicator_max_bars_per_symbol)
+        for symbol in initial_symbols
+    }
+
+    await asyncio.to_thread(preload_indicator_bars_for_states, stream_settings, states)
+
     stream = build_market_data_stream(stream_settings)
     strategies = build_strategies(settings)
-    symbol_manager = SymbolManager(states, stream, strategies, global_symbols=settings.symbols)
+    symbol_manager = SymbolManager(
+        states, stream, strategies, global_symbols=settings.symbols, settings=stream_settings
+    )
     for strategy_name, symbols in strategy_local_symbols.items():
         symbol_manager.register_strategy_symbols(strategy_name, symbols)
     strategies_by_name = {strategy.name: strategy for strategy in strategies}
@@ -676,6 +735,15 @@ async def main(args: argparse.Namespace | None = None) -> None:
     logging.info("Runtime settings %s", json.dumps(settings_snapshot, sort_keys=True))
 
     try:
+
+        def _bootstrap_all_strategies() -> None:
+            for strategy in strategies:
+                try:
+                    strategy.bootstrap_states(states)
+                except Exception:
+                    logging.exception("bootstrap_states failed for %s", getattr(strategy, "name", "?"))
+
+        await asyncio.to_thread(_bootstrap_all_strategies)
         async for event in stream.events():
             if isinstance(event, Heartbeat):
                 heartbeat.record_heartbeat()

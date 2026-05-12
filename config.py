@@ -81,6 +81,10 @@ class Settings:
     max_entry_chase_pct: float = 0.003
     replay_market_data: bool = False
 
+    indicator_preload_bars: int = 1000
+    indicator_max_bars_per_symbol: int = 3000
+    indicator_include_afterhours: bool = False
+
     opening_impulse_start_minute: int = 0
     opening_impulse_end_minute: int = 150
     opening_impulse_window_seconds: int = 30
@@ -232,6 +236,7 @@ class Settings:
     macd_early_loss_cut_pct: float = 0.0022
     macd_early_impulse_max_trades_per_symbol_per_session: int = 2
     macd_early_impulse_symbol_loss_lock_count: int = 2
+    macd_macd_warmup_bars: int = 120
 
     stoch_macd_start_minute: int = 0
     stoch_macd_end_minute: int = 360
@@ -249,6 +254,7 @@ class Settings:
     stoch_macd_min_hold_seconds: int = 30
     stoch_macd_max_trades_per_symbol_per_session: int = 2
     stoch_macd_symbol_loss_lock_count: int = 1
+    stoch_macd_macd_warmup_bars: int = 120
 
     ai_review: bool = False
     news_hot_positive_only: bool = True
@@ -296,6 +302,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_fill_poll_seconds", "ALPACA_FILL_POLL_SECONDS", _float_env, 0.25),
     ("max_entry_chase_pct", "MAX_ENTRY_CHASE_PCT", _float_env, 0.003),
     ("replay_market_data", "REPLAY_MARKET_DATA", _bool_env, False),
+    ("indicator_preload_bars", "INDICATOR_PRELOAD_BARS", _int_env, 1000),
+    ("indicator_max_bars_per_symbol", "INDICATOR_MAX_BARS_PER_SYMBOL", _int_env, 3000),
+    ("indicator_include_afterhours", "INDICATOR_INCLUDE_AFTERHOURS", _bool_env, False),
     ("ai_review", "AI_REVIEW", _bool_env, False),
     ("news_hot_positive_only", "NEWS_HOT_POSITIVE_ONLY", _bool_env, True),
     ("news_hot_min_sentiment_score", "NEWS_HOT_MIN_SENTIMENT_SCORE", _float_env, 0.5),

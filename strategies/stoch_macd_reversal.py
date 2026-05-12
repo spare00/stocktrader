@@ -16,8 +16,8 @@ from strategies.macd_early_impulse import _ema_series
 
 
 LOG = logging.getLogger(__name__)
-PREMARKET_OPEN = time(4, 0)
 MARKET_OPEN = time(9, 30)
+PREMARKET_OPEN = time(4, 0)
 MARKET_CLOSE = time(16, 0)
 
 
@@ -48,6 +48,7 @@ class StochMACDReversalStrategy(Strategy):
             2,
         ),
         ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
+        ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 120),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.stoch_macd_reversal",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12"
@@ -73,12 +74,25 @@ class StochMACDReversalStrategy(Strategy):
             "min_hold_seconds": settings.stoch_macd_min_hold_seconds,
             "max_trades_per_symbol_per_session": settings.stoch_macd_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.stoch_macd_symbol_loss_lock_count,
+            "macd_warmup_bars": settings.stoch_macd_macd_warmup_bars,
         }
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.market_tz = MARKET_TZ
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
+
+    def _indicator_bars(self, state: SymbolState) -> list:
+        """Chronological rolling bars for indicators: no session-date filter (preload + prior days kept)."""
+        bars: list = []
+        for bar in state.bars:
+            current = datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ)
+            if self.settings.indicator_include_afterhours:
+                bars.append(bar)
+            else:
+                if PREMARKET_OPEN <= current.time() < MARKET_CLOSE:
+                    bars.append(bar)
+        return bars
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind not in {"quote", "bar"}:
@@ -225,10 +239,9 @@ class StochMACDReversalStrategy(Strategy):
         elapsed = minutes - market_open
         return self.settings.stoch_macd_start_minute <= elapsed <= self.settings.stoch_macd_end_minute
 
-    @staticmethod
-    def _compute_macd(state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
-        bars = StochMACDReversalStrategy._indicator_bars(state)
-        if len(bars) < 26:
+    def _compute_macd(self, state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
+        bars = self._indicator_bars(state)
+        if len(bars) < self.settings.stoch_macd_macd_warmup_bars:
             return None
         closes = [float(bar.close) for bar in bars]
         if any(close <= 0 for close in closes):
@@ -240,9 +253,10 @@ class StochMACDReversalStrategy(Strategy):
         hist = [m - s for m, s in zip(macd_line, signal_line)]
         return macd_line, signal_line, hist
 
-    @staticmethod
-    def _compute_stoch(state: SymbolState, k_period: int = 14, d_period: int = 3, smooth_k: int = 3) -> tuple[list[float], list[float]] | None:
-        bars = StochMACDReversalStrategy._indicator_bars(state)
+    def _compute_stoch(
+        self, state: SymbolState, k_period: int = 14, d_period: int = 3, smooth_k: int = 3
+    ) -> tuple[list[float], list[float]] | None:
+        bars = self._indicator_bars(state)
         if len(bars) < k_period + smooth_k + d_period:
             return None
 
@@ -256,8 +270,8 @@ class StochMACDReversalStrategy(Strategy):
             else:
                 raw_k.append(((bars[index].close - low) / (high - low)) * 100.0)
 
-        k_values = StochMACDReversalStrategy._sma(raw_k, smooth_k)
-        d_values = StochMACDReversalStrategy._sma(k_values, d_period)
+        k_values = self._sma(raw_k, smooth_k)
+        d_values = self._sma(k_values, d_period)
         return k_values, d_values
 
     @staticmethod
@@ -346,34 +360,12 @@ class StochMACDReversalStrategy(Strategy):
             out.append(sum(window) / len(window))
         return out
 
-    @staticmethod
-    def _volume_ratio(state: SymbolState) -> float:
-        bars = StochMACDReversalStrategy._indicator_bars(state)
+    def _volume_ratio(self, state: SymbolState) -> float:
+        bars = self._indicator_bars(state)
         if len(bars) < 2:
             return 0.0
         baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
         return bars[-1].volume / baseline if baseline > 0 else 0.0
-
-    @staticmethod
-    def _indicator_bars(state: SymbolState):
-        current_session = StochMACDReversalStrategy._session_date(state)
-        if current_session is None:
-            return []
-        bars = []
-        for bar in state.bars:
-            current = datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ)
-            if current.date() != current_session:
-                continue
-            if PREMARKET_OPEN <= current.time() < MARKET_CLOSE:
-                bars.append(bar)
-        return bars
-
-    @staticmethod
-    def _session_date(state: SymbolState):
-        timestamp_ms = state.last_event_ms
-        if timestamp_ms is None:
-            return None
-        return datetime.fromtimestamp(timestamp_ms / 1000, tz=MARKET_TZ).date()
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
