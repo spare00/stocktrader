@@ -4206,7 +4206,7 @@ class CoreTradingTests(unittest.TestCase):
 
         base = [100 + index * 0.08 for index in range(35)]
         confirmed = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 108, 113]
-        weak_stoch = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 101, 99]
+        weak_stoch = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 95, 90]
         weak_macd = base + [102, 101.8, 101.6, 101.5, 101.4, 101.3, 101.2, 101.1, 101.0, 100.9, 100.8, 100.7]
 
         candidates, rejected, stage_counts = select_stoch_macd_reversal.rank_candidates(
@@ -5328,6 +5328,46 @@ class CoreTradingTests(unittest.TestCase):
         state.update_quote(Quote(symbol, last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
         return state
 
+    def _stoch_macd_premarket_warmup_state(self, *, symbol: str = "AAPL") -> SymbolState:
+        closes = [100.0 - index * 0.08 for index in range(34)] + [
+            97.2,
+            97.0,
+            96.8,
+            96.7,
+            96.8,
+            97.0,
+            97.3,
+            97.7,
+            98.2,
+            98.8,
+            99.4,
+            100.1,
+            100.9,
+            101.6,
+            102.2,
+            102.8,
+        ]
+        state = SymbolState(symbol)
+        start_ms = market_ms(2026, 4, 24, 8, 50)
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    symbol=symbol,
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=160_000 if index == len(closes) - 1 else 100_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        last = closes[-1]
+        state.update_quote(Quote(symbol, last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
+        return state
+
     def test_stoch_macd_reversal_emits_buy_on_confirmed_indicator_stack(self):
         settings = Settings(symbols=["AAPL"])
         strategy = StochMACDReversalStrategy(settings)
@@ -5340,8 +5380,8 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_macd",
             return_value=(
-                [-0.01, 0.01],
-                [-0.02, -0.01],
+                [-0.03, -0.02],
+                [-0.04, -0.03],
                 [0.01, 0.02],
             ),
         ), patch.object(
@@ -5361,6 +5401,48 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("confirmed trend", signal.reason)
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
+
+    def test_stoch_macd_reversal_can_enter_near_0940_with_premarket_warmup(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_premarket_warmup_state()
+
+        indicator_bars = strategy._indicator_bars(state)
+        regular_bars = [
+            bar
+            for bar in indicator_bars
+            if datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).time() >= datetime.strptime("09:30", "%H:%M").time()
+        ]
+
+        self.assertGreaterEqual(len(indicator_bars), 45)
+        self.assertLess(len(regular_bars), 35)
+        self.assertIsNotNone(strategy._compute_macd(state))
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([68.0, 82.0], [64.0, 76.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.06, -0.04],
+                [-0.07, -0.05],
+                [0.01, 0.01],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(101.0, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=102.0,
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.side, "BUY")
 
     def test_stoch_macd_reversal_rejects_without_bullish_stoch(self):
         settings = Settings(symbols=["AAPL"])

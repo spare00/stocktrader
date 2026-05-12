@@ -69,7 +69,7 @@ Strategies:
 - `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold
-- `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when EMA 5 is above SuperTrend (7,3), MACD/CCC is above signal and non-negative, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
+- `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when EMA 5 is above SuperTrend (7,3), MACD/CCC is above signal, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
 
 Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal`.
 When running `main.py`, you can override that directly with `--strategy`; if neither is set, the runner asks for the strategy before starting.
@@ -161,9 +161,9 @@ For `stoch_macd_reversal`, build a daily confirmation-stack watchlist:
 ```
 
 This selector uses daily OHLCV bars to rank the same confirmation stack used by
-the live handler: EMA 5 above SuperTrend (7,3), MACD/CCC above signal and
-non-negative, and STOCH %K above %D. The live strategy still waits for minute
-confirmation before entering.
+the live handler: EMA 5 above SuperTrend (7,3), MACD/CCC above signal, and
+STOCH %K above %D. The live strategy still waits for minute confirmation before
+entering.
 
 It also supports an embedded AI refinement pass:
 

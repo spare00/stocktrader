@@ -235,7 +235,7 @@ class Settings:
 
     stoch_macd_start_minute: int = 0
     stoch_macd_end_minute: int = 360
-    stoch_macd_min_bars: int = 35
+    stoch_macd_min_bars: int = 0
     stoch_macd_ema_period: int = 5
     stoch_macd_supertrend_enabled: bool = True
     stoch_macd_supertrend_period: int = 7

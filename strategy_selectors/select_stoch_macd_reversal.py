@@ -305,7 +305,7 @@ def evaluate_symbol(
 
     ccc = macd_line[-1]
     macd_signal = signal_line[-1]
-    macd_confirmed = ccc > macd_signal and ccc >= 0
+    macd_confirmed = ccc > macd_signal
     if macd_confirmed:
         _bump("passed_macd_confirmed")
     else:
