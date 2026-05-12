@@ -4795,9 +4795,25 @@ class CoreTradingTests(unittest.TestCase):
     def test_parse_args_accepts_strategy_and_list_flag(self):
         args = trading_main.parse_args(["--strategy", "gap_and_go"])
 
-        self.assertEqual(args.strategy, "gap_and_go")
+        self.assertEqual(args.strategy, ["gap_and_go"])
         self.assertFalse(args.list_strategies)
         self.assertIsNone(args.opening_plan)
+
+    def test_parse_args_accepts_multiple_strategies(self):
+        args = trading_main.parse_args(["-s", "macd_early_impulse,stoch_macd_reversal", "steady_intraday"])
+
+        self.assertEqual(args.strategy, ["macd_early_impulse", "stoch_macd_reversal", "steady_intraday"])
+
+    def test_configured_strategy_names_reads_strategies_without_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(trading_main.configured_strategy_names(), [])
+        with patch.dict(os.environ, {"STRATEGIES": "gap_and_go,maha7"}, clear=True):
+            self.assertEqual(trading_main.configured_strategy_names(), ["gap_and_go", "maha7"])
+
+    def test_prompt_for_strategy_names_requires_tty(self):
+        with patch("sys.stdin.isatty", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "No strategy was provided"):
+                trading_main.prompt_for_strategy_names()
 
     def test_validate_strategy_plan_requires_existing_file(self):
         settings = Settings(

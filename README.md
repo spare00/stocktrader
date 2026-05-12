@@ -72,7 +72,7 @@ Strategies:
 - `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when EMA 5 is above SuperTrend (7,3), MACD/CCC is above signal and non-negative, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
 
 Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal`.
-When running `main.py`, you can also override that directly with `--strategy`.
+When running `main.py`, you can override that directly with `--strategy`; if neither is set, the runner asks for the strategy before starting.
 
 Strategy entry windows are configured independently, in minutes from the
 regular-market open at `09:30` New York time. For example, `0` means `09:30`,
@@ -181,7 +181,7 @@ Or choose the active strategy directly at runtime:
 
 ```bash
 .venv/bin/python main.py --strategy opening_impulse
-.venv/bin/python main.py --strategy gap_and_go
+.venv/bin/python main.py --strategy macd_early_impulse stoch_macd_reversal steady_intraday
 ```
 
 To test a different paper profile without editing the default one:
@@ -204,15 +204,15 @@ Set **`REPLAY_MARKET_DATA=true`** when the mock serves historical bars/quotes. R
 
 **Symbols vs strategy plan:** `data/<strategy>_plan.json` lists tickers from each selector and feeds only that strategy's local universe. If **`SYMBOLS` is set** in `.env` or `profiles/*.env`, those tickers become global symbols visible to every active strategy. The runtime stream is still shared; only the logical strategy universe is separated.
 
-**Configure tickers only in files:** Put `SYMBOLS=...` in `.env` or `profiles/<name>.env`. Do not rely on shell exports — **`scripts/run_paper.sh` begins with `unset SYMBOLS`** so a stray export from tmux or an old session never reaches `main.py`. Selectors print a `SYMBOLS=...` line for pasting into those files only (JSON field `symbols_env_line`). Running `.venv/bin/python main.py` directly still inherits the shell; prefer `scripts/run_paper.sh` or clear exports first.
+**Configure tickers and default strategies only in files:** Put `SYMBOLS=...` and optional `STRATEGIES=...` in `.env` or `profiles/<name>.env`. Do not rely on shell exports — **`scripts/run_paper.sh` begins with `unset SYMBOLS` and `unset STRATEGIES`** so a stray export from tmux or an old session never reaches `main.py`. Selectors print a `SYMBOLS=...` line for pasting into those files only (JSON field `symbols_env_line`). Running `.venv/bin/python main.py` directly still inherits the shell; prefer `scripts/run_paper.sh` or clear exports first.
 
-**If you run `main.py` without the wrapper:** Run `unset SYMBOLS` when the watch list looks wrong, or align your shell with the same rule as the wrapper.
+**If you run `main.py` without the wrapper:** Run `unset SYMBOLS STRATEGIES` when the watch list or strategy selection looks wrong, or align your shell with the same rule as the wrapper.
 
 If you want `main.py` to trade a selector output, run the selector first, then start the bot with the strategy you want:
 
 ```bash
 scripts/run_paper.sh --strategy opening_impulse
-scripts/run_paper.sh --strategy gap_and_go
+scripts/run_paper.sh --strategy macd_early_impulse stoch_macd_reversal steady_intraday
 ```
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.

@@ -4,10 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Watch list and other tunables come only from `.env` and `profiles/*.env` (sourced below).
-# Never inherit SYMBOLS from a parent shell or tmux — that caused stale exports to override
-# strategy plan files. To set SYMBOLS, add it to a profile or `.env`, not `export` in the shell.
+# Watch list, strategies, and other tunables come only from `.env` and `profiles/*.env` (sourced below).
+# Never inherit SYMBOLS or STRATEGIES from a parent shell or tmux — stale exports can override
+# strategy plan files or select the wrong strategy. To set them, add them to a profile or `.env`.
 unset SYMBOLS
+unset STRATEGIES
 
 load_env_file() {
   local file="$1"

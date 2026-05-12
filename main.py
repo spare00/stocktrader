@@ -424,8 +424,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "-s",
         "--strategy",
-        choices=available_strategy_names(),
-        help="Run exactly one strategy for this session. Overrides STRATEGIES for main.py.",
+        nargs="+",
+        metavar="STRATEGY",
+        help=(
+            "Run one or more strategies for this session. Accepts repeated values "
+            "or comma-separated names, and overrides STRATEGIES for main.py."
+        ),
     )
     parser.add_argument(
         "-l",
@@ -434,7 +438,63 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="List available strategies and exit.",
     )
     parser.add_argument("--opening-plan", type=Path, default=None, help=argparse.SUPPRESS)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.strategy:
+        try:
+            args.strategy = normalize_strategy_names(args.strategy)
+        except ValueError as exc:
+            parser.error(str(exc))
+    return args
+
+
+def normalize_strategy_names(raw_values: list[str] | str) -> list[str]:
+    if isinstance(raw_values, str):
+        raw_parts = [raw_values]
+    else:
+        raw_parts = list(raw_values)
+    names = [
+        part.strip().lower()
+        for raw in raw_parts
+        for part in str(raw).replace(",", " ").split()
+        if part.strip()
+    ]
+    available = set(available_strategy_names())
+    unknown = [name for name in names if name not in available]
+    if unknown:
+        raise ValueError(
+            "Unknown strategy: "
+            + ", ".join(unknown)
+            + ". Available strategies: "
+            + ", ".join(available_strategy_names())
+        )
+    return list(dict.fromkeys(names))
+
+
+def configured_strategy_names() -> list[str]:
+    raw = os.getenv("STRATEGIES")
+    if raw is None:
+        return []
+    return normalize_strategy_names(raw)
+
+
+def prompt_for_strategy_names() -> list[str]:
+    available = available_strategy_names()
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "No strategy was provided. Run with -s, for example: "
+            f"scripts/run_paper.sh -s {available[0]}, or set STRATEGIES in .env or a profile."
+        )
+    while True:
+        print("Select strategy or strategies.", file=sys.stderr)
+        print("Available: " + ", ".join(available), file=sys.stderr)
+        response = input("Strategy name(s): ").strip()
+        if not response:
+            print("Please enter at least one strategy name.", file=sys.stderr)
+            continue
+        try:
+            return normalize_strategy_names(response)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
 
 
 def resolve_strategy_plan_path(settings, explicit_path: Path | None, strategy_name: str | None = None) -> Path:
@@ -533,7 +593,9 @@ async def main(args: argparse.Namespace | None = None) -> None:
     if args.list_strategies:
         print("\n".join(available_strategy_names()))
         return
-    requested_strategies = [args.strategy] if args.strategy else None
+    requested_strategies = args.strategy if args.strategy else configured_strategy_names()
+    if not requested_strategies:
+        requested_strategies = prompt_for_strategy_names()
     settings = load_settings(strategy_names=requested_strategies)
     loaded_plan_paths: dict[str, Path] = {}
     if args.opening_plan and len(settings.strategy_names) != 1:
