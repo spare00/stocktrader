@@ -5622,34 +5622,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.side, "BUY")
 
-    def test_stoch_macd_reversal_can_enter_with_sparse_opening_bars(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=120, stoch_macd_min_bars=35)
-        strategy = StochMACDReversalStrategy(settings)
-        state = SymbolState("AAPL")
-        closes = [100.0, 99.6, 99.2, 99.4, 99.9, 100.5, 101.1, 101.7]
-        start_ms = market_ms(2026, 4, 24, 9, 30)
-        for index, close in enumerate(closes):
-            state.add_bar(
-                Bar(
-                    symbol="AAPL",
-                    open=closes[index - 1] if index else close,
-                    high=close + 0.2,
-                    low=close - 0.2,
-                    close=close,
-                    volume=120_000 + index * 10_000,
-                    vwap=close,
-                    start_ms=start_ms + index * 60_000,
-                    end_ms=start_ms + (index + 1) * 60_000,
-                )
-            )
-        state.update_quote(Quote("AAPL", closes[-1] - 0.01, closes[-1] + 0.01, 100, 100, state.last_event_ms or 0))
-
-        signal = strategy.evaluate(state)
-
-        self.assertIsNotNone(signal)
-        self.assertEqual(signal.side, "BUY")
-
-    def test_stoch_macd_reversal_indicators_are_available_from_first_market_bar(self):
+    def test_stoch_macd_reversal_does_not_synthesize_indicators_from_sparse_opening_bars(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=120, stoch_macd_min_bars=35)
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("AAPL")
@@ -5666,23 +5639,17 @@ class CoreTradingTests(unittest.TestCase):
         )
         state.add_bar(first_bar)
 
-        macd_line, signal_line, hist = strategy._compute_macd(state)
-        k_values, d_values = strategy._compute_stoch(state)
-        supertrend = strategy._compute_supertrend(
-            strategy._indicator_bars(state),
-            settings.stoch_macd_supertrend_period,
-            settings.stoch_macd_supertrend_multiplier,
-        )
-
         self.assertEqual(len(strategy._indicator_bars(state)), 1)
-        self.assertIsNotNone(strategy._fast_ema(strategy._indicator_bars(state), settings.stoch_macd_ema_period))
-        self.assertIsNotNone(supertrend)
-        self.assertEqual(len(k_values), 1)
-        self.assertEqual(len(d_values), 1)
-        self.assertEqual(len(macd_line), 1)
-        self.assertEqual(len(signal_line), 1)
-        self.assertEqual(len(hist), 1)
-        self.assertEqual(strategy._volume_ratio(state), 1.0)
+        self.assertIsNone(strategy._compute_macd(state))
+        self.assertIsNone(strategy._compute_stoch(state))
+        self.assertIsNone(
+            strategy._compute_supertrend(
+                strategy._indicator_bars(state),
+                settings.stoch_macd_supertrend_period,
+                settings.stoch_macd_supertrend_multiplier,
+            )
+        )
+        self.assertEqual(strategy._volume_ratio(state), 0.0)
 
     def test_stoch_macd_reversal_rejects_without_bullish_stoch(self):
         settings = Settings(symbols=["AAPL"])

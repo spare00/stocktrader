@@ -109,6 +109,12 @@ class StochMACDReversalStrategy(Strategy):
             return self._reject(state, "spread", f"spread {last.spread_bps:.1f}bps too wide")
 
         indicator_bars = self._indicator_bars(state)
+        if self.settings.stoch_macd_min_bars > 0 and len(indicator_bars) < self.settings.stoch_macd_min_bars:
+            return self._reject(
+                state,
+                "bars",
+                f"need >= {self.settings.stoch_macd_min_bars} indicator bars, have {len(indicator_bars)}",
+            )
 
         stoch = self._compute_stoch(state)
         macd = self._compute_macd(state)
@@ -235,8 +241,10 @@ class StochMACDReversalStrategy(Strategy):
 
     def _compute_macd(self, state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
         bars = self._indicator_bars(state)
+        if len(bars) < self.settings.stoch_macd_macd_warmup_bars:
+            return None
         closes = [float(bar.close) for bar in bars]
-        if not closes or any(close <= 0 for close in closes):
+        if any(close <= 0 for close in closes):
             return None
         ema12 = _ema_series(closes, 12)
         ema26 = _ema_series(closes, 26)
@@ -249,13 +257,12 @@ class StochMACDReversalStrategy(Strategy):
         self, state: SymbolState, k_period: int = 14, d_period: int = 3, smooth_k: int = 3
     ) -> tuple[list[float], list[float]] | None:
         bars = self._indicator_bars(state)
-        if not bars:
+        if len(bars) < k_period + smooth_k + d_period:
             return None
 
         raw_k: list[float] = []
-        for index in range(len(bars)):
-            start = max(0, index - k_period + 1)
-            window = bars[start : index + 1]
+        for index in range(k_period - 1, len(bars)):
+            window = bars[index - k_period + 1 : index + 1]
             high = max(bar.high for bar in window)
             low = min(bar.low for bar in window)
             if high <= low:
@@ -277,10 +284,9 @@ class StochMACDReversalStrategy(Strategy):
 
     @staticmethod
     def _compute_supertrend(session_bars, period: int = 7, multiplier: float = 3.0) -> tuple[float, bool] | None:
-        if period <= 0 or multiplier <= 0 or not session_bars:
+        if period <= 0 or multiplier <= 0 or len(session_bars) < period + 1:
             return None
 
-        effective_period = min(period, len(session_bars))
         true_ranges: list[float] = []
         for index, bar in enumerate(session_bars):
             if index == 0:
@@ -297,15 +303,15 @@ class StochMACDReversalStrategy(Strategy):
 
         atr_values: list[float | None] = []
         for index in range(len(true_ranges)):
-            if index + 1 < effective_period:
+            if index + 1 < period:
                 atr_values.append(None)
-            elif index + 1 == effective_period:
-                atr_values.append(sum(true_ranges[:effective_period]) / effective_period)
+            elif index + 1 == period:
+                atr_values.append(sum(true_ranges[:period]) / period)
             else:
                 prev_atr = atr_values[-1]
                 if prev_atr is None:
                     return None
-                atr_values.append(((prev_atr * (effective_period - 1)) + true_ranges[index]) / effective_period)
+                atr_values.append(((prev_atr * (period - 1)) + true_ranges[index]) / period)
 
         first_atr_index = next((index for index, value in enumerate(atr_values) if value is not None), None)
         if first_atr_index is None:
@@ -356,14 +362,10 @@ class StochMACDReversalStrategy(Strategy):
 
     def _volume_ratio(self, state: SymbolState) -> float:
         bars = self._indicator_bars(state)
-        if not bars:
-            return 0.0
         if len(bars) < 2:
-            return 1.0 if bars[-1].volume > 0 else 0.0
+            return 0.0
         baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
-        if baseline <= 0:
-            return 1.0 if bars[-1].volume > 0 else 0.0
-        return bars[-1].volume / baseline
+        return bars[-1].volume / baseline if baseline > 0 else 0.0
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
