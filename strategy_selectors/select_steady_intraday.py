@@ -25,6 +25,11 @@ from opening_plan import default_plan_file_for_strategy
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("steady_intraday")
 MARKET_OPEN = time(9, 30)
+DAILY_MIN_ATR_PCT = 0.012
+DAILY_MAX_ATR_PCT = 0.09
+DAILY_MIN_RANGE_PCT = 0.04
+DAILY_MAX_DOWNSIDE_GAP_PCT = 0.003
+DAILY_MIN_CLOSE_POSITION = 0.55
 
 
 @dataclass(frozen=True)
@@ -144,6 +149,55 @@ def range_pct(bars: list[Bar]) -> float:
     return (high - low) / low if low > 0 else 0.0
 
 
+def close_position_in_range(bar: Bar) -> float:
+    candle_range = bar.high - bar.low
+    if candle_range <= 0:
+        return 1.0 if bar.close >= bar.open else 0.0
+    return max(0.0, min(1.0, (bar.close - bar.low) / candle_range))
+
+
+def steady_atr_bounds(settings: Settings, stage: str) -> tuple[float, float]:
+    if stage == "daily":
+        return DAILY_MIN_ATR_PCT, DAILY_MAX_ATR_PCT
+    return settings.steady_intraday_min_atr_pct, settings.steady_intraday_max_atr_pct
+
+
+def steady_min_range_pct(settings: Settings, stage: str) -> float:
+    if stage == "daily":
+        return DAILY_MIN_RANGE_PCT
+    return settings.steady_intraday_min_range_pct
+
+
+def is_selectable_candidate(candidate: SteadyIntradayCandidate) -> bool:
+    blocking_prefixes = (
+        "bar_history",
+        "price ",
+        "spread ",
+        "dollar_volume ",
+        "daily ATR too low",
+        "daily ATR too high",
+        "daily quote gap ",
+        "daily close_position ",
+    )
+    blocking_flags = {
+        "missing quote",
+        "EMA stack not bullish",
+        "EMA mid slope not positive",
+        "daily close not positive",
+        "missing VWAP",
+        "price not above VWAP buffer",
+        "ATR too low",
+        "ATR too high",
+        "range too compressed",
+        "daily range too compressed",
+        "insufficient quote or market data",
+    }
+    for flag in candidate.quality_flags:
+        if flag in blocking_flags or flag.startswith(blocking_prefixes):
+            return False
+    return True
+
+
 def close_near_high(bar: Bar) -> bool:
     candle_range = bar.high - bar.low
     if candle_range <= 0:
@@ -211,6 +265,11 @@ def score_steady_intraday_candidate(
     vwap = session_vwap(ordered)
     vwap_distance_pct = (price - vwap) / vwap if vwap else None
     dollar_volume = sum(bar.close * bar.volume for bar in ordered[-20:] if bar.close > 0 and bar.volume > 0)
+    last_close = ordered[-1].close
+    previous_close = ordered[-2].close if len(ordered) >= 2 else last_close
+    quote_gap_pct = (price - last_close) / last_close if stage == "daily" and last_close > 0 else 0.0
+    daily_change_pct = (last_close - previous_close) / previous_close if previous_close > 0 else 0.0
+    daily_close_position = close_position_in_range(ordered[-1]) if stage == "daily" else 1.0
 
     quality_flags: list[str] = []
     if len(ordered) < required_intraday_bar_count(settings):
@@ -227,12 +286,23 @@ def score_steady_intraday_candidate(
         quality_flags.append("EMA stack not bullish")
     if mid_slope_pct <= 0:
         quality_flags.append("EMA mid slope not positive")
-    if atr_pct < settings.steady_intraday_min_atr_pct:
-        quality_flags.append("ATR too low")
-    if atr_pct > settings.steady_intraday_max_atr_pct:
-        quality_flags.append("ATR too high")
-    if recent_range_pct < settings.steady_intraday_min_range_pct:
-        quality_flags.append("range too compressed")
+    min_atr_pct, max_atr_pct = steady_atr_bounds(settings, stage)
+    min_range_pct = steady_min_range_pct(settings, stage)
+    atr_label_prefix = "daily " if stage == "daily" else ""
+    range_label_prefix = "daily " if stage == "daily" else ""
+    if atr_pct < min_atr_pct:
+        quality_flags.append(f"{atr_label_prefix}ATR too low")
+    if atr_pct > max_atr_pct:
+        quality_flags.append(f"{atr_label_prefix}ATR too high")
+    if recent_range_pct < min_range_pct:
+        quality_flags.append(f"{range_label_prefix}range too compressed")
+    if stage == "daily":
+        if quote_gap_pct < -DAILY_MAX_DOWNSIDE_GAP_PCT:
+            quality_flags.append(f"daily quote gap {quote_gap_pct:.2%} < -{DAILY_MAX_DOWNSIDE_GAP_PCT:.2%}")
+        if daily_change_pct <= 0:
+            quality_flags.append("daily close not positive")
+        if daily_close_position < DAILY_MIN_CLOSE_POSITION:
+            quality_flags.append(f"daily close_position {daily_close_position:.2f} < {DAILY_MIN_CLOSE_POSITION:.2f}")
     if vwap_distance_pct is None:
         quality_flags.append("missing VWAP")
     elif vwap_distance_pct <= settings.steady_intraday_vwap_buffer_pct:
@@ -263,10 +333,10 @@ def score_steady_intraday_candidate(
 
     trend_score = 3.0 if fast > mid > slow else -2.5
     slope_score = max(-2.0, min(mid_slope_pct * 1000.0, 3.0))
-    atr_mid = (settings.steady_intraday_min_atr_pct + settings.steady_intraday_max_atr_pct) / 2
-    atr_span = max(settings.steady_intraday_max_atr_pct - settings.steady_intraday_min_atr_pct, 0.0001)
+    atr_mid = (min_atr_pct + max_atr_pct) / 2
+    atr_span = max(max_atr_pct - min_atr_pct, 0.0001)
     atr_score = max(0.0, 2.0 - abs(atr_pct - atr_mid) / atr_span * 2.0)
-    range_score = min(recent_range_pct / max(settings.steady_intraday_min_range_pct, 0.0001), 2.0)
+    range_score = min(recent_range_pct / max(min_range_pct, 0.0001), 2.0)
     volume_score = min(vol_ratio, 2.5)
     liquidity_score = min(math.log10(dollar_volume / max(min_dollar_volume, 1.0) + 1.0), 2.0)
     spread_score = 0.0 if spread_bps is None else max(0.0, 1.0 - spread_bps / max(max_spread_bps, 0.1))
@@ -275,6 +345,11 @@ def score_steady_intraday_candidate(
         if vwap_distance_pct > 0:
             vwap_score = min(vwap_distance_pct * 250.0, 2.0)
         vwap_score -= max(0.0, vwap_distance_pct - settings.steady_intraday_max_vwap_extension_pct) * 80.0
+    daily_momentum_score = 0.0
+    if stage == "daily":
+        daily_momentum_score = max(-2.0, min(daily_change_pct * 100.0, 2.0))
+        daily_momentum_score += max(-1.0, min(quote_gap_pct * 200.0, 1.5))
+        daily_momentum_score += max(-1.0, min((daily_close_position - 0.5) * 3.0, 1.0))
     trigger_score = (3.0 if pullback_reclaim_ready else 0.0) + (2.0 if orb_continuation_ready else 0.0)
     history_penalty = 3.0 if "bar_history" in " ".join(quality_flags) else 0.0
     penalty = 0.35 * len(quality_flags) + history_penalty
@@ -287,6 +362,7 @@ def score_steady_intraday_candidate(
         + liquidity_score
         + spread_score
         + vwap_score
+        + daily_momentum_score
         + trigger_score
         - penalty
     )
@@ -360,7 +436,7 @@ def rank_candidates(
             )
         candidates.append(candidate)
     candidates.sort(key=lambda item: item.score, reverse=True)
-    return candidates[:top]
+    return candidates
 
 
 def required_intraday_bar_count(settings: Settings) -> int:
@@ -368,14 +444,17 @@ def required_intraday_bar_count(settings: Settings) -> int:
 
 
 def deterministic_plan(candidates: list[SteadyIntradayCandidate], top: int) -> dict:
-    selected = [candidate.symbol for candidate in candidates[:top]]
+    selected_candidates = [candidate for candidate in candidates if is_selectable_candidate(candidate)]
+    selected = [candidate.symbol for candidate in selected_candidates[:top]]
     if not selected:
-        raise ValueError("No steady_intraday candidates could be ranked from the available market data")
+        raise ValueError("No selectable steady_intraday candidates passed liquidity, trend, spread, volatility, and VWAP filters")
+    screened_out = [candidate for candidate in candidates if not is_selectable_candidate(candidate)]
     return {
         "strategy": "steady_intraday",
         "selection_stage": candidates[0].selection_stage,
         "symbols": selected,
-        "ranked": [asdict(candidate) for candidate in candidates[:top]],
+        "ranked": [asdict(candidate) for candidate in selected_candidates[:top]],
+        "screened_out": [asdict(candidate) for candidate in screened_out[:top]],
         "settings": {
             "MAX_OPEN_POSITIONS": 2,
             "TRADE_COOLDOWN_SECONDS": 300,
@@ -476,7 +555,7 @@ def build_plan(
     quotes: dict[str, Quote] | None = None,
     settings: Settings | None = None,
     stage: str = "intraday",
-    min_price: float = 5.0,
+    min_price: float = 10.0,
     max_price: float = 500.0,
     max_spread_bps: float = 12.0,
     min_dollar_volume: float = 5_000_000.0,
@@ -541,7 +620,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_PLAN_FILE)
     parser.add_argument("--top", type=int, default=12)
     parser.add_argument("--daily-lookback-days", type=int, default=90)
-    parser.add_argument("--min-price", type=float, default=5.0)
+    parser.add_argument("--min-price", type=float, default=10.0)
     parser.add_argument("--max-price", type=float, default=500.0)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
     parser.add_argument("--min-dollar-volume", type=float, default=5_000_000.0)

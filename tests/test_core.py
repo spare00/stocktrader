@@ -1277,6 +1277,102 @@ class CoreTradingTests(unittest.TestCase):
             self.assertEqual(plan["ranked"][0]["pullback_reclaim_ready"], True)
             self.assertEqual(json.loads(output.read_text())["symbols"][0], "NVDA")
 
+    def test_steady_intraday_selector_skips_blocking_quality_flags(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["GOOD", "WIDE"])
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        bars_by_symbol = {
+            "GOOD": self._steady_intraday_selector_bars("GOOD", start_ms, trigger=True),
+            "WIDE": self._steady_intraday_selector_bars("WIDE", start_ms, trigger=True),
+        }
+        quotes = {
+            "GOOD": Quote("GOOD", bid=102.13, ask=102.17, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+            "WIDE": Quote("WIDE", bid=100.00, ask=104.00, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+        }
+
+        plan = select_steady_intraday.build_plan(
+            ["WIDE", "GOOD"],
+            1,
+            bars_by_symbol=bars_by_symbol,
+            quotes=quotes,
+            settings=settings,
+            stage="intraday",
+            min_dollar_volume=1_000_000,
+        )
+
+        self.assertEqual(plan["symbols"], ["GOOD"])
+        self.assertEqual(plan["ranked"][0]["symbol"], "GOOD")
+        self.assertEqual(plan["screened_out"][0]["symbol"], "WIDE")
+        self.assertTrue(any(flag.startswith("spread ") for flag in plan["screened_out"][0]["quality_flags"]))
+
+    def test_steady_intraday_selector_uses_daily_volatility_bounds_for_daily_stage(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["TREND"])
+        start_ms = market_ms(2026, 2, 1, 9, 30)
+        bars = []
+        for index in range(60):
+            close = 50.0 + index * 0.5
+            bars.append(
+                daily_bar_with_volume(
+                    "TREND",
+                    close=close,
+                    low=close * 0.97,
+                    high=close * 1.01,
+                    volume=2_000_000,
+                    start_ms=start_ms + index * 86_400_000,
+                )
+            )
+        quotes = {"TREND": Quote("TREND", bid=79.48, ask=79.52, bid_size=100, ask_size=100, timestamp_ms=start_ms)}
+
+        plan = select_steady_intraday.build_plan(
+            ["TREND"],
+            1,
+            bars_by_symbol={"TREND": bars},
+            quotes=quotes,
+            settings=settings,
+            stage="daily",
+            min_dollar_volume=1_000_000,
+        )
+
+        self.assertEqual(plan["symbols"], ["TREND"])
+        self.assertFalse(any("ATR too high" in flag for flag in plan["ranked"][0]["quality_flags"]))
+
+    def test_steady_intraday_selector_blocks_daily_downside_gap(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["GAPDN", "OKAY"])
+        start_ms = market_ms(2026, 2, 1, 9, 30)
+        bars_by_symbol = {}
+        for symbol in ("GAPDN", "OKAY"):
+            bars = []
+            for index in range(60):
+                close = 50.0 + index * 0.5
+                bars.append(
+                    daily_bar_with_volume(
+                        symbol,
+                        close=close,
+                        low=close * 0.97,
+                        high=close * 1.01,
+                        volume=2_000_000,
+                        start_ms=start_ms + index * 86_400_000,
+                    )
+                )
+            bars_by_symbol[symbol] = bars
+        quotes = {
+            "GAPDN": Quote("GAPDN", bid=78.90, ask=78.94, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+            "OKAY": Quote("OKAY", bid=79.48, ask=79.52, bid_size=100, ask_size=100, timestamp_ms=start_ms),
+        }
+
+        plan = select_steady_intraday.build_plan(
+            ["GAPDN", "OKAY"],
+            2,
+            bars_by_symbol=bars_by_symbol,
+            quotes=quotes,
+            settings=settings,
+            stage="daily",
+            min_dollar_volume=1_000_000,
+        )
+
+        self.assertEqual(plan["symbols"], ["OKAY"])
+        self.assertEqual(plan["screened_out"][0]["symbol"], "GAPDN")
+        self.assertTrue(any(flag.startswith("daily quote gap ") for flag in plan["screened_out"][0]["quality_flags"]))
+
     def test_steady_intraday_selector_skips_intraday_before_market_open(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
         premarket = datetime(2026, 4, 24, 8, 0, tzinfo=MARKET_TZ)
