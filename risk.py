@@ -34,11 +34,12 @@ class RiskManager:
             return RiskDecision(False, "close flatten window active")
 
         day_key = self._day_key(signal.timestamp_ms)
-        if day_key in self.stopped_day_keys:
-            return RiskDecision(False, "consecutive loss day stop active")
+        if self._respects_consecutive_loss_limits(signal.strategy):
+            if day_key in self.stopped_day_keys:
+                return RiskDecision(False, "consecutive loss day stop active")
 
-        if signal.timestamp_ms < self.pause_until_ms:
-            return RiskDecision(False, "consecutive loss pause active")
+            if signal.timestamp_ms < self.pause_until_ms:
+                return RiskDecision(False, "consecutive loss pause active")
 
         daily_limit = self._daily_loss_limit()
         daily_pnl = self.daily_realized_pnl.get(day_key, 0.0)
@@ -93,7 +94,10 @@ class RiskManager:
     def _reentry_cooldown_seconds_for_strategy(self, strategy: str) -> int:
         if strategy == "maha7":
             return self.settings.maha7_reentry_cooldown_seconds
-        return getattr(self.settings, f"{strategy}_reentry_cooldown_seconds", 0)
+        return getattr(self.settings, f"{self._settings_prefix(strategy)}_reentry_cooldown_seconds", 0)
+
+    def _respects_consecutive_loss_limits(self, strategy: str) -> bool:
+        return bool(getattr(self.settings, f"{self._settings_prefix(strategy)}_respect_consecutive_loss_limits", True))
 
     def record_trade(self, symbol: str, timestamp_ms: int, strategy: str = "") -> None:
         self.last_trade_ms[symbol] = timestamp_ms
@@ -121,7 +125,7 @@ class RiskManager:
             self._reset_symbol_loss(day_key, symbol, strategy)
 
     def _max_trades_per_symbol_for_strategy(self, strategy: str) -> int:
-        return int(getattr(self.settings, f"{strategy}_max_trades_per_symbol_per_session", 0) or 0)
+        return int(getattr(self.settings, f"{self._settings_prefix(strategy)}_max_trades_per_symbol_per_session", 0) or 0)
 
     def _record_symbol_loss(self, day_key: str, symbol: str | None, strategy: str | None) -> None:
         if not symbol or not strategy:
@@ -129,7 +133,7 @@ class RiskManager:
         key = (day_key, strategy, symbol)
         streak = self.session_symbol_loss_streaks.get(key, 0) + 1
         self.session_symbol_loss_streaks[key] = streak
-        lock_count = int(getattr(self.settings, f"{strategy}_symbol_loss_lock_count", 0) or 0)
+        lock_count = int(getattr(self.settings, f"{self._settings_prefix(strategy)}_symbol_loss_lock_count", 0) or 0)
         if lock_count > 0 and streak >= lock_count:
             self.session_symbol_locks.add(key)
 
@@ -142,6 +146,12 @@ class RiskManager:
     def _daily_loss_limit(self) -> float:
         percent_limit = self.settings.starting_cash * self.settings.daily_max_loss_pct
         return min(self.settings.daily_max_loss, percent_limit)
+
+    @staticmethod
+    def _settings_prefix(strategy: str) -> str:
+        if strategy == "stoch_macd_reversal":
+            return "stoch_macd"
+        return strategy
 
     @staticmethod
     def _day_key(timestamp_ms: int) -> str:

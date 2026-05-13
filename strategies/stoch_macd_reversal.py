@@ -32,10 +32,11 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_min_bars", "STOCH_MACD_MIN_BARS", int_env, 0),
         ("stoch_macd_ema_period", "STOCH_MACD_EMA_PERIOD", int_env, 5),
         ("stoch_macd_supertrend_enabled", "STOCH_MACD_SUPERTREND_ENABLED", bool_env, True),
+        ("stoch_macd_supertrend_buffer_pct", "STOCH_MACD_SUPERTREND_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_supertrend_period", "STOCH_MACD_SUPERTREND_PERIOD", int_env, 7),
         ("stoch_macd_supertrend_multiplier", "STOCH_MACD_SUPERTREND_MULTIPLIER", float_env, 3.0),
-        ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.65),
-        ("stoch_macd_max_spread_bps", "STOCH_MACD_MAX_SPREAD_BPS", float_env, 18.0),
+        ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.20),
+        ("stoch_macd_max_spread_bps", "STOCH_MACD_MAX_SPREAD_BPS", float_env, 20.0),
         ("stoch_macd_stop_loss_pct", "STOCH_MACD_STOP_LOSS_PCT", float_env, 0.0045),
         ("stoch_macd_target_profit_pct", "STOCH_MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("stoch_macd_trailing_activation_pct", "STOCH_MACD_TRAILING_ACTIVATION_PCT", float_env, 0.004),
@@ -49,6 +50,12 @@ class StochMACDReversalStrategy(Strategy):
         ),
         ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 120),
+        (
+            "stoch_macd_respect_consecutive_loss_limits",
+            "STOCH_MACD_RESPECT_CONSECUTIVE_LOSS_LIMITS",
+            bool_env,
+            False,
+        ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.stoch_macd_reversal",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12"
@@ -63,6 +70,7 @@ class StochMACDReversalStrategy(Strategy):
             "min_bars": settings.stoch_macd_min_bars,
             "ema_period": settings.stoch_macd_ema_period,
             "supertrend_enabled": settings.stoch_macd_supertrend_enabled,
+            "supertrend_buffer_pct": settings.stoch_macd_supertrend_buffer_pct,
             "supertrend_period": settings.stoch_macd_supertrend_period,
             "supertrend_multiplier": settings.stoch_macd_supertrend_multiplier,
             "min_volume_ratio": settings.stoch_macd_min_volume_ratio,
@@ -75,6 +83,7 @@ class StochMACDReversalStrategy(Strategy):
             "max_trades_per_symbol_per_session": settings.stoch_macd_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.stoch_macd_symbol_loss_lock_count,
             "macd_warmup_bars": settings.stoch_macd_macd_warmup_bars,
+            "respect_consecutive_loss_limits": settings.stoch_macd_respect_consecutive_loss_limits,
         }
 
     def __init__(self, settings: Settings):
@@ -149,11 +158,18 @@ class StochMACDReversalStrategy(Strategy):
             if supertrend is None or ema_fast is None:
                 return self._reject(state, "supertrend", "could not compute EMA/SuperTrend")
             supertrend_value, supertrend_bullish = supertrend
-            if not supertrend_bullish or ema_fast <= supertrend_value:
+            buffer_pct = max(0.0, self.settings.stoch_macd_supertrend_buffer_pct)
+            min_ema = supertrend_value * (1.0 - buffer_pct)
+            if ema_fast < min_ema:
                 return self._reject(
                     state,
                     "supertrend_bearish",
                     f"EMA{self.settings.stoch_macd_ema_period} <= SuperTrend ema={ema_fast:.2f} line={supertrend_value:.2f}",
+                )
+            if not supertrend_bullish:
+                LOG.debug(
+                    "Allowing %s stoch_macd_reversal entry with EMA near/above SuperTrend despite bearish trend flag",
+                    state.symbol,
                 )
 
         vol_r = self._volume_ratio(state)
