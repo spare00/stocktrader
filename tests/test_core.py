@@ -28,7 +28,7 @@ import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
 from modules.symbol_manager import SymbolManager
-from models import Bar, NewsEvent, Quote, Signal
+from models import Bar, Heartbeat, NewsEvent, Quote, Signal
 from opening_plan import (
     DEFAULT_OPENING_PLAN_FILE,
     PLAN_SETTING_MAP,
@@ -4793,6 +4793,32 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsInstance(build_market_data_stream(stream_settings), AlpacaStockStream)
         self.assertIsInstance(build_market_data_stream(rest_settings), AlpacaRestPollingStream)
+
+    def test_rest_polling_stream_retries_after_quote_connection_error(self):
+        class FailingHistorical:
+            def get_stock_latest_quote(self, request):
+                raise OSError(49, "Can't assign requested address")
+
+        clients = types.SimpleNamespace(historical=FailingHistorical(), feed="iex")
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            alpaca_market_data_mode="rest",
+            alpaca_market_data_poll_seconds=0.01,
+        )
+
+        async def consume_once():
+            stream = AlpacaRestPollingStream(settings)
+            with patch("alpaca_stream.make_clients", return_value=clients):
+                with patch.object(stream, "_retry_delay_seconds", return_value=0):
+                    async for event in stream.events():
+                        return event
+            return None
+
+        event = asyncio.run(consume_once())
+
+        self.assertIsInstance(event, Heartbeat)
 
     def test_alpaca_stream_raises_when_websocket_task_ends_silently(self):
         class FakeStream:

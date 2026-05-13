@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
+import logging
 import os
 import tempfile
 import time
@@ -12,10 +13,13 @@ from pathlib import Path
 
 from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
+from requests.exceptions import RequestException
 
 from alpaca_client import AlpacaConfigError, get_bars_between, make_clients, to_bar, to_quote
 from config import Settings
 from models import Bar, Heartbeat, NewsEvent, Quote
+
+logger = logging.getLogger(__name__)
 
 
 class AlpacaStreamAuthError(RuntimeError):
@@ -81,6 +85,7 @@ class AlpacaRestPollingStream:
 
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote]:
         clients = make_clients(self.settings)
+        consecutive_poll_errors = 0
         while True:
             now = datetime.now(tz=timezone.utc)
             symbols = list(self._symbols)
@@ -89,12 +94,41 @@ class AlpacaRestPollingStream:
                 await asyncio.sleep(self.settings.alpaca_market_data_poll_seconds)
                 continue
             quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbols, feed=clients.feed)
-            quote_response = await asyncio.to_thread(clients.historical.get_stock_latest_quote, quote_request)
+            try:
+                quote_response = await asyncio.to_thread(clients.historical.get_stock_latest_quote, quote_request)
+            except (OSError, RequestException) as exc:
+                consecutive_poll_errors += 1
+                delay_seconds = self._retry_delay_seconds(consecutive_poll_errors)
+                logger.warning(
+                    "Alpaca REST quote poll failed (%s: %s); retrying in %.1fs",
+                    type(exc).__name__,
+                    exc,
+                    delay_seconds,
+                )
+                clients = make_clients(self.settings)
+                yield Heartbeat(timestamp_ms=int(now.timestamp() * 1000))
+                await asyncio.sleep(delay_seconds)
+                continue
             for quote in quote_response.values():
                 yield to_quote(quote)
 
             start = now - timedelta(minutes=3)
-            bars_by_symbol = await asyncio.to_thread(get_bars_between, clients, symbols, TimeFrame.Minute, start, now)
+            try:
+                bars_by_symbol = await asyncio.to_thread(get_bars_between, clients, symbols, TimeFrame.Minute, start, now)
+            except (OSError, RequestException) as exc:
+                consecutive_poll_errors += 1
+                delay_seconds = self._retry_delay_seconds(consecutive_poll_errors)
+                logger.warning(
+                    "Alpaca REST bar poll failed (%s: %s); retrying in %.1fs",
+                    type(exc).__name__,
+                    exc,
+                    delay_seconds,
+                )
+                clients = make_clients(self.settings)
+                yield Heartbeat(timestamp_ms=int(now.timestamp() * 1000))
+                await asyncio.sleep(delay_seconds)
+                continue
+            consecutive_poll_errors = 0
             for symbol in symbols:
                 last_seen_start_ms = self._last_bar_start_ms.get(symbol, 0)
                 new_bars = [bar for bar in bars_by_symbol.get(symbol, []) if bar.start_ms > last_seen_start_ms]
@@ -104,6 +138,10 @@ class AlpacaRestPollingStream:
 
             yield Heartbeat(timestamp_ms=int(now.timestamp() * 1000))
             await asyncio.sleep(self.settings.alpaca_market_data_poll_seconds)
+
+    def _retry_delay_seconds(self, consecutive_errors: int) -> float:
+        base_delay = max(1.0, self.settings.alpaca_market_data_poll_seconds)
+        return min(60.0, base_delay * min(2 ** max(0, consecutive_errors - 1), 12))
 
 
 class AlpacaStockStream:
