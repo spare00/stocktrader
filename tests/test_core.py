@@ -5841,6 +5841,7 @@ class CoreTradingTests(unittest.TestCase):
     def test_stoch_macd_reversal_emits_buy_on_confirmed_indicator_stack(self):
         settings = Settings(symbols=["AAPL"])
         strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
 
         with patch.object(
             strategy,
@@ -5863,7 +5864,7 @@ class CoreTradingTests(unittest.TestCase):
             "_fast_ema",
             return_value=60.92,
         ):
-            signal = strategy.evaluate(self._stoch_macd_state())
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal.strategy, "stoch_macd_reversal")
@@ -5913,6 +5914,35 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal.side, "BUY")
+
+    def test_stoch_macd_reversal_rejects_below_vwap(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([70.0, 96.3], [68.0, 80.97]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.03, -0.02],
+                [-0.04, -0.03],
+                [0.01, 0.02],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_does_not_synthesize_indicators_from_sparse_opening_bars(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=120, stoch_macd_min_bars=35)
@@ -5999,7 +6029,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False)
+        settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False, stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
         closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
         state = self._stoch_macd_state(closes)

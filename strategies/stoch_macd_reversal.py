@@ -35,8 +35,11 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_supertrend_buffer_pct", "STOCH_MACD_SUPERTREND_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_supertrend_period", "STOCH_MACD_SUPERTREND_PERIOD", int_env, 7),
         ("stoch_macd_supertrend_multiplier", "STOCH_MACD_SUPERTREND_MULTIPLIER", float_env, 3.0),
-        ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.20),
-        ("stoch_macd_max_spread_bps", "STOCH_MACD_MAX_SPREAD_BPS", float_env, 20.0),
+        ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.80),
+        ("stoch_macd_max_spread_bps", "STOCH_MACD_MAX_SPREAD_BPS", float_env, 15.0),
+        ("stoch_macd_vwap_enabled", "STOCH_MACD_VWAP_ENABLED", bool_env, True),
+        ("stoch_macd_vwap_buffer_pct", "STOCH_MACD_VWAP_BUFFER_PCT", float_env, 0.0005),
+        ("stoch_macd_require_vwap_rising", "STOCH_MACD_REQUIRE_VWAP_RISING", bool_env, True),
         ("stoch_macd_stop_loss_pct", "STOCH_MACD_STOP_LOSS_PCT", float_env, 0.0045),
         ("stoch_macd_target_profit_pct", "STOCH_MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("stoch_macd_trailing_activation_pct", "STOCH_MACD_TRAILING_ACTIVATION_PCT", float_env, 0.004),
@@ -75,6 +78,9 @@ class StochMACDReversalStrategy(Strategy):
             "supertrend_multiplier": settings.stoch_macd_supertrend_multiplier,
             "min_volume_ratio": settings.stoch_macd_min_volume_ratio,
             "max_spread_bps": settings.stoch_macd_max_spread_bps,
+            "vwap_enabled": settings.stoch_macd_vwap_enabled,
+            "vwap_buffer_pct": settings.stoch_macd_vwap_buffer_pct,
+            "require_vwap_rising": settings.stoch_macd_require_vwap_rising,
             "stop_loss_pct": settings.stoch_macd_stop_loss_pct,
             "target_profit_pct": settings.stoch_macd_target_profit_pct,
             "trailing_activation_pct": settings.stoch_macd_trailing_activation_pct,
@@ -176,6 +182,27 @@ class StochMACDReversalStrategy(Strategy):
         if vol_r < self.settings.stoch_macd_min_volume_ratio:
             return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low")
 
+        if self.settings.stoch_macd_vwap_enabled:
+            current_session_bars = self._current_session_indicator_bars(state)
+            session_vwap = self._session_vwap(current_session_bars)
+            if session_vwap is None:
+                return self._reject(state, "vwap", "missing current-session VWAP")
+            min_price = session_vwap * (1.0 + max(0.0, self.settings.stoch_macd_vwap_buffer_pct))
+            if last.ask <= min_price:
+                return self._reject(
+                    state,
+                    "vwap",
+                    f"price below VWAP ask={last.ask:.2f} vwap={session_vwap:.2f}",
+                )
+            if self.settings.stoch_macd_require_vwap_rising and len(current_session_bars) >= 6:
+                prev_vwap = self._session_vwap(current_session_bars[:-3])
+                if prev_vwap is None or session_vwap <= prev_vwap:
+                    return self._reject(
+                        state,
+                        "vwap",
+                        f"VWAP not rising current={session_vwap:.2f} previous={prev_vwap or 0.0:.2f}",
+                    )
+
         stop_price = last.ask * (1.0 - self.settings.stoch_macd_stop_loss_pct)
         return Signal(
             strategy=self.name,
@@ -189,7 +216,7 @@ class StochMACDReversalStrategy(Strategy):
             reason=(
                 "stoch_macd_reversal confirmed trend "
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
-                f"ccc={ccc:.4f} signal={macd_signal:.4f} k={k_now:.1f} d={d_now:.1f}"
+                f"ccc={ccc:.4f} signal={macd_signal:.4f} k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x"
             ),
             stop_price=stop_price,
             position_size_multiplier=0.8,
@@ -254,6 +281,24 @@ class StochMACDReversalStrategy(Strategy):
         market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
         elapsed = minutes - market_open
         return self.settings.stoch_macd_start_minute <= elapsed <= self.settings.stoch_macd_end_minute
+
+    def _current_session_indicator_bars(self, state: SymbolState) -> list:
+        if state.last_event_ms is None:
+            return []
+        current = datetime.fromtimestamp(state.last_event_ms / 1000, tz=MARKET_TZ)
+        return [
+            bar
+            for bar in self._indicator_bars(state)
+            if datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).date() == current.date()
+        ]
+
+    @staticmethod
+    def _session_vwap(bars) -> float | None:
+        total_volume = sum(bar.volume for bar in bars if bar.volume > 0)
+        if total_volume <= 0:
+            return None
+        total_value = sum(bar.vwap * bar.volume for bar in bars if bar.volume > 0)
+        return total_value / total_volume if total_value > 0 else None
 
     def _compute_macd(self, state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
         bars = self._indicator_bars(state)

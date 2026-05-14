@@ -246,8 +246,11 @@ class Settings:
     stoch_macd_supertrend_buffer_pct: float = 0.0005
     stoch_macd_supertrend_period: int = 7
     stoch_macd_supertrend_multiplier: float = 3.0
-    stoch_macd_min_volume_ratio: float = 0.20
-    stoch_macd_max_spread_bps: float = 20.0
+    stoch_macd_min_volume_ratio: float = 0.80
+    stoch_macd_max_spread_bps: float = 15.0
+    stoch_macd_vwap_enabled: bool = True
+    stoch_macd_vwap_buffer_pct: float = 0.0005
+    stoch_macd_require_vwap_rising: bool = True
     stoch_macd_stop_loss_pct: float = 0.0045
     stoch_macd_target_profit_pct: float = 0.012
     stoch_macd_trailing_activation_pct: float = 0.004
