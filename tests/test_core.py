@@ -4640,6 +4640,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(end, now)
         get_recent.assert_called_once()
 
+    def test_indicator_preload_uses_custom_data_url_in_replay_mode(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_data_base_url="http://127.0.0.1:19902",
+            replay_market_data=True,
+            indicator_preload_bars=1000,
+        )
+        states = {"AAL": SymbolState("AAL")}
+        premarket_bar = bar("AAL", close=12.48, volume=90_000, end_ms=market_ms(2026, 4, 24, 8, 50))
+        now = datetime(2026, 4, 24, 9, 24, tzinfo=MARKET_TZ)
+
+        with (
+            patch("main.datetime") as main_datetime,
+            patch("main.make_clients", return_value=object()),
+            patch("main.get_bars_between", return_value={"AAL": [premarket_bar]}) as get_between,
+            patch("main.get_recent_bars", return_value={"AAL": []}) as get_recent,
+        ):
+            main_datetime.now.return_value = now
+            main_datetime.combine.side_effect = datetime.combine
+            counts = trading_main.preload_indicator_bars_for_states(settings, states)
+
+        self.assertEqual(counts, {"AAL": 1})
+        self.assertEqual(list(states["AAL"].bars), [premarket_bar])
+        get_between.assert_called_once()
+        get_recent.assert_called_once()
+
     def test_news_dynamic_symbols_only_expand_during_regular_market(self):
         open_event = NewsEvent(
             symbols=("MCHP",),

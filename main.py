@@ -320,7 +320,10 @@ def warm_dynamic_news_symbol(settings, state: SymbolState, symbol: str, *, bar_l
 def preload_indicator_bars_for_states(settings: Settings, states: dict[str, SymbolState]) -> dict[str, int]:
     """Append recent minute bars into each symbol state for continuous indicator warmup."""
     counts: dict[str, int] = {symbol: 0 for symbol in states}
-    if settings.replay_market_data or settings.indicator_preload_bars <= 0 or not states:
+    replay_data_base_url = bool((settings.alpaca_data_base_url or "").strip())
+    if settings.replay_market_data and not replay_data_base_url:
+        return counts
+    if settings.indicator_preload_bars <= 0 or not states:
         return counts
     if not settings.alpaca_api_key or not settings.alpaca_secret_key:
         logging.info("Indicator preload skipped: missing Alpaca credentials")
