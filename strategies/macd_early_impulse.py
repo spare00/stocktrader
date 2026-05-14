@@ -21,8 +21,8 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 
-# MACD needs warmup; minimum regular-session bars for stable histogram.
-_MIN_REGULAR_BARS = 20
+# MACD uses continuous real bars for warmup; entry structure only needs a few regular-session bars.
+_MIN_REGULAR_BARS = 3
 _NEAR_HIGH_TOLERANCE_PCT = 0.003
 _RECENT_HIGH_LOOKBACK = 15
 _RECLAIM_HIGH_LOOKBACK = 10
@@ -406,7 +406,7 @@ class MACDEarlyImpulseStrategy(Strategy):
     def _is_chop(self, state: SymbolState) -> bool:
         bars = self._regular_bars(state)[-10:]
         if len(bars) < 10:
-            return True
+            return False
         hi = max(b.high for b in bars)
         lo = min(b.low for b in bars)
         if lo <= 0:

@@ -4143,6 +4143,133 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.reason, "macd early impulse entry")
 
+    def test_macd_can_enter_near_open_with_real_premarket_warmup(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.0,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=120,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        premarket_start = market_ms(2026, 5, 8, 7, 27)
+        for index in range(117):
+            close = 98.0 + index * 0.01
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.02,
+                    high=close + 0.04,
+                    low=close - 0.04,
+                    close=close,
+                    volume=1_000,
+                    vwap=close,
+                    start_ms=premarket_start + index * 60_000,
+                    end_ms=premarket_start + (index + 1) * 60_000,
+                )
+            )
+        regular_start = market_ms(2026, 5, 8, 9, 30)
+        for index, close in enumerate([99.30, 99.55, 99.86]):
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.08,
+                    high=close + 0.12,
+                    low=close - 0.10,
+                    close=close,
+                    volume=2_000 if index == 2 else 1_100,
+                    vwap=close - 0.12,
+                    start_ms=regular_start + index * 60_000,
+                    end_ms=regular_start + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=99.88,
+                ask=99.90,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0014, 0.0022],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.reason, "macd early impulse entry")
+
+    def test_macd_still_requires_three_real_regular_bars_near_open(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.0,
+            macd_macd_warmup_bars=120,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        premarket_start = market_ms(2026, 5, 8, 7, 28)
+        for index in range(118):
+            close = 98.0 + index * 0.01
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.02,
+                    high=close + 0.04,
+                    low=close - 0.04,
+                    close=close,
+                    volume=1_000,
+                    vwap=close,
+                    start_ms=premarket_start + index * 60_000,
+                    end_ms=premarket_start + (index + 1) * 60_000,
+                )
+            )
+        regular_start = market_ms(2026, 5, 8, 9, 30)
+        for index, close in enumerate([99.30, 99.55]):
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.08,
+                    high=close + 0.12,
+                    low=close - 0.10,
+                    close=close,
+                    volume=2_000,
+                    vwap=close - 0.12,
+                    start_ms=regular_start + index * 60_000,
+                    end_ms=regular_start + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=99.56,
+                ask=99.58,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with self.assertLogs("strategies.macd_early_impulse", level="DEBUG") as captured:
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+        self.assertIn("need >= 3 regular bars, have 2", "\n".join(captured.output))
+
     def test_macd_rejects_minute_histogram_fade_entry(self):
         settings = Settings(
             alpaca_api_key="test",
