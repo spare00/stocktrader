@@ -1,7 +1,7 @@
 import asyncio
 import argparse
 from dataclasses import replace
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 import hashlib
 import json
 import logging
@@ -317,6 +317,69 @@ def warm_dynamic_news_symbol(settings, state: SymbolState, symbol: str, *, bar_l
     return warmed
 
 
+def _add_unique_bars(target: dict[str, list[Bar]], bars_map: dict[str, list[Bar]]) -> None:
+    for symbol, bars in bars_map.items():
+        existing = {bar.start_ms for bar in target.setdefault(symbol, [])}
+        for bar in bars:
+            if bar.start_ms in existing:
+                continue
+            target[symbol].append(bar)
+            existing.add(bar.start_ms)
+
+
+def _symbols_needing_bars(bars_map: dict[str, list[Bar]], symbols: list[str], target_count: int) -> list[str]:
+    return [symbol for symbol in symbols if len({bar.start_ms for bar in bars_map.get(symbol, [])}) < target_count]
+
+
+def _session_window(day, *, current_day_end: datetime | None = None) -> tuple[datetime, datetime]:
+    start = datetime.combine(day, dt_time(4, 0), tzinfo=MARKET_TZ)
+    end = datetime.combine(day, dt_time(16, 0), tzinfo=MARKET_TZ)
+    if current_day_end is not None:
+        end = min(end, current_day_end)
+    return start, end
+
+
+def _fetch_indicator_backfill_sessions(
+    clients,
+    symbols: list[str],
+    now: datetime,
+    target_count: int,
+    *,
+    max_calendar_days: int = 10,
+) -> dict[str, list[Bar]]:
+    bars_map: dict[str, list[Bar]] = {symbol: [] for symbol in symbols}
+    if target_count <= 0 or not symbols:
+        return bars_map
+    if max_calendar_days <= 0:
+        return bars_map
+
+    for day_offset in range(max_calendar_days):
+        needed = _symbols_needing_bars(bars_map, symbols, target_count)
+        if not needed:
+            break
+
+        day = now.date() - timedelta(days=day_offset)
+        start, end = _session_window(day, current_day_end=now if day_offset == 0 else None)
+        if end <= start:
+            continue
+
+        session_bars = get_bars_between(clients, needed, TimeFrame.Minute, start, end)
+        _add_unique_bars(bars_map, session_bars)
+
+    for bars in bars_map.values():
+        bars.sort(key=lambda bar: bar.start_ms)
+    return bars_map
+
+
+def _required_preload_bars_for_settings(settings: Settings, limit: int) -> int:
+    required = 0
+    if "stoch_macd_reversal" in settings.strategy_names:
+        required = max(required, settings.stoch_macd_macd_warmup_bars)
+    if "macd_early_impulse" in settings.strategy_names:
+        required = max(required, settings.macd_macd_warmup_bars)
+    return min(limit, required) if required > 0 else 0
+
+
 def preload_indicator_bars_for_states(settings: Settings, states: dict[str, SymbolState]) -> dict[str, int]:
     """Append recent minute bars into each symbol state for continuous indicator warmup."""
     counts: dict[str, int] = {symbol: 0 for symbol in states}
@@ -338,11 +401,16 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
     try:
         clients = make_clients(settings)
         now = datetime.now(tz=MARKET_TZ)
-        premarket_start = datetime.combine(now.date(), dt_time(4, 0), tzinfo=MARKET_TZ)
-        if now > premarket_start:
-            bars_map = get_bars_between(clients, symbols, TimeFrame.Minute, premarket_start, now)
+        max_calendar_days = 1 if settings.replay_market_data and replay_data_base_url else 10
+        bars_map = _fetch_indicator_backfill_sessions(
+            clients,
+            symbols,
+            now,
+            limit,
+            max_calendar_days=max_calendar_days,
+        )
     except Exception:
-        logging.exception("Indicator preload: current-day premarket bar fetch failed")
+        logging.exception("Indicator preload: explicit session backfill failed")
 
     try:
         recent_map = get_recent_bars(settings, symbols, limit=limit)
@@ -368,6 +436,15 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
             counts[symbol] += 1
         if counts[symbol]:
             logging.info("Loaded %s historical bars for %s", counts[symbol], symbol)
+        loaded_unique_bars = len({bar.start_ms for bar in state.bars})
+        required_warmup = _required_preload_bars_for_settings(settings, limit)
+        if required_warmup > 0 and loaded_unique_bars < required_warmup:
+            logging.warning(
+                "Indicator preload for %s returned only %s bars; active strategies need %s real warmup bars",
+                symbol,
+                loaded_unique_bars,
+                required_warmup,
+            )
 
     total = sum(counts.values())
     if total:

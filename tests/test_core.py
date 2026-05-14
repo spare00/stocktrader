@@ -4613,8 +4613,8 @@ class CoreTradingTests(unittest.TestCase):
         get_bars.assert_not_called()
         get_quotes.assert_not_called()
 
-    def test_indicator_preload_fetches_current_day_premarket_before_recent_fallback(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", indicator_preload_bars=1000)
+    def test_indicator_preload_fetches_current_day_session_before_recent_fallback(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", indicator_preload_bars=2)
         states = {"AAL": SymbolState("AAL")}
         premarket_bar = bar("AAL", close=12.48, volume=90_000, end_ms=market_ms(2026, 4, 24, 8, 50))
         recent_bar = bar("AAL", close=12.52, volume=110_000, end_ms=market_ms(2026, 4, 24, 9, 20))
@@ -4632,13 +4632,42 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(counts, {"AAL": 2})
         self.assertEqual(list(states["AAL"].bars), [premarket_bar, recent_bar])
-        start = get_between.call_args.args[3]
-        end = get_between.call_args.args[4]
+        start = get_between.call_args_list[0].args[3]
+        end = get_between.call_args_list[0].args[4]
         self.assertEqual(start.hour, 4)
         self.assertEqual(start.minute, 0)
         self.assertEqual(start.tzinfo, MARKET_TZ)
         self.assertEqual(end, now)
         get_recent.assert_called_once()
+
+    def test_indicator_preload_walks_prior_sessions_until_target_warmup(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", indicator_preload_bars=3)
+        states = {"QS": SymbolState("QS")}
+        current_bar = bar("QS", close=8.40, volume=100_000, end_ms=market_ms(2026, 4, 24, 9, 20))
+        prior_bar_1 = bar("QS", close=8.31, volume=90_000, end_ms=market_ms(2026, 4, 23, 15, 58))
+        prior_bar_2 = bar("QS", close=8.33, volume=95_000, end_ms=market_ms(2026, 4, 23, 15, 59))
+        now = datetime(2026, 4, 24, 9, 24, tzinfo=MARKET_TZ)
+
+        def bars_between(_clients, _symbols, _timeframe, start, _end):
+            if start.date().isoformat() == "2026-04-24":
+                return {"QS": [current_bar]}
+            if start.date().isoformat() == "2026-04-23":
+                return {"QS": [prior_bar_1, prior_bar_2]}
+            return {"QS": []}
+
+        with (
+            patch("main.datetime") as main_datetime,
+            patch("main.make_clients", return_value=object()),
+            patch("main.get_bars_between", side_effect=bars_between) as get_between,
+            patch("main.get_recent_bars", return_value={"QS": []}),
+        ):
+            main_datetime.now.return_value = now
+            main_datetime.combine.side_effect = datetime.combine
+            counts = trading_main.preload_indicator_bars_for_states(settings, states)
+
+        self.assertEqual(counts, {"QS": 3})
+        self.assertEqual(list(states["QS"].bars), [prior_bar_1, prior_bar_2, current_bar])
+        self.assertEqual(get_between.call_count, 2)
 
     def test_indicator_preload_uses_custom_data_url_in_replay_mode(self):
         settings = Settings(
