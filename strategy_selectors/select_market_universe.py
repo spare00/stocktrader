@@ -2,6 +2,8 @@ import argparse
 import json
 import math
 import sys
+import urllib.error
+import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from statistics import median
@@ -103,6 +105,23 @@ def get_latest_quotes(settings: Settings, symbols: list[str], batch_size: int) -
     return results
 
 
+def mock_data_mode(settings: Settings) -> str | None:
+    base_url = (settings.alpaca_data_base_url or "").rstrip("/")
+    if not base_url:
+        return None
+    try:
+        with urllib.request.urlopen(f"{base_url}/v1/mock/status", timeout=2.0) as response:
+            raw = response.read().decode("utf-8")
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return None
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    mode = body.get("data_mode") if isinstance(body, dict) else None
+    return str(mode) if mode else None
+
+
 def daily_metrics(bars: list[Bar]) -> dict | None:
     ordered = sorted(bars, key=lambda item: item.start_ms)
     if len(ordered) < 2:
@@ -189,16 +208,28 @@ def build_universe(args: argparse.Namespace) -> dict:
         settings = Settings(**{**settings.__dict__, **settings_kwargs})
 
     as_of: date | None = None
-    if args.as_of_date and str(args.as_of_date).strip():
+    as_of_date_arg = getattr(args, "as_of_date", None)
+    if as_of_date_arg and str(as_of_date_arg).strip():
         try:
-            as_of = date.fromisoformat(str(args.as_of_date).strip())
+            as_of = date.fromisoformat(str(as_of_date_arg).strip())
         except ValueError as exc:
             raise ValueError("--as-of-date must be YYYY-MM-DD.") from exc
 
     exchanges = {value.upper() for value in parse_symbols(args.exchanges)} if args.exchanges else None
     symbols = get_active_tradable_symbols(settings, exchanges=exchanges)
-    bars_by_symbol = get_daily_bars(settings, symbols, args.lookback_days, args.batch_size, as_of=as_of)
-    quotes = get_latest_quotes(settings, symbols, args.batch_size) if not args.skip_quotes else {}
+    if as_of is not None:
+        bars_by_symbol = get_daily_bars(settings, symbols, args.lookback_days, args.batch_size, as_of=as_of)
+    else:
+        bars_by_symbol = get_daily_bars(settings, symbols, args.lookback_days, args.batch_size)
+    skip_quotes = bool(getattr(args, "skip_quotes", False))
+    if not skip_quotes and mock_data_mode(settings) == "alpaca_replay":
+        skip_quotes = True
+        print(
+            "Detected alpaca_mock_server replay mode; skipping latest quote checks to avoid "
+            "large historical quote backfills.",
+            file=sys.stderr,
+        )
+    quotes = get_latest_quotes(settings, symbols, args.batch_size) if not skip_quotes else {}
 
     candidates = []
     for symbol in symbols:
@@ -249,7 +280,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-price", type=float, default=500.0)
     parser.add_argument("--min-average-volume", type=float, default=1_000_000.0)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
-    parser.add_argument("--skip-quotes", action="store_true", help="Skip latest quote checks, useful on weekends.")
+    parser.add_argument(
+        "--skip-quotes",
+        action="store_true",
+        help=(
+            "Skip latest quote checks (spread score only). Use with alpaca_mock_server replay "
+            "or very large asset lists if quote fetches are too slow."
+        ),
+    )
     parser.add_argument(
         "--as-of-date",
         type=str,
@@ -257,8 +295,9 @@ def parse_args() -> argparse.Namespace:
         metavar="YYYY-MM-DD",
         help=(
             "US/Eastern calendar day to anchor daily bars (inclusive); exclusive end is midnight "
-            "at the start of the following day. Matches ``--alpaca-date`` on alpaca_mock_server when "
-            "proxying historical bars through the mock."
+            "at the start of the following day. Set to the same calendar day as the mock's "
+            "--alpaca-date when you want an explicit bar anchor (optional if you rely on the mock's "
+            "replay remap from wall-clock requests)."
         ),
     )
     parser.add_argument("--alpaca-api-key", default=None)
