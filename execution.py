@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from requests.exceptions import RequestException
+
 from config import Settings
 from market_hours import is_regular_market_time, should_flatten_before_close
 from models import Bar, Signal
@@ -421,6 +423,10 @@ class AlpacaPaperExecutor:
     clients: object = field(init=False)
     _failed_entry_symbol: str | None = field(init=False, default=None)
     _failed_entry_reason: str = field(init=False, default="")
+    _market_clock_cache_is_open: bool | None = field(init=False, default=None)
+    _market_clock_cache_monotonic: float = field(init=False, default=0.0)
+    _market_clock_cache_ttl_seconds: float = field(init=False, default=15.0)
+    _market_clock_failure_grace_seconds: float = field(init=False, default=300.0)
 
     def __post_init__(self) -> None:
         from alpaca_client import make_clients
@@ -428,6 +434,7 @@ class AlpacaPaperExecutor:
         self.clients = make_clients(self.settings)
         try:
             clk = self.clients.trading.get_clock()
+            self._record_market_clock(clk)
             LOG.info(
                 "Alpaca trading clock: is_open=%s timestamp=%s next_open=%s next_close=%s",
                 clk.is_open,
@@ -629,7 +636,42 @@ class AlpacaPaperExecutor:
         return fill
 
     def _market_is_open(self) -> bool:
-        return bool(self.clients.trading.get_clock().is_open)
+        now = time.monotonic()
+        cached_is_open = getattr(self, "_market_clock_cache_is_open", None)
+        cached_at = getattr(self, "_market_clock_cache_monotonic", 0.0)
+        cache_age = now - cached_at
+        cache_ttl = getattr(self, "_market_clock_cache_ttl_seconds", 15.0)
+        failure_grace = getattr(self, "_market_clock_failure_grace_seconds", 300.0)
+
+        if cached_is_open is not None and cache_age <= cache_ttl:
+            return cached_is_open
+
+        try:
+            clk = self.clients.trading.get_clock()
+        except (OSError, RequestException) as exc:
+            if cached_is_open is not None and cache_age <= failure_grace:
+                LOG.warning(
+                    "Could not refresh Alpaca trading clock (%s: %s); using cached is_open=%s age=%.1fs",
+                    type(exc).__name__,
+                    exc,
+                    cached_is_open,
+                    cache_age,
+                )
+                return cached_is_open
+            LOG.warning(
+                "Could not read Alpaca trading clock (%s: %s); treating market as closed",
+                type(exc).__name__,
+                exc,
+            )
+            return False
+
+        return self._record_market_clock(clk)
+
+    def _record_market_clock(self, clock) -> bool:
+        is_open = bool(clock.is_open)
+        self._market_clock_cache_is_open = is_open
+        self._market_clock_cache_monotonic = time.monotonic()
+        return is_open
 
     @staticmethod
     def _new_client_order_id(symbol: str, side: str, timestamp_ms: int) -> str:

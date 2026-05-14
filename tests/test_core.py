@@ -7,6 +7,7 @@ import types
 import tempfile
 import logging
 import json
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -2458,6 +2459,58 @@ class CoreTradingTests(unittest.TestCase):
 
             self.assertIsNotNone(fill)
             self.assertEqual(fill.reason.split(" | ")[0], "end-of-day flatten")
+            self.assertEqual(executor.clients.trading.submitted_orders[0].symbol, "AAPL")
+        finally:
+            remove_fake_alpaca_modules()
+
+    def test_alpaca_manage_exit_uses_cached_clock_after_ssl_failure(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["AAPL"],
+                regular_market_only=True,
+                alpaca_fill_timeout_seconds=0.0,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.tracker.positions["AAPL"] = Position(
+                symbol="AAPL",
+                strategy="reconciled",
+                shares=5,
+                entry_price=100.0,
+                entry_ms=market_ms(2026, 4, 24, 10, 0),
+                target_price=101.0,
+                stop_price=99.5,
+            )
+            executor.clients = FakeClients(
+                [
+                    FakeOrder("sell-1", status="filled", filled_qty="5", filled_avg_price="99.40"),
+                ]
+            )
+            executor._market_clock_cache_is_open = True
+            executor._market_clock_cache_monotonic = time.monotonic() - 30
+            executor._market_clock_cache_ttl_seconds = 0
+            executor._market_clock_failure_grace_seconds = 300
+            executor.clients.trading.get_clock = lambda: (_ for _ in ()).throw(OSError("SSL record layer failure"))
+            state = SymbolState("AAPL")
+            state.update_quote(
+                Quote(
+                    symbol="AAPL",
+                    bid=99.45,
+                    ask=99.45,
+                    bid_size=1,
+                    ask_size=1,
+                    timestamp_ms=market_ms(2026, 4, 24, 10, 5),
+                )
+            )
+
+            fill = executor.manage_exit(state, {}, now_ms=market_ms(2026, 4, 24, 10, 5))
+
+            self.assertIsNotNone(fill)
+            self.assertEqual(fill.reason.split(" | ")[0], "stop loss")
             self.assertEqual(executor.clients.trading.submitted_orders[0].symbol, "AAPL")
         finally:
             remove_fake_alpaca_modules()
