@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -18,6 +19,17 @@ from models import Bar, Quote
 
 class AlpacaConfigError(RuntimeError):
     pass
+
+
+def _running_strategy_selector() -> bool:
+    return any("strategy_selectors/" in arg.replace("\\", "/") for arg in sys.argv)
+
+
+def _mark_selector_passthrough(client) -> None:
+    session = getattr(client, "_session", None)
+    headers = getattr(session, "headers", None)
+    if headers is not None:
+        headers["X-Alpaca-Mock-Replay"] = "passthrough"
 
 
 def _feed(name: str) -> DataFeed:
@@ -96,6 +108,9 @@ def make_clients(settings: Settings) -> AlpacaClients:
         secret_key=settings.alpaca_secret_key,
         url_override=settings.alpaca_stream_url,
     )
+    if _running_strategy_selector():
+        _mark_selector_passthrough(trading)
+        _mark_selector_passthrough(historical)
     return AlpacaClients(trading=trading, historical=historical, stream=stream, news_stream=news_stream, feed=feed)
 
 

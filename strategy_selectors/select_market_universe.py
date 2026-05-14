@@ -2,8 +2,6 @@ import argparse
 import json
 import math
 import sys
-import urllib.error
-import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from statistics import median
@@ -103,23 +101,6 @@ def get_latest_quotes(settings: Settings, symbols: list[str], batch_size: int) -
         for symbol, quote in response.items():
             results[symbol] = to_quote(quote)
     return results
-
-
-def mock_data_mode(settings: Settings) -> str | None:
-    base_url = (settings.alpaca_data_base_url or "").rstrip("/")
-    if not base_url:
-        return None
-    try:
-        with urllib.request.urlopen(f"{base_url}/v1/mock/status", timeout=2.0) as response:
-            raw = response.read().decode("utf-8")
-    except (OSError, urllib.error.URLError, TimeoutError):
-        return None
-    try:
-        body = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    mode = body.get("data_mode") if isinstance(body, dict) else None
-    return str(mode) if mode else None
 
 
 def daily_metrics(bars: list[Bar]) -> dict | None:
@@ -222,13 +203,6 @@ def build_universe(args: argparse.Namespace) -> dict:
     else:
         bars_by_symbol = get_daily_bars(settings, symbols, args.lookback_days, args.batch_size)
     skip_quotes = bool(getattr(args, "skip_quotes", False))
-    if not skip_quotes and mock_data_mode(settings) == "alpaca_replay":
-        skip_quotes = True
-        print(
-            "Detected alpaca_mock_server replay mode; skipping latest quote checks to avoid "
-            "large historical quote backfills.",
-            file=sys.stderr,
-        )
     quotes = get_latest_quotes(settings, symbols, args.batch_size) if not skip_quotes else {}
 
     candidates = []
