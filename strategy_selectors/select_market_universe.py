@@ -2,7 +2,7 @@ import argparse
 import json
 import math
 import sys
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from statistics import median
 from zoneinfo import ZoneInfo
@@ -59,13 +59,18 @@ def get_daily_bars(
     symbols: list[str],
     lookback_days: int,
     batch_size: int,
+    *,
+    as_of: date | None = None,
 ) -> dict[str, list[Bar]]:
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
     from alpaca_client import make_clients, to_bar
 
     clients = make_clients(settings)
-    end = datetime.now(tz=MARKET_TZ).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    if as_of is not None:
+        end = datetime.combine(as_of, time.min, tzinfo=MARKET_TZ) + timedelta(days=1)
+    else:
+        end = datetime.now(tz=MARKET_TZ).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     start = end - timedelta(days=lookback_days * 2 + 10)
     results: dict[str, list[Bar]] = {}
 
@@ -183,9 +188,16 @@ def build_universe(args: argparse.Namespace) -> dict:
     if settings_kwargs:
         settings = Settings(**{**settings.__dict__, **settings_kwargs})
 
+    as_of: date | None = None
+    if args.as_of_date and str(args.as_of_date).strip():
+        try:
+            as_of = date.fromisoformat(str(args.as_of_date).strip())
+        except ValueError as exc:
+            raise ValueError("--as-of-date must be YYYY-MM-DD.") from exc
+
     exchanges = {value.upper() for value in parse_symbols(args.exchanges)} if args.exchanges else None
     symbols = get_active_tradable_symbols(settings, exchanges=exchanges)
-    bars_by_symbol = get_daily_bars(settings, symbols, args.lookback_days, args.batch_size)
+    bars_by_symbol = get_daily_bars(settings, symbols, args.lookback_days, args.batch_size, as_of=as_of)
     quotes = get_latest_quotes(settings, symbols, args.batch_size) if not args.skip_quotes else {}
 
     candidates = []
@@ -238,6 +250,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-average-volume", type=float, default=1_000_000.0)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
     parser.add_argument("--skip-quotes", action="store_true", help="Skip latest quote checks, useful on weekends.")
+    parser.add_argument(
+        "--as-of-date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "US/Eastern calendar day to anchor daily bars (inclusive); exclusive end is midnight "
+            "at the start of the following day. Matches ``--alpaca-date`` on alpaca_mock_server when "
+            "proxying historical bars through the mock."
+        ),
+    )
     parser.add_argument("--alpaca-api-key", default=None)
     parser.add_argument("--alpaca-secret-key", default=None)
     return parser.parse_args()
