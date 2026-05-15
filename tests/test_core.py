@@ -5838,6 +5838,29 @@ class CoreTradingTests(unittest.TestCase):
         state.update_quote(Quote(symbol, last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
         return state
 
+    def _low_vol_stoch_macd_state(self, *, symbol: str = "AAPL") -> SymbolState:
+        state = SymbolState(symbol)
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        closes = [100.0 + index * 0.001 for index in range(40)]
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    symbol=symbol,
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.005,
+                    low=close - 0.005,
+                    close=close,
+                    volume=120_000 if index == len(closes) - 1 else 100_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        last = closes[-1]
+        state.update_quote(Quote(symbol, last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
+        return state
+
     def test_stoch_macd_reversal_emits_buy_on_confirmed_indicator_stack(self):
         settings = Settings(symbols=["AAPL"])
         strategy = StochMACDReversalStrategy(settings)
@@ -5941,6 +5964,35 @@ class CoreTradingTests(unittest.TestCase):
             return_value=60.92,
         ):
             signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_rejects_low_atr_setup(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._low_vol_stoch_macd_state())
 
         self.assertIsNone(signal)
 
@@ -6185,6 +6237,53 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "stoch_macd indicator sell")
+
+    def test_stoch_macd_reversal_takes_partial_at_one_r(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_partial_r=1.0, stoch_macd_partial_size=0.5)
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state([100.0 + index * 0.2 for index in range(40)])
+        state.update_quote(Quote("AAPL", 100.53, 100.55, 100, 100, state.last_event_ms or 0))
+        position = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=11,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.2,
+            stop_price=99.55,
+            initial_stop_price=99.55,
+            max_price=100.55,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "partial 1.0R")
+        self.assertEqual(decision.shares, 5)
+        self.assertTrue(decision.mark_partial)
+
+    def test_stoch_macd_reversal_exits_runner_on_pullback(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_runner_pullback_pct=0.006)
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state([100.0 + index * 0.2 for index in range(40)])
+        state.update_quote(Quote("AAPL", 100.69, 100.71, 100, 100, state.last_event_ms or 0))
+        position = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=5,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.2,
+            stop_price=99.55,
+            initial_stop_price=99.55,
+            max_price=101.40,
+            partial_exit_taken=True,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "runner pullback")
 
     @staticmethod
     def _maha7_selector_bars(symbol: str, base: float, start_ms: int, final_pullback: bool, volume: float) -> list[Bar]:

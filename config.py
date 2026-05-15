@@ -257,6 +257,14 @@ class Settings:
     stoch_macd_stoch_cross_lookback_bars: int = 3
     stoch_macd_max_k: float = 88.0
     stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
+    stoch_macd_atr_period: int = 14
+    stoch_macd_min_atr_pct: float = 0.0015
+    stoch_macd_max_atr_pct: float = 0.0300
+    stoch_macd_range_lookback_bars: int = 20
+    stoch_macd_min_range_pct: float = 0.0040
+    stoch_macd_partial_r: float = 1.0
+    stoch_macd_partial_size: float = 0.5
+    stoch_macd_runner_pullback_pct: float = 0.006
     stoch_macd_stop_loss_pct: float = 0.0045
     stoch_macd_target_profit_pct: float = 0.012
     stoch_macd_trailing_activation_pct: float = 0.004

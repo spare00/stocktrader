@@ -46,6 +46,14 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_stoch_cross_lookback_bars", "STOCH_MACD_STOCH_CROSS_LOOKBACK_BARS", int_env, 3),
         ("stoch_macd_max_k", "STOCH_MACD_MAX_K", float_env, 88.0),
         ("stoch_macd_overbought_min_hist_rise_norm", "STOCH_MACD_OVERBOUGHT_MIN_HIST_RISE_NORM", float_env, 0.00005),
+        ("stoch_macd_atr_period", "STOCH_MACD_ATR_PERIOD", int_env, 14),
+        ("stoch_macd_min_atr_pct", "STOCH_MACD_MIN_ATR_PCT", float_env, 0.0015),
+        ("stoch_macd_max_atr_pct", "STOCH_MACD_MAX_ATR_PCT", float_env, 0.0300),
+        ("stoch_macd_range_lookback_bars", "STOCH_MACD_RANGE_LOOKBACK_BARS", int_env, 20),
+        ("stoch_macd_min_range_pct", "STOCH_MACD_MIN_RANGE_PCT", float_env, 0.0040),
+        ("stoch_macd_partial_r", "STOCH_MACD_PARTIAL_R", float_env, 1.0),
+        ("stoch_macd_partial_size", "STOCH_MACD_PARTIAL_SIZE", float_env, 0.5),
+        ("stoch_macd_runner_pullback_pct", "STOCH_MACD_RUNNER_PULLBACK_PCT", float_env, 0.006),
         ("stoch_macd_stop_loss_pct", "STOCH_MACD_STOP_LOSS_PCT", float_env, 0.0045),
         ("stoch_macd_target_profit_pct", "STOCH_MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("stoch_macd_trailing_activation_pct", "STOCH_MACD_TRAILING_ACTIVATION_PCT", float_env, 0.004),
@@ -93,6 +101,14 @@ class StochMACDReversalStrategy(Strategy):
             "stoch_cross_lookback_bars": settings.stoch_macd_stoch_cross_lookback_bars,
             "max_k": settings.stoch_macd_max_k,
             "overbought_min_hist_rise_norm": settings.stoch_macd_overbought_min_hist_rise_norm,
+            "atr_period": settings.stoch_macd_atr_period,
+            "min_atr_pct": settings.stoch_macd_min_atr_pct,
+            "max_atr_pct": settings.stoch_macd_max_atr_pct,
+            "range_lookback_bars": settings.stoch_macd_range_lookback_bars,
+            "min_range_pct": settings.stoch_macd_min_range_pct,
+            "partial_r": settings.stoch_macd_partial_r,
+            "partial_size": settings.stoch_macd_partial_size,
+            "runner_pullback_pct": settings.stoch_macd_runner_pullback_pct,
             "stop_loss_pct": settings.stoch_macd_stop_loss_pct,
             "target_profit_pct": settings.stoch_macd_target_profit_pct,
             "trailing_activation_pct": settings.stoch_macd_trailing_activation_pct,
@@ -223,8 +239,21 @@ class StochMACDReversalStrategy(Strategy):
         if vol_r < self.settings.stoch_macd_min_volume_ratio:
             return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low")
 
+        current_session_bars = self._current_session_indicator_bars(state)
+        atr = self._atr(current_session_bars, self.settings.stoch_macd_atr_period)
+        if atr is not None:
+            atr_pct = atr / last.ask if last.ask > 0 else 0.0
+            if atr_pct < self.settings.stoch_macd_min_atr_pct:
+                return self._reject(state, "atr", f"ATR too low atr={atr_pct:.2%}")
+            if atr_pct > self.settings.stoch_macd_max_atr_pct:
+                return self._reject(state, "atr", f"ATR too high atr={atr_pct:.2%}")
+        range_lookback = max(1, self.settings.stoch_macd_range_lookback_bars)
+        if len(current_session_bars) >= range_lookback:
+            recent_range_pct = self._range_pct(current_session_bars[-range_lookback:])
+            if recent_range_pct < self.settings.stoch_macd_min_range_pct:
+                return self._reject(state, "range", f"recent range too compressed range={recent_range_pct:.2%}")
+
         if self.settings.stoch_macd_vwap_enabled:
-            current_session_bars = self._current_session_indicator_bars(state)
             session_vwap = self._session_vwap(current_session_bars)
             if session_vwap is None:
                 return self._reject(state, "vwap", "missing current-session VWAP")
@@ -278,10 +307,26 @@ class StochMACDReversalStrategy(Strategy):
         age_seconds = (event_ms - position.entry_ms) / 1000
         pnl_pct = (price - position.entry_price) / position.entry_price
 
-        if pnl_pct >= self.settings.stoch_macd_target_profit_pct:
-            return ExitDecision("target profit")
         if pnl_pct <= -self.settings.stoch_macd_stop_loss_pct:
             return ExitDecision("stop loss")
+
+        initial_stop = position.initial_stop_price or position.stop_price
+        r_initial = position.entry_price - initial_stop if initial_stop else 0.0
+        if r_initial <= 0:
+            r_initial = position.entry_price * self.settings.stoch_macd_stop_loss_pct
+        if r_initial > 0 and not position.partial_exit_taken and position.shares > 1:
+            partial_level = position.entry_price + r_initial * self.settings.stoch_macd_partial_r
+            if price >= partial_level:
+                fraction = min(1.0, max(0.0, self.settings.stoch_macd_partial_size))
+                shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
+                return ExitDecision(f"partial {self.settings.stoch_macd_partial_r:.1f}R", shares=shares, mark_partial=True)
+
+        if pnl_pct >= self.settings.stoch_macd_target_profit_pct:
+            return ExitDecision("target profit")
+        if position.partial_exit_taken:
+            peak = position.max_price if position.max_price > 0 else position.entry_price
+            if peak > 0 and price <= peak * (1 - self.settings.stoch_macd_runner_pullback_pct):
+                return ExitDecision("runner pullback")
         if age_seconds < self.settings.stoch_macd_min_hold_seconds:
             return None
 
@@ -341,6 +386,31 @@ class StochMACDReversalStrategy(Strategy):
             return None
         total_value = sum(bar.vwap * bar.volume for bar in bars if bar.volume > 0)
         return total_value / total_volume if total_value > 0 else None
+
+    @staticmethod
+    def _atr(bars, period: int) -> float | None:
+        if period <= 0 or len(bars) < period + 1:
+            return None
+        true_ranges: list[float] = []
+        tail = bars[-(period + 1) :]
+        for previous, current in zip(tail, tail[1:]):
+            true_ranges.append(
+                max(
+                    current.high - current.low,
+                    abs(current.high - previous.close),
+                    abs(current.low - previous.close),
+                )
+            )
+        return sum(true_ranges) / len(true_ranges) if true_ranges else None
+
+    @staticmethod
+    def _range_pct(bars) -> float:
+        if not bars:
+            return 0.0
+        high = max(bar.high for bar in bars)
+        low = min(bar.low for bar in bars)
+        close = bars[-1].close
+        return (high - low) / close if close > 0 else 0.0
 
     @staticmethod
     def _last_n_rising(values: list[float], count: int) -> bool:
