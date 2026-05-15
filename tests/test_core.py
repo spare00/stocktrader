@@ -4141,7 +4141,7 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(state)
 
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.reason, "macd early impulse entry")
+        self.assertTrue(signal.reason.startswith("macd early impulse entry"))
 
     def test_macd_can_enter_near_open_with_real_premarket_warmup(self):
         settings = Settings(
@@ -4209,7 +4209,7 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(state)
 
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.reason, "macd early impulse entry")
+        self.assertTrue(signal.reason.startswith("macd early impulse entry"))
 
     def test_macd_still_requires_three_real_regular_bars_near_open(self):
         settings = Settings(
@@ -4322,6 +4322,52 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_macd_rejects_wide_spread_before_entry(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.0,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+            macd_max_spread_bps=5.0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(25):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=101.90,
+                ask=102.05,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with self.assertLogs("strategies.macd_early_impulse", level="DEBUG") as captured:
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+        self.assertIn("spread", "\n".join(captured.output))
+
     def test_macd_runner_mode_allows_strong_reclaim_without_perfect_histogram(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -4386,7 +4432,7 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(state)
 
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.reason, "macd early impulse entry")
+        self.assertTrue(signal.reason.startswith("macd early impulse entry"))
         self.assertLess(signal.stop_price, signal.price * (1.0 - settings.macd_stop_loss_pct))
 
     def test_macd_runner_mode_holds_through_small_early_pullback(self):

@@ -227,6 +227,16 @@ class Settings:
     macd_trailing_stop_pct: float = 0.0045
     macd_trailing_activation_pct: float = 0.003
     macd_chop_range_pct: float = 0.0035
+    macd_max_spread_bps: float = 15.0
+    macd_atr_period: int = 14
+    macd_min_atr_pct: float = 0.0015
+    macd_max_atr_pct: float = 0.0300
+    macd_range_lookback_bars: int = 20
+    macd_min_range_pct: float = 0.0040
+    macd_structure_lookback_bars: int = 6
+    macd_stop_buffer_pct: float = 0.0008
+    macd_min_r_pct: float = 0.0020
+    macd_max_r_pct: float = 0.0150
     macd_skip_midday: bool = False
     macd_min_hold_seconds: int = 60
     macd_hist_rise_bars: int = 2

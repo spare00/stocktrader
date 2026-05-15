@@ -76,6 +76,16 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_trailing_stop_pct", "MACD_TRAILING_STOP_PCT", float_env, 0.0045),
         ("macd_trailing_activation_pct", "MACD_TRAILING_ACTIVATION_PCT", float_env, 0.003),
         ("macd_chop_range_pct", "MACD_CHOP_RANGE_PCT", float_env, 0.0035),
+        ("macd_max_spread_bps", "MACD_MAX_SPREAD_BPS", float_env, 15.0),
+        ("macd_atr_period", "MACD_ATR_PERIOD", int_env, 14),
+        ("macd_min_atr_pct", "MACD_MIN_ATR_PCT", float_env, 0.0015),
+        ("macd_max_atr_pct", "MACD_MAX_ATR_PCT", float_env, 0.0300),
+        ("macd_range_lookback_bars", "MACD_RANGE_LOOKBACK_BARS", int_env, 20),
+        ("macd_min_range_pct", "MACD_MIN_RANGE_PCT", float_env, 0.0040),
+        ("macd_structure_lookback_bars", "MACD_STRUCTURE_LOOKBACK_BARS", int_env, 6),
+        ("macd_stop_buffer_pct", "MACD_STOP_BUFFER_PCT", float_env, 0.0008),
+        ("macd_min_r_pct", "MACD_MIN_R_PCT", float_env, 0.0020),
+        ("macd_max_r_pct", "MACD_MAX_R_PCT", float_env, 0.0150),
         ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
         ("macd_min_hold_seconds", "MACD_MIN_HOLD_SECONDS", int_env, 60),
         ("macd_hist_rise_bars", "MACD_HIST_RISE_BARS", int_env, 2),
@@ -115,6 +125,16 @@ class MACDEarlyImpulseStrategy(Strategy):
             "trailing_stop_pct": s.macd_trailing_stop_pct,
             "trailing_activation_pct": s.macd_trailing_activation_pct,
             "chop_range_pct": s.macd_chop_range_pct,
+            "max_spread_bps": s.macd_max_spread_bps,
+            "atr_period": s.macd_atr_period,
+            "min_atr_pct": s.macd_min_atr_pct,
+            "max_atr_pct": s.macd_max_atr_pct,
+            "range_lookback_bars": s.macd_range_lookback_bars,
+            "min_range_pct": s.macd_min_range_pct,
+            "structure_lookback_bars": s.macd_structure_lookback_bars,
+            "stop_buffer_pct": s.macd_stop_buffer_pct,
+            "min_r_pct": s.macd_min_r_pct,
+            "max_r_pct": s.macd_max_r_pct,
             "skip_midday": s.macd_skip_midday,
             "min_hold_seconds": s.macd_min_hold_seconds,
             "hist_rise_bars": s.macd_hist_rise_bars,
@@ -181,6 +201,8 @@ class MACDEarlyImpulseStrategy(Strategy):
         last = latest_valid_quote(state)
         if last is None:
             return self._reject(state, "quote", "invalid or missing latest quote")
+        if last.spread_bps > self.settings.macd_max_spread_bps:
+            return self._reject(state, "spread", f"spread {last.spread_bps:.2f}bps too wide")
 
         rb = self._regular_bars(state)
         if len(rb) < _MIN_REGULAR_BARS:
@@ -215,6 +237,20 @@ class MACDEarlyImpulseStrategy(Strategy):
                 "chop",
                 f"10-bar range% < {self.settings.macd_chop_range_pct:.4f}",
             )
+
+        atr = self._atr(rb, self.settings.macd_atr_period)
+        if atr is not None and atr > 0:
+            atr_pct = atr / last.ask if last.ask > 0 else 0.0
+            if atr_pct < self.settings.macd_min_atr_pct:
+                return self._reject(state, "atr", f"ATR {atr_pct:.2%} too low")
+            if atr_pct > self.settings.macd_max_atr_pct:
+                return self._reject(state, "atr", f"ATR {atr_pct:.2%} too high")
+
+        range_lookback = max(1, self.settings.macd_range_lookback_bars)
+        if len(rb) >= range_lookback:
+            recent_range_pct = self._range_pct(rb[-range_lookback:])
+            if recent_range_pct < self.settings.macd_min_range_pct:
+                return self._reject(state, "range", f"range {recent_range_pct:.2%} too compressed")
 
         speed_ok = rb[-1].close > rb[-3].close
 
@@ -293,8 +329,13 @@ class MACDEarlyImpulseStrategy(Strategy):
         stop_price = (
             self._runner_stop_price(rb, last.ask, ema_trend[-1], vwap)
             if runner_mode
-            else last.ask * (1.0 - self.settings.macd_stop_loss_pct)
+            else self._entry_stop_price(rb, last.ask)
         )
+        r_pct = (last.ask - stop_price) / last.ask if last.ask > 0 else 0.0
+        if r_pct < self.settings.macd_min_r_pct:
+            return self._reject(state, "risk", f"R {r_pct:.2%} too small")
+        if r_pct > self.settings.macd_max_r_pct:
+            return self._reject(state, "risk", f"R {r_pct:.2%} too wide")
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -304,7 +345,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             change_pct=change_pct,
             volume_ratio=vol_r,
             spread_bps=spread_bps,
-            reason="macd early impulse entry",
+            reason=f"macd early impulse entry | R {r_pct:.2%}",
             stop_price=stop_price,
         )
 
@@ -413,6 +454,30 @@ class MACDEarlyImpulseStrategy(Strategy):
             return True
         range_pct = (hi - lo) / lo
         return range_pct < self.settings.macd_chop_range_pct
+
+    @staticmethod
+    def _atr(bars, period: int) -> float | None:
+        if period <= 0 or len(bars) < period + 1:
+            return None
+        true_ranges = []
+        tail = bars[-(period + 1) :]
+        for previous, current in zip(tail, tail[1:]):
+            true_ranges.append(
+                max(
+                    current.high - current.low,
+                    abs(current.high - previous.close),
+                    abs(current.low - previous.close),
+                )
+            )
+        return sum(true_ranges) / len(true_ranges) if true_ranges else None
+
+    @staticmethod
+    def _range_pct(bars) -> float:
+        if not bars:
+            return 0.0
+        low = min(bar.low for bar in bars if bar.low > 0)
+        high = max(bar.high for bar in bars if bar.high > 0)
+        return (high - low) / low if low > 0 else 0.0
 
     def _compute_macd(self, state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
         ib = continuous_indicator_bars(state, self.settings)
@@ -571,6 +636,17 @@ class MACDEarlyImpulseStrategy(Strategy):
         raw_risk_pct = (current_price - support) / current_price if current_price > 0 and support > 0 else _RUNNER_STOP_MIN_PCT
         risk_pct = min(max(raw_risk_pct + _RUNNER_STOP_BUFFER_PCT, _RUNNER_STOP_MIN_PCT), _RUNNER_STOP_MAX_PCT)
         return current_price * (1.0 - risk_pct)
+
+    def _entry_stop_price(self, session_bars, current_price: float) -> float:
+        fixed_stop = current_price * (1.0 - self.settings.macd_stop_loss_pct)
+        lookback = max(1, self.settings.macd_structure_lookback_bars)
+        if len(session_bars) < lookback or current_price <= 0:
+            return fixed_stop
+        recent_low = min((bar.low for bar in session_bars[-lookback:] if bar.low > 0), default=0.0)
+        if recent_low <= 0 or recent_low >= current_price:
+            return fixed_stop
+        structure_stop = recent_low * (1.0 - max(0.0, self.settings.macd_stop_buffer_pct))
+        return max(fixed_stop, structure_stop)
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
