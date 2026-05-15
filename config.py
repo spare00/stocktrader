@@ -265,6 +265,14 @@ class Settings:
     stoch_macd_partial_r: float = 1.0
     stoch_macd_partial_size: float = 0.5
     stoch_macd_runner_pullback_pct: float = 0.006
+    stoch_macd_structure_lookback_bars: int = 6
+    stoch_macd_min_r_pct: float = 0.0025
+    stoch_macd_max_r_pct: float = 0.0120
+    stoch_macd_early_window_minutes: int = 60
+    stoch_macd_early_min_volume_ratio: float = 1.20
+    stoch_macd_early_max_spread_bps: float = 12.0
+    stoch_macd_early_min_hist_norm: float = 0.00010
+    stoch_macd_early_vwap_buffer_pct: float = 0.0010
     stoch_macd_stop_loss_pct: float = 0.0045
     stoch_macd_target_profit_pct: float = 0.012
     stoch_macd_trailing_activation_pct: float = 0.004

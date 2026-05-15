@@ -5996,6 +5996,70 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_rejects_too_tight_risk(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False, stoch_macd_early_window_minutes=0)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ), patch.object(
+            strategy,
+            "_entry_stop_price",
+            return_value=97.77,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_early_window_requires_stronger_macd(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.002, 0.004, 0.006],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNone(signal)
+
     def test_stoch_macd_reversal_rejects_stale_stoch_cross(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
