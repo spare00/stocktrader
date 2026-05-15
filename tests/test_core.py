@@ -4533,7 +4533,7 @@ class CoreTradingTests(unittest.TestCase):
             return bars
 
         base = [100 + index * 0.08 for index in range(35)]
-        confirmed = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 108, 113]
+        confirmed = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 95, 92, 106, 116]
         weak_stoch = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 103, 95, 90]
         weak_macd = base + [102, 101.8, 101.6, 101.5, 101.4, 101.3, 101.2, 101.1, 101.0, 100.9, 100.8, 100.7]
 
@@ -4553,12 +4553,21 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(selected["CONFIRMED"].daily_macd, selected["CONFIRMED"].daily_signal)
         self.assertGreaterEqual(selected["CONFIRMED"].daily_macd, 0)
         self.assertGreater(selected["CONFIRMED"].stoch_k, selected["CONFIRMED"].stoch_d)
+        self.assertTrue(selected["CONFIRMED"].daily_macd_rising)
+        self.assertTrue(selected["CONFIRMED"].daily_hist_expanding)
+        self.assertTrue(selected["CONFIRMED"].recent_stoch_cross)
+        self.assertGreaterEqual(selected["CONFIRMED"].daily_atr_pct, select_stoch_macd_reversal.DAILY_MIN_ATR_PCT)
+        self.assertGreaterEqual(selected["CONFIRMED"].daily_range_pct, select_stoch_macd_reversal.DAILY_MIN_RANGE_PCT)
         self.assertEqual(selected["WEAK_STOCH"].setup_stage, "not_confirmed")
         self.assertGreater(selected["CONFIRMED"].score, selected["WEAK_STOCH"].score)
         self.assertGreater(selected["CONFIRMED"].score, selected["WEAK_MACD"].score)
         self.assertGreaterEqual(stage_counts["passed_trend_confirmed"], 1)
         self.assertGreaterEqual(stage_counts["passed_macd_confirmed"], 1)
         self.assertGreaterEqual(stage_counts["passed_stoch_bullish"], 1)
+        self.assertGreaterEqual(stage_counts["passed_daily_impulse"], 1)
+        self.assertGreaterEqual(stage_counts["passed_recent_stoch_cross"], 1)
+        self.assertGreaterEqual(stage_counts["passed_daily_atr"], 1)
+        self.assertGreaterEqual(stage_counts["passed_daily_range"], 1)
 
         plan = select_stoch_macd_reversal.deterministic_plan(
             candidates,
@@ -4570,6 +4579,42 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(plan["strategy"], "stoch_macd_reversal")
         self.assertEqual(plan["symbols"][0], "CONFIRMED")
         self.assertEqual(plan["settings"]["filter_thresholds"]["indicator_input"], "daily OHLCV bars")
+        self.assertEqual(
+            plan["settings"]["filter_thresholds"]["daily_stoch_cross_lookback"],
+            select_stoch_macd_reversal.DAILY_STOCH_CROSS_LOOKBACK,
+        )
+
+    def test_stoch_macd_selector_penalizes_stale_daily_timing_without_rejecting(self):
+        def daily_bars_from_closes(symbol: str, closes: list[float]) -> list[Bar]:
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars: list[Bar] = []
+            for index, close in enumerate(closes):
+                previous = closes[index - 1] if index else close
+                high = max(close, previous) * 1.015
+                low = min(close, previous) * 0.985
+                volume = 2_000_000 if index == len(closes) - 1 else 1_000_000
+                bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
+            return bars
+
+        base = [100 + index * 0.08 for index in range(35)]
+        fresh = base + [102, 100, 98, 96, 94, 92, 90, 88, 89, 91, 94, 98, 95, 92, 106, 116]
+        stale = base + [92, 94, 98, 103, 108, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122]
+
+        candidates, rejected, _ = select_stoch_macd_reversal.rank_candidates(
+            ["FRESH", "STALE"],
+            {
+                "FRESH": daily_bars_from_closes("FRESH", fresh),
+                "STALE": daily_bars_from_closes("STALE", stale),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        self.assertEqual(rejected, [])
+        self.assertIn("STALE", selected)
+        self.assertTrue(selected["FRESH"].recent_stoch_cross)
+        self.assertFalse(selected["STALE"].recent_stoch_cross)
+        self.assertTrue(any("no bullish daily STOCH cross" in flag for flag in selected["STALE"].quality_flags))
+        self.assertGreater(selected["FRESH"].score, selected["STALE"].score)
 
     def test_stoch_macd_ai_selection_can_reorder_meaningful_score_gap(self):
         ranked = [

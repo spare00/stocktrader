@@ -39,6 +39,14 @@ DAILY_VOLUME_RATIO_MIN = 0.8
 DAILY_EMA_FAST = 20
 DAILY_EMA_SLOW = 50
 DAILY_MAX_EMA_EXTENSION_PCT = 0.18
+DAILY_MACD_RISING_LOOKBACK = 3
+DAILY_STOCH_CROSS_LOOKBACK = 5
+DAILY_STOCH_MAX_K = 88.0
+DAILY_ATR_PERIOD = 14
+DAILY_MIN_ATR_PCT = 0.015
+DAILY_MAX_ATR_PCT = 0.120
+DAILY_RANGE_LOOKBACK = 20
+DAILY_MIN_RANGE_PCT = 0.040
 AI_SCORE_DELTA_LIMIT = 15.0
 DEFAULT_UNIVERSE = [
     "AAPL",
@@ -67,10 +75,17 @@ class StochMACDReversalCandidate:
     daily_macd: float
     daily_signal: float
     daily_hist: float
+    daily_hist_norm: float
+    daily_hist_growth_norm: float
+    daily_macd_rising: bool
+    daily_hist_expanding: bool
+    recent_stoch_cross: bool
     ema_confirm: float
     supertrend: float
     supertrend_bullish: bool
     daily_volume_ratio: float
+    daily_atr_pct: float
+    daily_range_pct: float
     ema_fast: float
     ema_slow: float
     ema_extension_pct: float
@@ -172,6 +187,61 @@ def _latest_daily_change_pct(closes: list[float]) -> float:
     if len(closes) < 2 or closes[-2] <= 0:
         return 0.0
     return ((closes[-1] - closes[-2]) / closes[-2]) * 100.0
+
+
+def _is_rising(values: list[float], lookback: int) -> bool:
+    if lookback <= 1:
+        return True
+    recent = values[-lookback:]
+    return len(recent) == lookback and all(recent[index] > recent[index - 1] for index in range(1, len(recent)))
+
+
+def _is_improving(values: list[float], lookback: int) -> bool:
+    if lookback <= 1:
+        return True
+    if len(values) < lookback + 1:
+        return False
+    recent = values[-lookback:]
+    previous = values[-(lookback + 1) : -1]
+    return values[-1] > values[-2] and sum(recent) / len(recent) > sum(previous) / len(previous)
+
+
+def _recent_stoch_cross_above(k_values: list[float], d_values: list[float], lookback: int = DAILY_STOCH_CROSS_LOOKBACK) -> bool:
+    if len(k_values) < 2 or len(d_values) < 2:
+        return False
+    start = max(1, min(len(k_values), len(d_values)) - max(1, lookback))
+    end = min(len(k_values), len(d_values))
+    return any(k_values[index - 1] <= d_values[index - 1] and k_values[index] > d_values[index] for index in range(start, end))
+
+
+def _atr_pct(bars: list[Bar], period: int = DAILY_ATR_PERIOD) -> float:
+    if period <= 0 or len(bars) < period + 1:
+        return 0.0
+    window = bars[-(period + 1) :]
+    true_ranges: list[float] = []
+    for index, bar in enumerate(window):
+        if index == 0:
+            continue
+        prev_close = window[index - 1].close
+        true_ranges.append(
+            max(
+                bar.high - bar.low,
+                abs(bar.high - prev_close),
+                abs(bar.low - prev_close),
+            )
+        )
+    price = bars[-1].close
+    return (sum(true_ranges) / len(true_ranges)) / price if true_ranges and price > 0 else 0.0
+
+
+def _range_pct(bars: list[Bar], lookback: int = DAILY_RANGE_LOOKBACK) -> float:
+    window = bars[-max(1, lookback) :]
+    if not window:
+        return 0.0
+    high = max(bar.high for bar in window)
+    low = min(bar.low for bar in window)
+    price = window[-1].close
+    return (high - low) / price if price > 0 else 0.0
 
 
 def _bounded(value: float, *, low: float, high: float) -> float:
@@ -298,18 +368,32 @@ def evaluate_symbol(
     k_now = k_values[-1]
     d_now = d_values[-1]
     stoch_bullish = k_now > d_now
+    recent_stoch_cross = _recent_stoch_cross_above(k_values, d_values)
     if stoch_bullish:
         _bump("passed_stoch_bullish")
     else:
         quality_flags.append(f"STOCH not bullish k={k_now:.1f} d={d_now:.1f}")
+    if recent_stoch_cross:
+        _bump("passed_recent_stoch_cross")
+    else:
+        quality_flags.append(f"no bullish daily STOCH cross in last {DAILY_STOCH_CROSS_LOOKBACK} bars")
 
     ccc = macd_line[-1]
     macd_signal = signal_line[-1]
     macd_confirmed = ccc > macd_signal
+    macd_rising = _is_rising(macd_line, DAILY_MACD_RISING_LOOKBACK)
+    hist_expanding = _is_improving(hist, DAILY_MACD_RISING_LOOKBACK)
     if macd_confirmed:
         _bump("passed_macd_confirmed")
     else:
         quality_flags.append(f"MACD/CCC not confirmed ccc={ccc:.4f} signal={macd_signal:.4f}")
+    if macd_rising and hist_expanding:
+        _bump("passed_daily_impulse")
+    else:
+        if not macd_rising:
+            quality_flags.append("daily MACD line not rising")
+        if not hist_expanding:
+            quality_flags.append("daily histogram not expanding")
 
     ema_confirm = ema_confirm_series[-1]
     supertrend_value, supertrend_bullish = supertrend
@@ -324,6 +408,19 @@ def evaluate_symbol(
         _bump("passed_volume")
     else:
         quality_flags.append(f"daily volume ratio {daily_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}")
+
+    daily_atr_pct = _atr_pct(ordered)
+    daily_range_pct = _range_pct(ordered)
+    if DAILY_MIN_ATR_PCT <= daily_atr_pct <= DAILY_MAX_ATR_PCT:
+        _bump("passed_daily_atr")
+    elif daily_atr_pct < DAILY_MIN_ATR_PCT:
+        quality_flags.append(f"daily ATR {daily_atr_pct:.2%} < {DAILY_MIN_ATR_PCT:.2%}")
+    else:
+        quality_flags.append(f"daily ATR {daily_atr_pct:.2%} > {DAILY_MAX_ATR_PCT:.2%}")
+    if daily_range_pct >= DAILY_MIN_RANGE_PCT:
+        _bump("passed_daily_range")
+    else:
+        quality_flags.append(f"{DAILY_RANGE_LOOKBACK}-day range {daily_range_pct:.2%} < {DAILY_MIN_RANGE_PCT:.2%}")
 
     ema_fast_series = _ema_series(closes, DAILY_EMA_FAST)
     ema_slow_series = _ema_series(closes, DAILY_EMA_SLOW)
@@ -340,20 +437,38 @@ def evaluate_symbol(
     trend_score = 26.0 if trend_confirmed else -18.0
     macd_score = 26.0 if macd_confirmed else -18.0
     stoch_score = 18.0 if stoch_bullish else -12.0
+    fresh_stoch_score = 10.0 if recent_stoch_cross else -6.0
+    macd_rising_score = 10.0 if macd_rising else -8.0
+    hist_expanding_score = 10.0 if hist_expanding else -8.0
     macd_strength_score = _bounded((ccc / price if price > 0 else 0.0) * 2000.0, low=0.0, high=22.0)
     hist_score = _bounded((hist[-1] / price if price > 0 else 0.0) * 2000.0, low=-8.0, high=16.0)
+    hist_growth_norm = (hist[-1] - hist[-DAILY_MACD_RISING_LOOKBACK]) / price if price > 0 else 0.0
+    hist_growth_score = _bounded(max(0.0, hist_growth_norm) * 2000.0, low=0.0, high=12.0)
     trend_distance_score = _bounded(((ema_confirm - supertrend_value) / price if price > 0 else 0.0) * 1000.0, low=-12.0, high=18.0)
     volume_score = min(daily_volume_ratio, 3.0) * 4.0
+    atr_score = _bounded((daily_atr_pct - DAILY_MIN_ATR_PCT) * 250.0, low=-8.0, high=10.0)
+    range_score = _bounded((daily_range_pct - DAILY_MIN_RANGE_PCT) * 120.0, low=-8.0, high=10.0)
     extension_penalty = max(0.0, ema_extension_pct - DAILY_MAX_EMA_EXTENSION_PCT) * 100.0
+    overbought_penalty = 0.0
+    if k_now > DAILY_STOCH_MAX_K and not hist_expanding:
+        overbought_penalty = min(10.0, (k_now - DAILY_STOCH_MAX_K) * 0.8)
+        quality_flags.append(f"daily STOCH overbought without histogram expansion k={k_now:.1f}")
     score = (
         trend_score
         + macd_score
         + stoch_score
+        + fresh_stoch_score
+        + macd_rising_score
+        + hist_expanding_score
         + macd_strength_score
         + hist_score
+        + hist_growth_score
         + trend_distance_score
         + volume_score
+        + atr_score
+        + range_score
         - extension_penalty
+        - overbought_penalty
     )
 
     candidate = StochMACDReversalCandidate(
@@ -365,10 +480,17 @@ def evaluate_symbol(
         daily_macd=round(ccc, 6),
         daily_signal=round(macd_signal, 6),
         daily_hist=round(hist[-1], 6),
+        daily_hist_norm=round(hist[-1] / price if price > 0 else 0.0, 6),
+        daily_hist_growth_norm=round(hist_growth_norm, 6),
+        daily_macd_rising=macd_rising,
+        daily_hist_expanding=hist_expanding,
+        recent_stoch_cross=recent_stoch_cross,
         ema_confirm=round(ema_confirm, 4),
         supertrend=round(supertrend_value, 4),
         supertrend_bullish=supertrend_bullish,
         daily_volume_ratio=round(daily_volume_ratio, 4),
+        daily_atr_pct=round(daily_atr_pct, 6),
+        daily_range_pct=round(daily_range_pct, 6),
         ema_fast=round(ema_fast, 4),
         ema_slow=round(ema_slow, 4),
         ema_extension_pct=round(ema_extension_pct, 6),
@@ -388,8 +510,12 @@ def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]]) ->
         "passed_indicator_data": 0,
         "passed_trend_confirmed": 0,
         "passed_macd_confirmed": 0,
+        "passed_daily_impulse": 0,
         "passed_stoch_bullish": 0,
+        "passed_recent_stoch_cross": 0,
         "passed_volume": 0,
+        "passed_daily_atr": 0,
+        "passed_daily_range": 0,
         "passed_not_overextended": 0,
     }
     for symbol in symbols:
@@ -427,12 +553,20 @@ def deterministic_plan(
             "ema_fast": DAILY_EMA_FAST,
             "ema_slow": DAILY_EMA_SLOW,
             "max_ema_extension_pct": DAILY_MAX_EMA_EXTENSION_PCT,
+            "daily_macd_rising_lookback": DAILY_MACD_RISING_LOOKBACK,
+            "daily_stoch_cross_lookback": DAILY_STOCH_CROSS_LOOKBACK,
+            "daily_stoch_max_k": DAILY_STOCH_MAX_K,
+            "daily_atr_period": DAILY_ATR_PERIOD,
+            "daily_min_atr_pct": DAILY_MIN_ATR_PCT,
+            "daily_max_atr_pct": DAILY_MAX_ATR_PCT,
+            "daily_range_lookback": DAILY_RANGE_LOOKBACK,
+            "daily_min_range_pct": DAILY_MIN_RANGE_PCT,
             "indicator_input": "daily OHLCV bars",
         }
     return {
         "strategy": strategy,
         "selection_stage": "ranked",
-        "note": "Daily STOCH/MACD ranker: scores the same confirmation stack as the handler using daily bars.",
+        "note": "Daily STOCH/MACD ranker: scores trend, fresh daily STOCH timing, MACD expansion, daily volume, volatility, range, and overextension without using intraday bars.",
         "symbols": [row.symbol for row in top],
         "ranked": [asdict(row) for row in top],
         "rejected": [asdict(row) for row in rejected],
@@ -447,7 +581,7 @@ def ai_stoch_macd_selection(ranked: list[dict[str, Any]], limit: int) -> dict[st
         "strategy": "stoch_macd_reversal",
         "selection_rules": {
             "must_choose_from_ranked": True,
-            "focus": "prefer daily EMA/SuperTrend, MACD/CCC, and STOCH confirmation stacks",
+            "focus": "prefer daily EMA/SuperTrend, fresh STOCH crosses, rising MACD/histogram, tradable daily volatility/range, and avoid overextended names",
         },
         "ranked": ranked,
         "limit": limit,
