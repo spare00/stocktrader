@@ -3987,6 +3987,7 @@ class CoreTradingTests(unittest.TestCase):
             target_price=101.2,
             stop_price=99.65,
             max_price=101.0,
+            partial_exit_taken=True,
         )
 
         self.assertIsNone(strategy.should_exit(state, position))
@@ -4021,7 +4022,7 @@ class CoreTradingTests(unittest.TestCase):
         position = Position(
             symbol="SMR",
             strategy="macd_early_impulse",
-            shares=10,
+            shares=1,
             entry_price=100.0,
             entry_ms=state.last_event_ms - 15_000,
             target_price=101.2,
@@ -4031,7 +4032,87 @@ class CoreTradingTests(unittest.TestCase):
         decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "target profit")
+        self.assertEqual(decision.reason, "target 2.0R")
+
+    def test_macd_takes_partial_at_one_r(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_partial_r=1.0,
+            macd_partial_size=0.5,
+            macd_macd_warmup_bars=5,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=100.39,
+                ask=100.41,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 5, 8, 13, 1),
+            )
+        )
+        position = Position(
+            symbol="SMR",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=state.last_event_ms - 15_000,
+            target_price=101.2,
+            stop_price=99.65,
+            initial_stop_price=99.65,
+            max_price=100.42,
+            original_shares=10,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "partial 1.0R")
+        self.assertEqual(decision.shares, 5)
+        self.assertTrue(decision.mark_partial)
+
+    def test_macd_exits_runner_on_pullback(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_runner_pullback_pct=0.006,
+            macd_macd_warmup_bars=5,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=100.57,
+                ask=100.59,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=market_ms(2026, 5, 8, 13, 1),
+            )
+        )
+        position = Position(
+            symbol="SMR",
+            strategy="macd_early_impulse",
+            shares=5,
+            entry_price=100.0,
+            entry_ms=state.last_event_ms - 180_000,
+            target_price=101.2,
+            stop_price=99.65,
+            initial_stop_price=99.65,
+            max_price=101.25,
+            partial_exit_taken=True,
+            original_shares=10,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "runner pullback")
 
     def test_macd_rejects_negative_histogram_even_if_rising(self):
         settings = Settings(

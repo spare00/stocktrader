@@ -86,6 +86,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_stop_buffer_pct", "MACD_STOP_BUFFER_PCT", float_env, 0.0008),
         ("macd_min_r_pct", "MACD_MIN_R_PCT", float_env, 0.0020),
         ("macd_max_r_pct", "MACD_MAX_R_PCT", float_env, 0.0150),
+        ("macd_partial_r", "MACD_PARTIAL_R", float_env, 1.0),
+        ("macd_partial_size", "MACD_PARTIAL_SIZE", float_env, 0.5),
+        ("macd_target_r", "MACD_TARGET_R", float_env, 2.0),
+        ("macd_runner_pullback_pct", "MACD_RUNNER_PULLBACK_PCT", float_env, 0.0090),
         ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
         ("macd_min_hold_seconds", "MACD_MIN_HOLD_SECONDS", int_env, 60),
         ("macd_hist_rise_bars", "MACD_HIST_RISE_BARS", int_env, 2),
@@ -135,6 +139,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             "stop_buffer_pct": s.macd_stop_buffer_pct,
             "min_r_pct": s.macd_min_r_pct,
             "max_r_pct": s.macd_max_r_pct,
+            "partial_r": s.macd_partial_r,
+            "partial_size": s.macd_partial_size,
+            "target_r": s.macd_target_r,
+            "runner_pullback_pct": s.macd_runner_pullback_pct,
             "skip_midday": s.macd_skip_midday,
             "min_hold_seconds": s.macd_min_hold_seconds,
             "hist_rise_bars": s.macd_hist_rise_bars,
@@ -365,6 +373,25 @@ class MACDEarlyImpulseStrategy(Strategy):
         event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
         runner_mode = self._position_runner_mode(position, state)
+        initial_stop = position.initial_stop_price or position.stop_price
+        r_initial = position.entry_price - initial_stop if initial_stop else 0.0
+
+        if r_initial > 0:
+            if not position.partial_exit_taken and position.shares > 1:
+                partial_level = position.entry_price + r_initial * self.settings.macd_partial_r
+                if price >= partial_level:
+                    fraction = min(1.0, max(0.0, self.settings.macd_partial_size))
+                    shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
+                    return ExitDecision(f"partial {self.settings.macd_partial_r:.1f}R", shares=shares, mark_partial=True)
+
+            target_level = position.entry_price + r_initial * self.settings.macd_target_r
+            if price >= target_level:
+                return ExitDecision(f"target {self.settings.macd_target_r:.1f}R")
+
+            if position.partial_exit_taken:
+                peak = position.max_price if position.max_price > 0 else position.entry_price
+                if peak > 0 and price <= peak * (1 - self.settings.macd_runner_pullback_pct):
+                    return ExitDecision("runner pullback")
 
         if runner_mode:
             if age_seconds <= _RUNNER_EARLY_LOSS_CUT_SECONDS and pnl_pct <= -_RUNNER_EARLY_LOSS_CUT_PCT:
@@ -398,7 +425,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         if age_seconds <= self.settings.macd_early_loss_cut_seconds and pnl_pct <= -self.settings.macd_early_loss_cut_pct:
             return ExitDecision("early loss cut")
 
-        if pnl_pct >= self.settings.macd_target_profit_pct:
+        if r_initial <= 0 and pnl_pct >= self.settings.macd_target_profit_pct:
             return ExitDecision("target profit")
 
         if age_seconds < self.settings.macd_min_hold_seconds:

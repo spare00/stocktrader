@@ -237,6 +237,10 @@ class Settings:
     macd_stop_buffer_pct: float = 0.0008
     macd_min_r_pct: float = 0.0020
     macd_max_r_pct: float = 0.0150
+    macd_partial_r: float = 1.0
+    macd_partial_size: float = 0.5
+    macd_target_r: float = 2.0
+    macd_runner_pullback_pct: float = 0.0090
     macd_skip_midday: bool = False
     macd_min_hold_seconds: int = 60
     macd_hist_rise_bars: int = 2
