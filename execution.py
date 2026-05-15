@@ -361,7 +361,10 @@ class LocalPaperExecutor:
             reason = "max trade loss"
         elif should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
-        elif current_price <= position.stop_price:
+        elif current_price <= position.stop_price and (
+            age_seconds >= exit_activation_delay
+            or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
+        ):
             reason = "stop loss"
             exit_price = position.stop_price
         elif age_seconds >= self.tracker.settings.max_hold_seconds:
@@ -572,7 +575,10 @@ class AlpacaPaperExecutor:
             reason = "max trade loss"
         elif flatten:
             reason = "end-of-day flatten"
-        elif current_price <= position.stop_price:
+        elif current_price <= position.stop_price and (
+            age_seconds >= exit_activation_delay
+            or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
+        ):
             reason = "stop loss"
         elif age_seconds >= self.settings.max_hold_seconds:
             reason = "max hold"

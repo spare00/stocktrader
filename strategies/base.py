@@ -60,5 +60,8 @@ class Strategy(ABC):
     def exit_activation_delay_seconds(self, position: "Position") -> int:
         return 0
 
+    def delay_stop_loss_until_exit_activation(self, position: "Position") -> bool:
+        return False
+
     def use_fixed_target_exit(self, position: "Position") -> bool:
         return True

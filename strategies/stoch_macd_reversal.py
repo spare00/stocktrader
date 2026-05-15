@@ -338,6 +338,9 @@ class StochMACDReversalStrategy(Strategy):
         age_seconds = (event_ms - position.entry_ms) / 1000
         pnl_pct = (price - position.entry_price) / position.entry_price
 
+        if age_seconds < self.settings.stoch_macd_min_hold_seconds:
+            return None
+
         if pnl_pct <= -self.settings.stoch_macd_stop_loss_pct:
             return ExitDecision("stop loss")
 
@@ -358,8 +361,6 @@ class StochMACDReversalStrategy(Strategy):
             peak = position.max_price if position.max_price > 0 else position.entry_price
             if peak > 0 and price <= peak * (1 - self.settings.stoch_macd_runner_pullback_pct):
                 return ExitDecision("runner pullback")
-        if age_seconds < self.settings.stoch_macd_min_hold_seconds:
-            return None
 
         indicator_bars = self._indicator_bars(state)
         if self.settings.stoch_macd_min_bars > 0 and len(indicator_bars) < self.settings.stoch_macd_min_bars:
@@ -400,6 +401,12 @@ class StochMACDReversalStrategy(Strategy):
         market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
         elapsed = minutes - market_open
         return self.settings.stoch_macd_start_minute <= elapsed <= self.settings.stoch_macd_end_minute
+
+    def exit_activation_delay_seconds(self, position) -> int:
+        return max(0, self.settings.stoch_macd_min_hold_seconds)
+
+    def delay_stop_loss_until_exit_activation(self, position) -> bool:
+        return True
 
     def _in_early_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None or self.settings.stoch_macd_early_window_minutes <= 0:

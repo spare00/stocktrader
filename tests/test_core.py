@@ -2082,6 +2082,38 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.reason, "end-of-day flatten")
         self.assertEqual(fill.timestamp_ms, market_ms(2026, 4, 24, 15, 55))
 
+    def test_stoch_macd_reversal_stop_loss_waits_for_min_hold(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            stoch_macd_min_hold_seconds=30,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        entry_ms = market_ms(2026, 4, 24, 10, 0)
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=entry_ms,
+            target_price=101.0,
+            stop_price=99.5,
+            initial_stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", 99.44, 99.46, 10, 10, entry_ms + 10_000))
+
+        fill = broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)})
+
+        self.assertIsNone(fill)
+        self.assertIn("AAPL", broker.tracker.positions)
+
+        state.update_quote(Quote("AAPL", 99.44, 99.46, 10, 10, entry_ms + 31_000))
+        fill = broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "stop loss")
+
     def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -6690,6 +6722,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(decision.reason, "partial 1.0R")
         self.assertEqual(decision.shares, 5)
         self.assertTrue(decision.mark_partial)
+
+    def test_stoch_macd_reversal_partial_waits_for_min_hold(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_min_hold_seconds=30,
+            stoch_macd_partial_r=1.0,
+            stoch_macd_partial_size=0.5,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state([100.0 + index * 0.2 for index in range(40)])
+        event_ms = state.last_event_ms or market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", 100.53, 100.55, 100, 100, event_ms))
+        position = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=11,
+            entry_price=100.0,
+            entry_ms=event_ms - 10_000,
+            target_price=101.2,
+            stop_price=99.55,
+            initial_stop_price=99.55,
+            max_price=100.55,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
 
     def test_stoch_macd_reversal_exits_runner_on_pullback(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_runner_pullback_pct=0.006)
