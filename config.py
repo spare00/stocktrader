@@ -241,6 +241,11 @@ class Settings:
     macd_partial_size: float = 0.5
     macd_target_r: float = 2.0
     macd_runner_pullback_pct: float = 0.0090
+    macd_early_window_minutes: int = 60
+    macd_early_min_volume_ratio: float = 1.50
+    macd_early_max_spread_bps: float = 12.0
+    macd_early_min_hist_norm: float = 0.0012
+    macd_early_max_vwap_extension_pct: float = 0.015
     macd_skip_midday: bool = False
     macd_min_hold_seconds: int = 60
     macd_hist_rise_bars: int = 2

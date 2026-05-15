@@ -90,6 +90,11 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_partial_size", "MACD_PARTIAL_SIZE", float_env, 0.5),
         ("macd_target_r", "MACD_TARGET_R", float_env, 2.0),
         ("macd_runner_pullback_pct", "MACD_RUNNER_PULLBACK_PCT", float_env, 0.0090),
+        ("macd_early_window_minutes", "MACD_EARLY_WINDOW_MINUTES", int_env, 60),
+        ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.50),
+        ("macd_early_max_spread_bps", "MACD_EARLY_MAX_SPREAD_BPS", float_env, 12.0),
+        ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.0012),
+        ("macd_early_max_vwap_extension_pct", "MACD_EARLY_MAX_VWAP_EXTENSION_PCT", float_env, 0.015),
         ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
         ("macd_min_hold_seconds", "MACD_MIN_HOLD_SECONDS", int_env, 60),
         ("macd_hist_rise_bars", "MACD_HIST_RISE_BARS", int_env, 2),
@@ -143,6 +148,11 @@ class MACDEarlyImpulseStrategy(Strategy):
             "partial_size": s.macd_partial_size,
             "target_r": s.macd_target_r,
             "runner_pullback_pct": s.macd_runner_pullback_pct,
+            "early_window_minutes": s.macd_early_window_minutes,
+            "early_min_volume_ratio": s.macd_early_min_volume_ratio,
+            "early_max_spread_bps": s.macd_early_max_spread_bps,
+            "early_min_hist_norm": s.macd_early_min_hist_norm,
+            "early_max_vwap_extension_pct": s.macd_early_max_vwap_extension_pct,
             "skip_midday": s.macd_skip_midday,
             "min_hold_seconds": s.macd_min_hold_seconds,
             "hist_rise_bars": s.macd_hist_rise_bars,
@@ -209,7 +219,11 @@ class MACDEarlyImpulseStrategy(Strategy):
         last = latest_valid_quote(state)
         if last is None:
             return self._reject(state, "quote", "invalid or missing latest quote")
-        if last.spread_bps > self.settings.macd_max_spread_bps:
+        early_window = self._in_early_window(state.last_event_ms)
+        max_spread_bps = self.settings.macd_max_spread_bps
+        if early_window:
+            max_spread_bps = min(max_spread_bps, self.settings.macd_early_max_spread_bps)
+        if last.spread_bps > max_spread_bps:
             return self._reject(state, "spread", f"spread {last.spread_bps:.2f}bps too wide")
 
         rb = self._regular_bars(state)
@@ -288,6 +302,8 @@ class MACDEarlyImpulseStrategy(Strategy):
         min_hist_norm = self.settings.macd_hist_threshold
         if runner_mode:
             min_hist_norm = min(min_hist_norm, _RUNNER_HIST_THRESHOLD)
+        if early_window:
+            min_hist_norm = max(min_hist_norm, self.settings.macd_early_min_hist_norm)
         if hist_norm < min_hist_norm:
             return self._reject(
                 state,
@@ -298,6 +314,8 @@ class MACDEarlyImpulseStrategy(Strategy):
         min_volume_ratio = self.settings.macd_volume_ratio
         if runner_mode:
             min_volume_ratio = min(min_volume_ratio, _RUNNER_MIN_VOLUME_RATIO)
+        if early_window:
+            min_volume_ratio = max(min_volume_ratio, self.settings.macd_early_min_volume_ratio)
         if vol_r < min_volume_ratio:
             return self._reject(
                 state,
@@ -317,6 +335,8 @@ class MACDEarlyImpulseStrategy(Strategy):
         if vwap is not None:
             vwap_extension = (last.ask - vwap) / vwap if vwap > 0 else 0.0
             max_vwap_extension_pct = _RUNNER_VWAP_EXTENSION_MAX_PCT if runner_mode else _VWAP_EXTENSION_MAX_PCT
+            if early_window:
+                max_vwap_extension_pct = min(max_vwap_extension_pct, self.settings.macd_early_max_vwap_extension_pct)
             if vwap_extension > max_vwap_extension_pct:
                 return self._reject(state, "vwap_overextended", f"VWAP extension {vwap_extension:.3%} too high")
 
@@ -459,6 +479,15 @@ class MACDEarlyImpulseStrategy(Strategy):
         market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
         elapsed = minutes - market_open
         return self.settings.macd_start_minute <= elapsed <= self.settings.macd_end_minute
+
+    def _in_early_window(self, timestamp_ms: int | None) -> bool:
+        if timestamp_ms is None or self.settings.macd_early_window_minutes <= 0:
+            return False
+        current = datetime.fromtimestamp(timestamp_ms / 1000, tz=self.market_tz)
+        minutes = current.hour * 60 + current.minute
+        market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
+        elapsed = minutes - market_open
+        return 0 <= elapsed < self.settings.macd_early_window_minutes
 
     def _regular_bars(self, state: SymbolState):
         return regular_bars(state)
