@@ -4682,6 +4682,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(selected["TURN"].daily_hist, 0)
         self.assertEqual(selected["TURN"].quality_flags, ())
         self.assertGreaterEqual(selected["TURN"].daily_volume_ratio, 1.0)
+        self.assertGreaterEqual(selected["TURN"].daily_atr_pct, select_macd_early_impulse.DAILY_MIN_ATR_PCT)
+        self.assertGreaterEqual(selected["TURN"].daily_range_pct, select_macd_early_impulse.DAILY_MIN_RANGE_PCT)
         self.assertTrue(selected["TURN"].above_key_ma_structure)
         self.assertGreater(selected["ZERO"].daily_macd, 0)
         self.assertEqual(selected["ZERO"].macd_zone, "zero_reclaim")
@@ -4691,10 +4693,57 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(selected["STALE"].quality_flags)
         self.assertEqual(stage_counts["passed_golden_cross"], 2)
         self.assertEqual(stage_counts["passed_not_overextended"], 3)
+        self.assertGreaterEqual(stage_counts["passed_daily_atr"], 1)
+        self.assertGreaterEqual(stage_counts["passed_daily_range"], 1)
 
-        plan = select_macd_early_impulse.deterministic_plan(candidates, rejected, "macd_early_impulse", 2)
+        plan = select_macd_early_impulse.deterministic_plan(
+            candidates,
+            rejected,
+            "macd_early_impulse",
+            2,
+            filter_stage_counts=stage_counts,
+        )
         self.assertEqual(plan["selection_stage"], "ranked")
         self.assertEqual(plan["symbols"], ["ZERO", "TURN"])
+        self.assertEqual(
+            plan["settings"]["filter_thresholds"]["daily_min_atr_pct"],
+            select_macd_early_impulse.DAILY_MIN_ATR_PCT,
+        )
+
+    def test_macd_selector_penalizes_low_daily_range_without_rejecting(self):
+        def daily_bars_from_changes(symbol: str, changes: list[float], width: float) -> list[Bar]:
+            price = 100.0
+            bars: list[Bar] = []
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars.append(daily_bar_with_volume(symbol, price, price * (1 - width), price * (1 + width), 1_000_000, base_ms))
+            for index, change in enumerate(changes, start=1):
+                price *= 1.0 + change
+                bars.append(
+                    daily_bar_with_volume(
+                        symbol,
+                        price,
+                        price * (1 - width),
+                        price * (1 + width),
+                        2_000_000 if index == len(changes) else 1_000_000,
+                        base_ms + index * 86_400_000,
+                    )
+                )
+            return bars
+
+        changes = [0.0002] * 45
+        candidates, rejected, _ = select_macd_early_impulse.rank_candidates(
+            ["WIDE", "TIGHT"],
+            {
+                "WIDE": daily_bars_from_changes("WIDE", changes, 0.012),
+                "TIGHT": daily_bars_from_changes("TIGHT", changes, 0.001),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        self.assertEqual(rejected, [])
+        self.assertIn("TIGHT", selected)
+        self.assertTrue(any("range" in flag for flag in selected["TIGHT"].quality_flags))
+        self.assertGreater(selected["WIDE"].score, selected["TIGHT"].score)
 
     def test_macd_ai_selection_can_reorder_meaningful_score_gap(self):
         ranked = [

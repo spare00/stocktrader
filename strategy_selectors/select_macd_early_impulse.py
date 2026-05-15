@@ -38,6 +38,12 @@ DAILY_VOLUME_RATIO_MIN = 1.0
 DAILY_EMA_FAST = 20
 DAILY_EMA_SLOW = 50
 DAILY_MAX_EMA_EXTENSION_PCT = 0.25
+DAILY_PREFERRED_EMA_EXTENSION_PCT = 0.18
+DAILY_ATR_PERIOD = 14
+DAILY_MIN_ATR_PCT = 0.015
+DAILY_MAX_ATR_PCT = 0.120
+DAILY_RANGE_LOOKBACK = 20
+DAILY_MIN_RANGE_PCT = 0.040
 DEFAULT_UNIVERSE = [
     "AAPL",
     "AMD",
@@ -79,6 +85,8 @@ class MACDEarlyImpulseCandidate:
     hist_growth_norm: float
     macd_zone: str
     daily_volume_ratio: float
+    daily_atr_pct: float
+    daily_range_pct: float
     ema_fast: float
     ema_slow: float
     ema_extension_pct: float
@@ -161,6 +169,33 @@ def _volume_ratio(bars: list[Bar], lookback: int = DAILY_VOLUME_LOOKBACK) -> flo
     baseline_items = [bar.volume for bar in bars[-(lookback + 1) : -1] if bar.volume > 0]
     baseline = median(baseline_items or [0.0])
     return latest / baseline if baseline > 0 else 0.0
+
+
+def _atr_pct(bars: list[Bar], period: int = DAILY_ATR_PERIOD) -> float:
+    if period <= 0 or len(bars) < period + 1:
+        return 0.0
+    window = bars[-(period + 1) :]
+    true_ranges: list[float] = []
+    for previous, current in zip(window, window[1:]):
+        true_ranges.append(
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+        )
+    price = bars[-1].close
+    return (sum(true_ranges) / len(true_ranges)) / price if true_ranges and price > 0 else 0.0
+
+
+def _range_pct(bars: list[Bar], lookback: int = DAILY_RANGE_LOOKBACK) -> float:
+    window = bars[-max(1, lookback) :]
+    if not window:
+        return 0.0
+    low = min(bar.low for bar in window)
+    high = max(bar.high for bar in window)
+    price = window[-1].close
+    return (high - low) / price if price > 0 else 0.0
 
 
 def _macd_zone(macd_value: float, crossed_zero_recently: bool) -> str:
@@ -264,6 +299,19 @@ def evaluate_symbol(
     else:
         quality_flags.append(f"daily volume ratio {daily_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}")
 
+    daily_atr_pct = _atr_pct(ordered)
+    daily_range_pct = _range_pct(ordered)
+    if DAILY_MIN_ATR_PCT <= daily_atr_pct <= DAILY_MAX_ATR_PCT:
+        _bump("passed_daily_atr")
+    elif daily_atr_pct < DAILY_MIN_ATR_PCT:
+        quality_flags.append(f"daily ATR {daily_atr_pct:.2%} < {DAILY_MIN_ATR_PCT:.2%}")
+    else:
+        quality_flags.append(f"daily ATR {daily_atr_pct:.2%} > {DAILY_MAX_ATR_PCT:.2%}")
+    if daily_range_pct >= DAILY_MIN_RANGE_PCT:
+        _bump("passed_daily_range")
+    else:
+        quality_flags.append(f"{DAILY_RANGE_LOOKBACK}-day range {daily_range_pct:.2%} < {DAILY_MIN_RANGE_PCT:.2%}")
+
     ema_fast_series = _ema_series(closes, DAILY_EMA_FAST)
     ema_slow_series = _ema_series(closes, DAILY_EMA_SLOW)
     ema_fast = ema_fast_series[-1] if ema_fast_series else 0.0
@@ -289,12 +337,16 @@ def evaluate_symbol(
     zero_bonus = 8.0 if crossed_zero_recently else 0.0
     negative_reclaim_bonus = 4.0 if macd_line[-1] < 0 and hist[-1] > 0 else 0.0
     hist_positive_bonus = 8.0 if hist[-1] > 0 else -8.0
-    cross_bonus = 12.0 if golden_cross else -6.0
+    cross_bonus = 14.0 if golden_cross else -12.0
     rising_bonus = 10.0 if macd_line_rising else -8.0
     hist_expansion_bonus = 12.0 if hist_expanding else -10.0
-    volume_score = min(daily_volume_ratio, 3.0) * 4.0
+    volume_score = min(daily_volume_ratio, 3.0) * 5.0
+    volume_penalty = max(0.0, DAILY_VOLUME_RATIO_MIN - daily_volume_ratio) * 10.0
     ma_score = 10.0 if above_key_ma_structure else -10.0
     extension_penalty = max(0.0, ema_extension_pct - DAILY_MAX_EMA_EXTENSION_PCT) * 100.0
+    preferred_extension_penalty = max(0.0, ema_extension_pct - DAILY_PREFERRED_EMA_EXTENSION_PCT) * 60.0
+    atr_score = max(-8.0, min(10.0, (daily_atr_pct - DAILY_MIN_ATR_PCT) * 220.0))
+    range_score = max(-8.0, min(10.0, (daily_range_pct - DAILY_MIN_RANGE_PCT) * 100.0))
     score = (
         _bounded_score(abs(recent_negative_low_norm), scale=1000.0, maximum=25.0)
         + _bounded_score(recovery_from_low_norm, scale=1000.0, maximum=25.0)
@@ -308,6 +360,10 @@ def evaluate_symbol(
         + hist_expansion_bonus
         + volume_score
         + ma_score
+        + atr_score
+        + range_score
+        - volume_penalty
+        - preferred_extension_penalty
         - extension_penalty
     )
     candidate = MACDEarlyImpulseCandidate(
@@ -324,6 +380,8 @@ def evaluate_symbol(
         hist_growth_norm=round(hist_growth_norm, 6),
         macd_zone=_macd_zone(macd_line[-1], crossed_zero_recently),
         daily_volume_ratio=round(daily_volume_ratio, 4),
+        daily_atr_pct=round(daily_atr_pct, 6),
+        daily_range_pct=round(daily_range_pct, 6),
         ema_fast=round(ema_fast, 4),
         ema_slow=round(ema_slow, 4),
         ema_extension_pct=round(ema_extension_pct, 6),
@@ -346,6 +404,8 @@ def rank_candidates(symbols: list[str], bars_by_symbol: dict[str, list[Bar]]) ->
         "passed_golden_cross": 0,
         "passed_rising": 0,
         "passed_volume": 0,
+        "passed_daily_atr": 0,
+        "passed_daily_range": 0,
         "passed_ma_structure": 0,
         "passed_not_overextended": 0,
     }
@@ -388,12 +448,18 @@ def deterministic_plan(
             "ema_fast": DAILY_EMA_FAST,
             "ema_slow": DAILY_EMA_SLOW,
             "max_ema_extension_pct": DAILY_MAX_EMA_EXTENSION_PCT,
+            "preferred_ema_extension_pct": DAILY_PREFERRED_EMA_EXTENSION_PCT,
+            "daily_atr_period": DAILY_ATR_PERIOD,
+            "daily_min_atr_pct": DAILY_MIN_ATR_PCT,
+            "daily_max_atr_pct": DAILY_MAX_ATR_PCT,
+            "daily_range_lookback": DAILY_RANGE_LOOKBACK,
+            "daily_min_range_pct": DAILY_MIN_RANGE_PCT,
             "macd_input": "daily closes",
         }
     return {
         "strategy": strategy,
         "selection_stage": "ranked",
-        "note": "Daily MACD ranker: scores recovery/continuation, expanding histogram, rising line, volume, MA structure, and overextension instead of cutting candidates.",
+        "note": "Daily MACD ranker: scores reclaim quality, expanding histogram, rising line, daily volume, daily volatility/range, MA structure, and overextension without using intraday bars.",
         "symbols": selected,
         "ranked": ranked,
         "rejected": [asdict(row) for row in rejected],
@@ -408,7 +474,7 @@ def ai_macd_selection(ranked: list[dict[str, Any]], limit: int) -> dict[str, Any
         "strategy": "macd_early_impulse",
         "selection_rules": {
             "must_choose_from_ranked": True,
-            "focus": "liquidity, tradability, and avoiding structurally weak names",
+            "focus": "liquidity, tradable daily volatility/range, fresh bullish histogram crosses, rising MACD/histogram, and avoiding overextended names",
         },
         "ranked": ranked,
         "limit": limit,
