@@ -28,6 +28,7 @@ from alpaca_stream import (
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
+from market_regime import MarketRegimeMonitor
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote, Signal
 from opening_plan import (
@@ -4995,6 +4996,84 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn('"gap_and_go"', captured.output[0])
         self.assertIn('"maha7"', captured.output[0])
         self.assertIn('"open_positions": ["AAPL"]', captured.output[0])
+
+    def test_market_regime_risk_off_downsizes_signal(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            market_regime_symbols=["SPY"],
+            market_regime_min_bars=20,
+            market_regime_block_score=-4,
+            market_regime_risk_off_score=-3,
+            market_regime_risk_off_size_multiplier=0.5,
+        )
+        monitor = MarketRegimeMonitor(settings)
+        states = {"SPY": self._market_regime_state("SPY", 100.0, -0.2)}
+
+        regime = monitor.evaluate(states)
+        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
+
+        self.assertEqual(regime.name, "risk_off")
+        self.assertIsNone(reject_reason)
+        self.assertIsNotNone(adjusted)
+        self.assertAlmostEqual(adjusted.position_size_multiplier, 0.5)
+        self.assertIn("market_regime risk_off", adjusted.reason)
+
+    def test_market_regime_panic_blocks_signal(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            market_regime_symbols=["SPY", "QQQ", "IWM"],
+            market_regime_min_bars=20,
+        )
+        monitor = MarketRegimeMonitor(settings)
+        states = {
+            "SPY": self._market_regime_state("SPY", 100.0, -0.2),
+            "QQQ": self._market_regime_state("QQQ", 100.0, -0.2),
+            "IWM": self._market_regime_state("IWM", 100.0, -0.2),
+        }
+
+        regime = monitor.evaluate(states)
+        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
+
+        self.assertEqual(regime.name, "panic")
+        self.assertIsNone(adjusted)
+        self.assertIn("market regime panic", reject_reason)
+
+    @staticmethod
+    def _market_regime_state(symbol: str, start: float, step: float) -> SymbolState:
+        state = SymbolState(symbol)
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        for index in range(25):
+            close = start + index * step
+            vwap = close + 0.25 if step < 0 else close - 0.25
+            state.add_bar(
+                Bar(
+                    symbol=symbol,
+                    open=close,
+                    high=close + 0.05,
+                    low=close - 0.05,
+                    close=close,
+                    volume=1000,
+                    vwap=vwap,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        return state
+
+    @staticmethod
+    def _market_regime_signal() -> Signal:
+        return Signal(
+            strategy="stoch_macd_reversal",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+            change_pct=0.01,
+            volume_ratio=2.0,
+            spread_bps=5.0,
+            reason="test",
+            position_size_multiplier=1.0,
+        )
 
     def test_news_sentiment_prioritizes_negative_terms(self):
         settings = Settings(

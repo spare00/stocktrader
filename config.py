@@ -81,6 +81,16 @@ class Settings:
     max_entry_chase_pct: float = 0.003
     replay_market_data: bool = False
 
+    market_regime_enabled: bool = True
+    market_regime_symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
+    market_regime_min_bars: int = 20
+    market_regime_risk_off_score: int = -3
+    market_regime_block_score: int = -7
+    market_regime_risk_on_score: int = 5
+    market_regime_risk_off_size_multiplier: float = 0.5
+    market_regime_risk_on_size_multiplier: float = 1.0
+    market_regime_log_changes: bool = True
+
     indicator_preload_bars: int = 1000
     indicator_max_bars_per_symbol: int = 3000
     indicator_include_afterhours: bool = False
@@ -348,6 +358,15 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_fill_poll_seconds", "ALPACA_FILL_POLL_SECONDS", _float_env, 0.25),
     ("max_entry_chase_pct", "MAX_ENTRY_CHASE_PCT", _float_env, 0.003),
     ("replay_market_data", "REPLAY_MARKET_DATA", _bool_env, False),
+    ("market_regime_enabled", "MARKET_REGIME_ENABLED", _bool_env, True),
+    ("market_regime_symbols", "MARKET_REGIME_SYMBOLS", _csv_env, "SPY,QQQ,IWM"),
+    ("market_regime_min_bars", "MARKET_REGIME_MIN_BARS", _int_env, 20),
+    ("market_regime_risk_off_score", "MARKET_REGIME_RISK_OFF_SCORE", _int_env, -3),
+    ("market_regime_block_score", "MARKET_REGIME_BLOCK_SCORE", _int_env, -7),
+    ("market_regime_risk_on_score", "MARKET_REGIME_RISK_ON_SCORE", _int_env, 5),
+    ("market_regime_risk_off_size_multiplier", "MARKET_REGIME_RISK_OFF_SIZE_MULTIPLIER", _float_env, 0.5),
+    ("market_regime_risk_on_size_multiplier", "MARKET_REGIME_RISK_ON_SIZE_MULTIPLIER", _float_env, 1.0),
+    ("market_regime_log_changes", "MARKET_REGIME_LOG_CHANGES", _bool_env, True),
     ("indicator_preload_bars", "INDICATOR_PRELOAD_BARS", _int_env, 1000),
     ("indicator_max_bars_per_symbol", "INDICATOR_MAX_BARS_PER_SYMBOL", _int_env, 3000),
     ("indicator_include_afterhours", "INDICATOR_INCLUDE_AFTERHOURS", _bool_env, False),

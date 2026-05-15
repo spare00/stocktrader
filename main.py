@@ -24,6 +24,7 @@ from candle import SymbolState
 from config import Settings, load_settings
 from execution import build_executor
 from market_hours import MARKET_TZ, is_regular_market_time
+from market_regime import MarketRegimeMonitor
 from modules.news_listener import NewsListener
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote
@@ -773,8 +774,10 @@ async def main(args: argparse.Namespace | None = None) -> None:
         loaded_plan_paths[strategy_name] = plan_path
         settings = apply_strategy_plan_settings(settings, strategy_name, plan_path)
     strategy_local_symbols = load_strategy_local_symbols(settings, loaded_plan_paths)
-    initial_symbols = sorted(set(settings.symbols).union(*(set(symbols) for symbols in strategy_local_symbols.values())))
-    if not initial_symbols:
+    tradable_symbols = set(settings.symbols).union(*(set(symbols) for symbols in strategy_local_symbols.values()))
+    regime_symbols = set(settings.market_regime_symbols) if settings.market_regime_enabled else set()
+    initial_symbols = sorted(tradable_symbols.union(regime_symbols))
+    if not tradable_symbols:
         print(
             "No symbols to trade: set SYMBOLS in `.env`/your profile, or add symbols under "
             "data/<strategy>_plan.json for each active strategy (see strategies registry).",
@@ -794,6 +797,16 @@ async def main(args: argparse.Namespace | None = None) -> None:
     settings_snapshot = runtime_settings_snapshot(settings)
     settings_snapshot["global_symbols"] = list(settings.symbols)
     settings_snapshot["strategy_symbols"] = strategy_local_symbols
+    settings_snapshot["market_regime"] = {
+        "enabled": settings.market_regime_enabled,
+        "symbols": list(settings.market_regime_symbols),
+        "min_bars": settings.market_regime_min_bars,
+        "risk_off_score": settings.market_regime_risk_off_score,
+        "block_score": settings.market_regime_block_score,
+        "risk_on_score": settings.market_regime_risk_on_score,
+        "risk_off_size_multiplier": settings.market_regime_risk_off_size_multiplier,
+        "risk_on_size_multiplier": settings.market_regime_risk_on_size_multiplier,
+    }
     settings_snapshot["effective_symbols"] = {
         strategy: sorted(set(settings.symbols) | set(local_symbols))
         for strategy, local_symbols in strategy_local_symbols.items()
@@ -822,6 +835,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
     executor = build_executor(stream_settings)
     risk = RiskManager(settings)
     reviewer = SignalReviewer(settings)
+    market_regime = MarketRegimeMonitor(settings)
     rejection_logs = RejectionLogThrottler()
     heartbeat = HeartbeatReporter()
 
@@ -897,6 +911,9 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
             event_ms = state.last_event_ms
             manage_all_exits(executor, states, strategies_by_name, event_ms, risk)
+            regime = market_regime.evaluate(states)
+            if market_regime.should_log_change(regime):
+                logging.info("Market regime %s", regime.reason)
 
             for strategy in strategies:
                 signal = strategy.evaluate(state)
@@ -904,6 +921,19 @@ async def main(args: argparse.Namespace | None = None) -> None:
                     continue
 
                 heartbeat.record_signal(signal.strategy)
+                adjusted_signal, regime_reject = market_regime.apply_to_signal(signal, regime)
+                if regime_reject:
+                    heartbeat.record_rejection(signal.strategy, regime_reject)
+                    if rejection_logs.should_log(signal.symbol, signal.side, signal.strategy, regime_reject):
+                        logging.info(
+                            "Signal rejected %s %s from %s: %s",
+                            signal.symbol,
+                            signal.side,
+                            signal.strategy,
+                            regime_reject,
+                        )
+                    continue
+                signal = adjusted_signal or signal
                 decision = risk.check_entry(signal, executor.open_symbols(), executor.total_pnl(mark_prices(states)))
                 if not decision.allowed:
                     heartbeat.record_rejection(signal.strategy, decision.reason)
