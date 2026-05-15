@@ -251,6 +251,12 @@ class Settings:
     stoch_macd_vwap_enabled: bool = True
     stoch_macd_vwap_buffer_pct: float = 0.0005
     stoch_macd_require_vwap_rising: bool = True
+    stoch_macd_min_hist_norm: float = 0.00005
+    stoch_macd_hist_rise_bars: int = 2
+    stoch_macd_macd_rise_bars: int = 2
+    stoch_macd_stoch_cross_lookback_bars: int = 3
+    stoch_macd_max_k: float = 88.0
+    stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
     stoch_macd_stop_loss_pct: float = 0.0045
     stoch_macd_target_profit_pct: float = 0.012
     stoch_macd_trailing_activation_pct: float = 0.004

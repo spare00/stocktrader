@@ -40,6 +40,12 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_vwap_enabled", "STOCH_MACD_VWAP_ENABLED", bool_env, True),
         ("stoch_macd_vwap_buffer_pct", "STOCH_MACD_VWAP_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_require_vwap_rising", "STOCH_MACD_REQUIRE_VWAP_RISING", bool_env, True),
+        ("stoch_macd_min_hist_norm", "STOCH_MACD_MIN_HIST_NORM", float_env, 0.00005),
+        ("stoch_macd_hist_rise_bars", "STOCH_MACD_HIST_RISE_BARS", int_env, 2),
+        ("stoch_macd_macd_rise_bars", "STOCH_MACD_MACD_RISE_BARS", int_env, 2),
+        ("stoch_macd_stoch_cross_lookback_bars", "STOCH_MACD_STOCH_CROSS_LOOKBACK_BARS", int_env, 3),
+        ("stoch_macd_max_k", "STOCH_MACD_MAX_K", float_env, 88.0),
+        ("stoch_macd_overbought_min_hist_rise_norm", "STOCH_MACD_OVERBOUGHT_MIN_HIST_RISE_NORM", float_env, 0.00005),
         ("stoch_macd_stop_loss_pct", "STOCH_MACD_STOP_LOSS_PCT", float_env, 0.0045),
         ("stoch_macd_target_profit_pct", "STOCH_MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("stoch_macd_trailing_activation_pct", "STOCH_MACD_TRAILING_ACTIVATION_PCT", float_env, 0.004),
@@ -81,6 +87,12 @@ class StochMACDReversalStrategy(Strategy):
             "vwap_enabled": settings.stoch_macd_vwap_enabled,
             "vwap_buffer_pct": settings.stoch_macd_vwap_buffer_pct,
             "require_vwap_rising": settings.stoch_macd_require_vwap_rising,
+            "min_hist_norm": settings.stoch_macd_min_hist_norm,
+            "hist_rise_bars": settings.stoch_macd_hist_rise_bars,
+            "macd_rise_bars": settings.stoch_macd_macd_rise_bars,
+            "stoch_cross_lookback_bars": settings.stoch_macd_stoch_cross_lookback_bars,
+            "max_k": settings.stoch_macd_max_k,
+            "overbought_min_hist_rise_norm": settings.stoch_macd_overbought_min_hist_rise_norm,
             "stop_loss_pct": settings.stoch_macd_stop_loss_pct,
             "target_profit_pct": settings.stoch_macd_target_profit_pct,
             "trailing_activation_pct": settings.stoch_macd_trailing_activation_pct,
@@ -148,11 +160,40 @@ class StochMACDReversalStrategy(Strategy):
                 "stoch",
                 f"STOCH not bullish k={k_now:.1f} d={d_now:.1f}",
             )
+        if not self._stoch_cross_recent(
+            k_values,
+            d_values,
+            self.settings.stoch_macd_stoch_cross_lookback_bars,
+        ):
+            return self._reject(state, "stoch_timing", "STOCH bullish cross is stale")
+        if not self._last_n_rising(k_values, 1):
+            return self._reject(state, "stoch_timing", f"STOCH K not rising k={k_now:.1f}")
 
         ccc = macd_line[-1]
         macd_signal = signal_line[-1]
         if ccc <= macd_signal:
             return self._reject(state, "macd", f"CCC not bullish ccc={ccc:.4f} signal={macd_signal:.4f}")
+        hist_now = hist[-1]
+        price_ref = max(last.ask, 0.01)
+        hist_norm = hist_now / price_ref
+        if hist_norm < self.settings.stoch_macd_min_hist_norm:
+            return self._reject(
+                state,
+                "macd_strength",
+                f"hist too weak hist_norm={hist_norm:.5f}",
+            )
+        if not self._last_n_rising(hist, self.settings.stoch_macd_hist_rise_bars):
+            return self._reject(state, "macd_strength", "histogram not rising")
+        if not self._last_n_rising(macd_line, self.settings.stoch_macd_macd_rise_bars):
+            return self._reject(state, "macd_strength", "MACD line not rising")
+        if k_now > self.settings.stoch_macd_max_k:
+            hist_rise_norm = self._rise_over_bars(hist, self.settings.stoch_macd_hist_rise_bars) / price_ref
+            if hist_rise_norm < self.settings.stoch_macd_overbought_min_hist_rise_norm:
+                return self._reject(
+                    state,
+                    "stoch_timing",
+                    f"STOCH overbought without strong MACD expansion k={k_now:.1f} hist_rise_norm={hist_rise_norm:.5f}",
+                )
 
         supertrend = self._compute_supertrend(
             indicator_bars,
@@ -216,7 +257,8 @@ class StochMACDReversalStrategy(Strategy):
             reason=(
                 "stoch_macd_reversal confirmed trend "
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
-                f"ccc={ccc:.4f} signal={macd_signal:.4f} k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x"
+                f"ccc={ccc:.4f} signal={macd_signal:.4f} hist_norm={hist_norm:.5f} "
+                f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x"
             ),
             stop_price=stop_price,
             position_size_multiplier=0.8,
@@ -299,6 +341,36 @@ class StochMACDReversalStrategy(Strategy):
             return None
         total_value = sum(bar.vwap * bar.volume for bar in bars if bar.volume > 0)
         return total_value / total_volume if total_value > 0 else None
+
+    @staticmethod
+    def _last_n_rising(values: list[float], count: int) -> bool:
+        if count <= 0:
+            return True
+        if len(values) < count + 1:
+            return False
+        tail = values[-(count + 1) :]
+        return all(current > previous for previous, current in zip(tail, tail[1:]))
+
+    @staticmethod
+    def _rise_over_bars(values: list[float], count: int) -> float:
+        if count <= 0 or len(values) < count + 1:
+            return 0.0
+        return values[-1] - values[-(count + 1)]
+
+    @staticmethod
+    def _stoch_cross_recent(k_values: list[float], d_values: list[float], lookback: int) -> bool:
+        if lookback <= 0:
+            return True
+        if len(k_values) < 2 or len(d_values) < 2:
+            return False
+        paired = list(zip(k_values, d_values))
+        tail = paired[-(lookback + 1) :]
+        for previous, current in zip(tail, tail[1:]):
+            prev_k, prev_d = previous
+            curr_k, curr_d = current
+            if prev_k <= prev_d and curr_k > curr_d:
+                return True
+        return False
 
     def _compute_macd(self, state: SymbolState) -> tuple[list[float], list[float], list[float]] | None:
         bars = self._indicator_bars(state)

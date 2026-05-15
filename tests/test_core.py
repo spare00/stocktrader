@@ -5846,14 +5846,14 @@ class CoreTradingTests(unittest.TestCase):
         with patch.object(
             strategy,
             "_compute_stoch",
-            return_value=([70.0, 96.3], [68.0, 80.97]),
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
         ), patch.object(
             strategy,
             "_compute_macd",
             return_value=(
-                [-0.03, -0.02],
-                [-0.04, -0.03],
-                [0.01, 0.02],
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
             ),
         ), patch.object(
             strategy,
@@ -5892,14 +5892,14 @@ class CoreTradingTests(unittest.TestCase):
         with patch.object(
             strategy,
             "_compute_stoch",
-            return_value=([68.0, 82.0], [64.0, 76.0]),
+            return_value=([68.0, 76.0, 84.0], [70.0, 74.0, 78.0]),
         ), patch.object(
             strategy,
             "_compute_macd",
             return_value=(
-                [-0.06, -0.04],
-                [-0.07, -0.05],
-                [0.01, 0.01],
+                [-0.06, -0.04, -0.015],
+                [-0.07, -0.055, -0.035],
+                [0.006, 0.012, 0.024],
             ),
         ), patch.object(
             strategy,
@@ -5922,14 +5922,14 @@ class CoreTradingTests(unittest.TestCase):
         with patch.object(
             strategy,
             "_compute_stoch",
-            return_value=([70.0, 96.3], [68.0, 80.97]),
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
         ), patch.object(
             strategy,
             "_compute_macd",
             return_value=(
-                [-0.03, -0.02],
-                [-0.04, -0.03],
-                [0.01, 0.02],
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
             ),
         ), patch.object(
             strategy,
@@ -5941,6 +5941,96 @@ class CoreTradingTests(unittest.TestCase):
             return_value=60.92,
         ):
             signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_rejects_stale_stoch_cross(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([80.0, 82.0, 84.0], [70.0, 72.0, 74.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_rejects_weak_macd_histogram(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.005, -0.0035, -0.0015],
+                [-0.006, -0.0045, -0.0030],
+                [0.001, 0.002, 0.003],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_rejects_overbought_stoch_without_strong_macd_expansion(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([84.0, 89.0, 92.0], [85.0, 87.0, 88.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.020, 0.021, 0.022],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
 
         self.assertIsNone(signal)
 
@@ -5985,9 +6075,9 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_macd",
             return_value=(
-                [0.01, 0.02],
-                [0.00, 0.01],
-                [0.01, 0.01],
+                [0.005, 0.012, 0.020],
+                [0.000, 0.006, 0.012],
+                [0.002, 0.006, 0.012],
             ),
         ), patch.object(
             strategy,
@@ -6012,16 +6102,16 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_stoch",
             return_value=(
-                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 30.0, 36.0, 42.0],
-                [46.0, 38.0, 28.0, 18.0, 15.0, 17.0, 21.0, 27.0, 33.0, 39.0],
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 34.0, 40.0, 46.0],
+                [46.0, 38.0, 28.0, 18.0, 16.0, 19.0, 26.0, 32.0, 36.0, 40.0],
             ),
         ), patch.object(
             strategy,
             "_compute_macd",
             return_value=(
-                [0.01, 0.02],
-                [0.00, 0.01],
-                [0.01, 0.01],
+                [0.005, 0.012, 0.020],
+                [0.000, 0.006, 0.012],
+                [0.002, 0.006, 0.012],
             ),
         ):
             signal = strategy.evaluate(state)
@@ -6038,16 +6128,16 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_stoch",
             return_value=(
-                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 30.0, 36.0, 42.0],
-                [46.0, 38.0, 28.0, 18.0, 15.0, 17.0, 21.0, 27.0, 33.0, 39.0],
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 34.0, 40.0, 46.0],
+                [46.0, 38.0, 28.0, 18.0, 16.0, 19.0, 26.0, 32.0, 36.0, 40.0],
             ),
         ), patch.object(
             strategy,
             "_compute_macd",
             return_value=(
-                [0.01, 0.02],
-                [0.00, 0.01],
-                [0.01, 0.01],
+                [0.005, 0.012, 0.020],
+                [0.000, 0.006, 0.012],
+                [0.002, 0.006, 0.012],
             ),
         ):
             signal = strategy.evaluate(state)
