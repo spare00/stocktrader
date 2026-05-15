@@ -6526,6 +6526,38 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_rejects_red_supertrend_even_when_ema_is_above_line(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=(
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 34.0, 40.0, 46.0],
+                [46.0, 38.0, 28.0, 18.0, 16.0, 19.0, 26.0, 32.0, 36.0, 40.0],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.005, 0.012, 0.020],
+                [0.000, 0.006, 0.012],
+                [0.002, 0.006, 0.012],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(94.0, False),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=95.0,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNone(signal)
+
     def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False, stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
@@ -6593,6 +6625,47 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "stoch_macd indicator sell")
+
+    def test_stoch_macd_reversal_indicator_sell_requires_red_supertrend(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_min_hold_seconds=0)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [100.0 + index * 0.2 for index in range(35)] + [107.2, 107.4, 107.5, 107.45, 107.35]
+        state = self._stoch_macd_state(closes)
+        position = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=10,
+            entry_price=106.5,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=120.0,
+            stop_price=105.5,
+            max_price=107.6,
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([90.0, 70.0], [85.0, 75.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.02, 0.00],
+                [0.01, 0.01],
+                [0.01, -0.01],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(107.0, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=106.8,
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
 
     def test_stoch_macd_reversal_takes_partial_at_one_r(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_partial_r=1.0, stoch_macd_partial_size=0.5)

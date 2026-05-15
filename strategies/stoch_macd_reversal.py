@@ -253,10 +253,7 @@ class StochMACDReversalStrategy(Strategy):
                     f"EMA{self.settings.stoch_macd_ema_period} <= SuperTrend ema={ema_fast:.2f} line={supertrend_value:.2f}",
                 )
             if not supertrend_bullish:
-                LOG.debug(
-                    "Allowing %s stoch_macd_reversal entry with EMA near/above SuperTrend despite bearish trend flag",
-                    state.symbol,
-                )
+                return self._reject(state, "supertrend_bearish", f"SuperTrend bearish line={supertrend_value:.2f}")
 
         vol_r = self._volume_ratio(state)
         min_volume_ratio = self.settings.stoch_macd_min_volume_ratio
@@ -378,9 +375,10 @@ class StochMACDReversalStrategy(Strategy):
         if stoch is not None and macd is not None and supertrend is not None and ema_fast is not None:
             k_values, d_values = stoch
             macd_line, signal_line, _ = macd
-            supertrend_value, _ = supertrend
+            supertrend_value, supertrend_bullish = supertrend
             indicator_sell = (
-                ema_fast < supertrend_value
+                not supertrend_bullish
+                and ema_fast < supertrend_value
                 and macd_line[-1] < signal_line[-1]
                 and k_values[-1] < d_values[-1]
             )
