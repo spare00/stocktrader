@@ -267,6 +267,20 @@ class Settings:
     macd_early_impulse_max_trades_per_symbol_per_session: int = 2
     macd_early_impulse_symbol_loss_lock_count: int = 2
     macd_macd_warmup_bars: int = 120
+    macd_risk_off_hist_multiplier: float = 1.35
+    macd_risk_off_volume_add: float = 0.25
+    macd_risk_off_chop_range_multiplier: float = 1.15
+    macd_risk_off_min_range_multiplier: float = 1.15
+    macd_risk_off_max_extension_multiplier: float = 0.80
+    macd_risk_off_max_vwap_extension_multiplier: float = 0.80
+    macd_risk_off_max_r_multiplier: float = 0.85
+    macd_risk_on_hist_multiplier: float = 0.90
+    macd_risk_on_volume_add: float = -0.10
+    macd_risk_on_chop_range_multiplier: float = 0.90
+    macd_risk_on_min_range_multiplier: float = 0.90
+    macd_risk_on_max_extension_multiplier: float = 1.10
+    macd_risk_on_max_vwap_extension_multiplier: float = 1.10
+    macd_risk_on_max_r_multiplier: float = 1.05
 
     stoch_macd_start_minute: int = 0
     stoch_macd_end_minute: int = 360

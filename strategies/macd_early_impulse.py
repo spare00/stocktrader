@@ -115,6 +115,30 @@ class MACDEarlyImpulseStrategy(Strategy):
             2,
         ),
         ("macd_macd_warmup_bars", "MACD_MACD_WARMUP_BARS", int_env, 120),
+        ("macd_risk_off_hist_multiplier", "MACD_RISK_OFF_HIST_MULTIPLIER", float_env, 1.35),
+        ("macd_risk_off_volume_add", "MACD_RISK_OFF_VOLUME_ADD", float_env, 0.25),
+        ("macd_risk_off_chop_range_multiplier", "MACD_RISK_OFF_CHOP_RANGE_MULTIPLIER", float_env, 1.15),
+        ("macd_risk_off_min_range_multiplier", "MACD_RISK_OFF_MIN_RANGE_MULTIPLIER", float_env, 1.15),
+        ("macd_risk_off_max_extension_multiplier", "MACD_RISK_OFF_MAX_EXTENSION_MULTIPLIER", float_env, 0.80),
+        (
+            "macd_risk_off_max_vwap_extension_multiplier",
+            "MACD_RISK_OFF_MAX_VWAP_EXTENSION_MULTIPLIER",
+            float_env,
+            0.80,
+        ),
+        ("macd_risk_off_max_r_multiplier", "MACD_RISK_OFF_MAX_R_MULTIPLIER", float_env, 0.85),
+        ("macd_risk_on_hist_multiplier", "MACD_RISK_ON_HIST_MULTIPLIER", float_env, 0.90),
+        ("macd_risk_on_volume_add", "MACD_RISK_ON_VOLUME_ADD", float_env, -0.10),
+        ("macd_risk_on_chop_range_multiplier", "MACD_RISK_ON_CHOP_RANGE_MULTIPLIER", float_env, 0.90),
+        ("macd_risk_on_min_range_multiplier", "MACD_RISK_ON_MIN_RANGE_MULTIPLIER", float_env, 0.90),
+        ("macd_risk_on_max_extension_multiplier", "MACD_RISK_ON_MAX_EXTENSION_MULTIPLIER", float_env, 1.10),
+        (
+            "macd_risk_on_max_vwap_extension_multiplier",
+            "MACD_RISK_ON_MAX_VWAP_EXTENSION_MULTIPLIER",
+            float_env,
+            1.10,
+        ),
+        ("macd_risk_on_max_r_multiplier", "MACD_RISK_ON_MAX_R_MULTIPLIER", float_env, 1.05),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.macd_early_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12"
@@ -163,6 +187,24 @@ class MACDEarlyImpulseStrategy(Strategy):
             "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": s.macd_early_impulse_symbol_loss_lock_count,
             "macd_warmup_bars": s.macd_macd_warmup_bars,
+            "risk_off": {
+                "hist_multiplier": s.macd_risk_off_hist_multiplier,
+                "volume_add": s.macd_risk_off_volume_add,
+                "chop_range_multiplier": s.macd_risk_off_chop_range_multiplier,
+                "min_range_multiplier": s.macd_risk_off_min_range_multiplier,
+                "max_extension_multiplier": s.macd_risk_off_max_extension_multiplier,
+                "max_vwap_extension_multiplier": s.macd_risk_off_max_vwap_extension_multiplier,
+                "max_r_multiplier": s.macd_risk_off_max_r_multiplier,
+            },
+            "risk_on": {
+                "hist_multiplier": s.macd_risk_on_hist_multiplier,
+                "volume_add": s.macd_risk_on_volume_add,
+                "chop_range_multiplier": s.macd_risk_on_chop_range_multiplier,
+                "min_range_multiplier": s.macd_risk_on_min_range_multiplier,
+                "max_extension_multiplier": s.macd_risk_on_max_extension_multiplier,
+                "max_vwap_extension_multiplier": s.macd_risk_on_max_vwap_extension_multiplier,
+                "max_r_multiplier": s.macd_risk_on_max_r_multiplier,
+            },
         }
 
     def __init__(self, settings: Settings):
@@ -220,6 +262,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         if last is None:
             return self._reject(state, "quote", "invalid or missing latest quote")
         early_window = self._in_early_window(state.last_event_ms)
+        regime_name = self._market_regime_name()
+        risk_off = regime_name == "risk_off"
+        risk_on = regime_name == "risk_on"
         max_spread_bps = self.settings.macd_max_spread_bps
         if early_window:
             max_spread_bps = min(max_spread_bps, self.settings.macd_early_max_spread_bps)
@@ -253,11 +298,16 @@ class MACDEarlyImpulseStrategy(Strategy):
             return self._reject(state, "below_vwap", "price below vwap")
         runner_mode = self._runner_mode(state.symbol, rb, last.ask, ema_trend[-1], vwap, vol_r)
 
-        if self._is_chop(state) and not runner_mode:
+        chop_range_pct = self.settings.macd_chop_range_pct
+        if risk_off:
+            chop_range_pct *= max(0.0, self.settings.macd_risk_off_chop_range_multiplier)
+        elif risk_on:
+            chop_range_pct *= max(0.0, self.settings.macd_risk_on_chop_range_multiplier)
+        if self._is_chop(state, chop_range_pct) and not runner_mode:
             return self._reject(
                 state,
                 "chop",
-                f"10-bar range% < {self.settings.macd_chop_range_pct:.4f}",
+                f"10-bar range% < {chop_range_pct:.4f}",
             )
 
         atr = self._atr(rb, self.settings.macd_atr_period)
@@ -271,7 +321,12 @@ class MACDEarlyImpulseStrategy(Strategy):
         range_lookback = max(1, self.settings.macd_range_lookback_bars)
         if len(rb) >= range_lookback:
             recent_range_pct = self._range_pct(rb[-range_lookback:])
-            if recent_range_pct < self.settings.macd_min_range_pct:
+            min_range_pct = self.settings.macd_min_range_pct
+            if risk_off:
+                min_range_pct *= max(0.0, self.settings.macd_risk_off_min_range_multiplier)
+            elif risk_on:
+                min_range_pct *= max(0.0, self.settings.macd_risk_on_min_range_multiplier)
+            if recent_range_pct < min_range_pct:
                 return self._reject(state, "range", f"range {recent_range_pct:.2%} too compressed")
 
         speed_ok = rb[-1].close > rb[-3].close
@@ -304,6 +359,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             min_hist_norm = min(min_hist_norm, _RUNNER_HIST_THRESHOLD)
         if early_window:
             min_hist_norm = max(min_hist_norm, self.settings.macd_early_min_hist_norm)
+        if risk_off:
+            min_hist_norm *= max(1.0, self.settings.macd_risk_off_hist_multiplier)
+        elif risk_on:
+            min_hist_norm *= max(0.0, self.settings.macd_risk_on_hist_multiplier)
         if hist_norm < min_hist_norm:
             return self._reject(
                 state,
@@ -316,6 +375,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             min_volume_ratio = min(min_volume_ratio, _RUNNER_MIN_VOLUME_RATIO)
         if early_window:
             min_volume_ratio = max(min_volume_ratio, self.settings.macd_early_min_volume_ratio)
+        if risk_off:
+            min_volume_ratio += max(0.0, self.settings.macd_risk_off_volume_add)
+        elif risk_on:
+            min_volume_ratio = max(0.0, min_volume_ratio + self.settings.macd_risk_on_volume_add)
         if vol_r < min_volume_ratio:
             return self._reject(
                 state,
@@ -329,6 +392,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         recent_high_10 = max(bar.high for bar in rb[-10:])
         extension = (last.ask - recent_high_10) / recent_high_10 if recent_high_10 > 0 else 0.0
         max_extension_pct = _RUNNER_OVEREXTEND_MAX_PCT if runner_mode else _OVEREXTEND_MAX_PCT
+        if risk_off:
+            max_extension_pct *= max(0.0, self.settings.macd_risk_off_max_extension_multiplier)
+        elif risk_on:
+            max_extension_pct *= max(0.0, self.settings.macd_risk_on_max_extension_multiplier)
         if extension > max_extension_pct:
             return self._reject(state, "overextended", f"extension {extension:.3%} too high")
 
@@ -337,6 +404,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             max_vwap_extension_pct = _RUNNER_VWAP_EXTENSION_MAX_PCT if runner_mode else _VWAP_EXTENSION_MAX_PCT
             if early_window:
                 max_vwap_extension_pct = min(max_vwap_extension_pct, self.settings.macd_early_max_vwap_extension_pct)
+            if risk_off:
+                max_vwap_extension_pct *= max(0.0, self.settings.macd_risk_off_max_vwap_extension_multiplier)
+            elif risk_on:
+                max_vwap_extension_pct *= max(0.0, self.settings.macd_risk_on_max_vwap_extension_multiplier)
             if vwap_extension > max_vwap_extension_pct:
                 return self._reject(state, "vwap_overextended", f"VWAP extension {vwap_extension:.3%} too high")
 
@@ -360,10 +431,16 @@ class MACDEarlyImpulseStrategy(Strategy):
             else self._entry_stop_price(rb, last.ask)
         )
         r_pct = (last.ask - stop_price) / last.ask if last.ask > 0 else 0.0
+        max_r_pct = self.settings.macd_max_r_pct
+        if risk_off:
+            max_r_pct *= max(0.0, self.settings.macd_risk_off_max_r_multiplier)
+        elif risk_on:
+            max_r_pct *= max(0.0, self.settings.macd_risk_on_max_r_multiplier)
         if r_pct < self.settings.macd_min_r_pct:
             return self._reject(state, "risk", f"R {r_pct:.2%} too small")
-        if r_pct > self.settings.macd_max_r_pct:
+        if r_pct > max_r_pct:
             return self._reject(state, "risk", f"R {r_pct:.2%} too wide")
+        regime_reason = f" regime={regime_name}" if regime_name in {"risk_off", "risk_on"} else ""
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -373,7 +450,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             change_pct=change_pct,
             volume_ratio=vol_r,
             spread_bps=spread_bps,
-            reason=f"macd early impulse entry | R {r_pct:.2%}",
+            reason=f"macd early impulse entry | R {r_pct:.2%}{regime_reason}",
             stop_price=stop_price,
         )
 
@@ -500,7 +577,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
         return minutes - market_open
 
-    def _is_chop(self, state: SymbolState) -> bool:
+    def _market_regime_name(self) -> str:
+        return getattr(getattr(self, "_market_regime", None), "name", "")
+
+    def _is_chop(self, state: SymbolState, chop_range_pct: float | None = None) -> bool:
         bars = self._regular_bars(state)[-10:]
         if len(bars) < 10:
             return False
@@ -509,7 +589,8 @@ class MACDEarlyImpulseStrategy(Strategy):
         if lo <= 0:
             return True
         range_pct = (hi - lo) / lo
-        return range_pct < self.settings.macd_chop_range_pct
+        threshold = self.settings.macd_chop_range_pct if chop_range_pct is None else chop_range_pct
+        return range_pct < threshold
 
     @staticmethod
     def _atr(bars, period: int) -> float | None:

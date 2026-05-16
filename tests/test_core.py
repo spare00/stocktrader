@@ -4311,6 +4311,144 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertTrue(signal.reason.startswith("macd early impulse entry"))
 
+    def test_macd_risk_off_requires_stronger_histogram(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00002,
+            macd_volume_ratio=1.0,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.08,
+                low=101.80,
+                close=102.02,
+                volume=2_000,
+                vwap=101.88,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=102.01,
+                ask=102.03,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0020, 0.0025],
+            ),
+        ):
+            neutral_signal = strategy.evaluate(state)
+            strategy.set_market_regime(types.SimpleNamespace(name="risk_off"))
+            risk_off_signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(neutral_signal)
+        self.assertIsNone(risk_off_signal)
+
+    def test_macd_risk_off_requires_more_volume(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.35,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.08,
+                low=101.80,
+                close=102.02,
+                volume=1_450,
+                vwap=101.88,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=102.01,
+                ask=102.03,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=state.bars[-1].end_ms,
+            )
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0020, 0.0030],
+            ),
+        ), patch.object(strategy, "_volume_ratio", return_value=1.45), patch.object(
+            strategy, "_runner_mode", return_value=False
+        ):
+            neutral_signal = strategy.evaluate(state)
+            strategy.set_market_regime(types.SimpleNamespace(name="risk_off"))
+            risk_off_signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(neutral_signal)
+        self.assertIsNone(risk_off_signal)
+
     def test_macd_can_enter_near_open_with_real_premarket_warmup(self):
         settings = Settings(
             alpaca_api_key="test",
