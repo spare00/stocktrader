@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -13,8 +14,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-DEFAULT_JOURNAL_FILE = Path("logs/trade_journal.jsonl")
+DEFAULT_JOURNAL_FILE = ROOT / "logs" / "trade_journal.jsonl"
 TRADING_TZ = ZoneInfo("America/New_York")
+MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+([a-z_]+)\b")
+SIZE_MULT_RE = re.compile(r"\bsize_mult=([0-9]+(?:\.[0-9]+)?)\b")
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,32 @@ class TradeEvent:
     runner_r_multiple: float | None = None
     full_trade_r_multiple: float | None = None
     cumulative_daily_pnl: float | None = None
+
+
+@dataclass(frozen=True)
+class PositionRoundTrip:
+    symbol: str
+    strategy: str
+    shares: int
+    buy_timestamp_ms: int
+    final_sell_timestamp_ms: int
+    buy_price: float
+    average_sell_price: float
+    pnl: float
+    pnl_pct: float
+    max_price: float
+    min_price: float
+    mfe_pct: float
+    mae_pct: float
+    final_reason: str
+    exit_reasons: tuple[str, ...]
+    exit_stages: tuple[str, ...]
+    hold_seconds: float
+    legs: int
+    full_trade_r_multiple: float | None = None
+    buy_order_id: str = ""
+    entry_market_regime: str = "unknown"
+    entry_size_multiplier: float | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +86,11 @@ class RoundTrip:
     runner_r_multiple: float | None = None
     full_trade_r_multiple: float | None = None
     cumulative_daily_pnl: float | None = None
+    buy_order_id: str = ""
+    sell_order_id: str = ""
+    entry_reason: str = ""
+    entry_market_regime: str = "unknown"
+    entry_size_multiplier: float | None = None
 
 
 def parse_event(row: dict) -> TradeEvent:
@@ -142,13 +176,18 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
                     min_price=min_price,
                     mfe_pct=pct_change(max_price, buy.price),
                     mae_pct=pct_change(min_price, buy.price),
-                    reason=event.reason.split(" | ")[0],
+                    reason=clean_reason(event.reason),
                     hold_seconds=(event.timestamp_ms - buy.timestamp_ms) / 1000,
                     r_multiple=event.r_multiple,
                     exit_stage=event.exit_stage,
                     runner_r_multiple=event.runner_r_multiple,
                     full_trade_r_multiple=event.full_trade_r_multiple,
                     cumulative_daily_pnl=event.cumulative_daily_pnl,
+                    buy_order_id=buy.order_id,
+                    sell_order_id=event.order_id,
+                    entry_reason=clean_reason(buy.reason),
+                    entry_market_regime=market_regime_from_reason(buy.reason),
+                    entry_size_multiplier=size_multiplier_from_reason(buy.reason),
                 )
             )
             remaining_shares -= matched_shares
@@ -183,8 +222,67 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
     return round_trips, unmatched
 
 
+def build_position_round_trips(round_trips: list[RoundTrip]) -> list[PositionRoundTrip]:
+    groups: dict[tuple[str, str, int, str, float], list[RoundTrip]] = defaultdict(list)
+    for trade in round_trips:
+        key = (trade.buy_order_id, trade.symbol, trade.buy_timestamp_ms, trade.strategy, trade.buy_price)
+        groups[key].append(trade)
+
+    positions: list[PositionRoundTrip] = []
+    for trades in groups.values():
+        legs = sorted(trades, key=lambda trade: trade.sell_timestamp_ms)
+        first = legs[0]
+        final = legs[-1]
+        shares = sum(trade.shares for trade in legs)
+        pnl = sum(trade.pnl for trade in legs)
+        sell_notional = sum(trade.sell_price * trade.shares for trade in legs)
+        average_sell_price = sell_notional / shares if shares > 0 else 0.0
+        full_r_values = [trade.full_trade_r_multiple for trade in legs if trade.full_trade_r_multiple is not None]
+        positions.append(
+            PositionRoundTrip(
+                symbol=first.symbol,
+                strategy=first.strategy,
+                shares=shares,
+                buy_timestamp_ms=first.buy_timestamp_ms,
+                final_sell_timestamp_ms=final.sell_timestamp_ms,
+                buy_price=first.buy_price,
+                average_sell_price=average_sell_price,
+                pnl=pnl,
+                pnl_pct=pct_change(average_sell_price, first.buy_price),
+                max_price=max(trade.max_price for trade in legs),
+                min_price=min(trade.min_price for trade in legs),
+                mfe_pct=max(trade.mfe_pct for trade in legs),
+                mae_pct=min(trade.mae_pct for trade in legs),
+                final_reason=final.reason,
+                exit_reasons=tuple(trade.reason or "unknown" for trade in legs),
+                exit_stages=tuple(trade.exit_stage or "unknown" for trade in legs),
+                hold_seconds=(final.sell_timestamp_ms - first.buy_timestamp_ms) / 1000,
+                legs=len(legs),
+                full_trade_r_multiple=full_r_values[-1] if full_r_values else None,
+                buy_order_id=first.buy_order_id,
+                entry_market_regime=first.entry_market_regime,
+                entry_size_multiplier=first.entry_size_multiplier,
+            )
+        )
+    return sorted(positions, key=lambda position: position.final_sell_timestamp_ms)
+
+
 def pct_change(price: float, entry_price: float) -> float:
     return (price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+
+def clean_reason(reason: str) -> str:
+    return str(reason or "").split(" | ")[0]
+
+
+def market_regime_from_reason(reason: str) -> str:
+    match = MARKET_REGIME_RE.search(str(reason or ""))
+    return match.group(1) if match else "unknown"
+
+
+def size_multiplier_from_reason(reason: str) -> float | None:
+    match = SIZE_MULT_RE.search(str(reason or ""))
+    return float(match.group(1)) if match else None
 
 
 def optional_float(value) -> float | None:
@@ -206,6 +304,7 @@ def excursion_prices(
 
 
 def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
+    positions = build_position_round_trips(round_trips)
     wins = [trade for trade in round_trips if trade.pnl > 0]
     losses = [trade for trade in round_trips if trade.pnl < 0]
     flat = [trade for trade in round_trips if trade.pnl == 0]
@@ -224,15 +323,18 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
     by_strategy = defaultdict(list)
     by_day = defaultdict(list)
     by_day_strategy = defaultdict(lambda: defaultdict(list))
+    by_entry_market_regime = defaultdict(list)
     for trade in round_trips:
         by_symbol[trade.symbol].append(trade)
         by_reason[trade.reason or "unknown"].append(trade)
         by_strategy[trade.strategy or "unknown"].append(trade)
+        by_entry_market_regime[trade.entry_market_regime or "unknown"].append(trade)
         day = trade_day(trade)
         by_day[day].append(trade)
         by_day_strategy[day][trade.strategy or "unknown"].append(trade)
 
     return {
+        "positions": summarize_positions(positions),
         "trades": len(round_trips),
         "wins": len(wins),
         "losses": len(losses),
@@ -255,12 +357,45 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "by_symbol": summarize_groups(by_symbol),
         "by_exit_reason": summarize_groups(by_reason),
         "by_strategy": summarize_groups(by_strategy),
+        "by_entry_market_regime": summarize_groups(by_entry_market_regime),
         "by_day": summarize_groups(by_day),
         "by_day_strategy": summarize_nested_groups(by_day_strategy),
         "by_entry_time_et": summarize_entry_time_noon_et(round_trips),
         "by_day_entry_time_et": summarize_entry_time_noon_et_by_entry_day(round_trips),
         "exit_reason_counts": dict(Counter(trade.reason or "unknown" for trade in round_trips)),
         "unmatched_events": unmatched,
+    }
+
+
+def summarize_positions(positions: list[PositionRoundTrip]) -> dict:
+    wins = [position for position in positions if position.pnl > 0]
+    losses = [position for position in positions if position.pnl < 0]
+    pnls = [position.pnl for position in positions]
+    pnl_pcts = [position.pnl_pct for position in positions]
+    full_r = [position.full_trade_r_multiple for position in positions if position.full_trade_r_multiple is not None]
+    by_strategy = defaultdict(list)
+    by_final_reason = defaultdict(list)
+    by_entry_market_regime = defaultdict(list)
+    for position in positions:
+        by_strategy[position.strategy or "unknown"].append(position)
+        by_final_reason[position.final_reason or "unknown"].append(position)
+        by_entry_market_regime[position.entry_market_regime or "unknown"].append(position)
+    return {
+        "count": len(positions),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round(len(wins) / len(positions), 4) if positions else 0.0,
+        "total_pnl": round(sum(pnls), 4),
+        "average_pnl": round(mean(pnls), 4) if pnls else 0.0,
+        "median_pnl": round(median(pnls), 4) if pnls else 0.0,
+        "average_pnl_pct": round(mean(pnl_pcts), 6) if pnl_pcts else 0.0,
+        "expectancy_full_r": round(mean(full_r), 4) if full_r else 0.0,
+        "average_legs": round(mean([position.legs for position in positions]), 2) if positions else 0.0,
+        "by_strategy": summarize_position_groups(by_strategy),
+        "by_final_exit_reason": summarize_position_groups(by_final_reason),
+        "by_entry_market_regime": summarize_position_groups(by_entry_market_regime),
+        "best_position": position_summary(max(positions, key=lambda position: position.pnl)) if positions else None,
+        "worst_position": position_summary(min(positions, key=lambda position: position.pnl)) if positions else None,
     }
 
 
@@ -282,6 +417,26 @@ def summarize_groups(groups: dict[str, list[RoundTrip]]) -> dict:
             if any(trade.r_multiple is not None for trade in trades)
             else 0.0,
             "max_drawdown": round(max_drawdown(trades), 4),
+        }
+    return summary
+
+
+def summarize_position_groups(groups: dict[str, list[PositionRoundTrip]]) -> dict:
+    summary = {}
+    for name, positions in sorted(groups.items()):
+        wins = sum(1 for position in positions if position.pnl > 0)
+        pnl = sum(position.pnl for position in positions)
+        full_r = [position.full_trade_r_multiple for position in positions if position.full_trade_r_multiple is not None]
+        summary[name] = {
+            "positions": len(positions),
+            "wins": wins,
+            "win_rate": round(wins / len(positions), 4) if positions else 0.0,
+            "total_pnl": round(pnl, 4),
+            "average_pnl": round(pnl / len(positions), 4) if positions else 0.0,
+            "average_pnl_pct": round(mean([position.pnl_pct for position in positions]), 6) if positions else 0.0,
+            "expectancy_full_r": round(mean(full_r), 4) if full_r else 0.0,
+            "average_legs": round(mean([position.legs for position in positions]), 2) if positions else 0.0,
+            "max_drawdown": round(max_position_drawdown(positions), 4),
         }
     return summary
 
@@ -366,12 +521,50 @@ def trade_summary(trade: RoundTrip) -> dict:
     }
 
 
+def position_summary(position: PositionRoundTrip) -> dict:
+    return {
+        "symbol": position.symbol,
+        "strategy": position.strategy,
+        "trade_day": datetime.fromtimestamp(position.final_sell_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat(),
+        "shares": position.shares,
+        "buy_time": format_timestamp(position.buy_timestamp_ms),
+        "final_sell_time": format_timestamp(position.final_sell_timestamp_ms),
+        "buy_price": position.buy_price,
+        "average_sell_price": round(position.average_sell_price, 4),
+        "pnl": round(position.pnl, 4),
+        "pnl_pct": round(position.pnl_pct, 6),
+        "mfe_pct": round(position.mfe_pct, 6),
+        "mae_pct": round(position.mae_pct, 6),
+        "final_reason": position.final_reason,
+        "exit_reasons": list(position.exit_reasons),
+        "exit_stages": list(position.exit_stages),
+        "hold_seconds": round(position.hold_seconds, 2),
+        "legs": position.legs,
+        "full_trade_r_multiple": round(position.full_trade_r_multiple, 4)
+        if position.full_trade_r_multiple is not None
+        else None,
+        "entry_market_regime": position.entry_market_regime,
+        "entry_size_multiplier": position.entry_size_multiplier,
+    }
+
+
 def max_drawdown(trades: list[RoundTrip]) -> float:
     peak = 0.0
     cumulative = 0.0
     drawdown = 0.0
     for trade in sorted(trades, key=lambda item: item.sell_timestamp_ms):
         cumulative += trade.pnl
+        peak = max(peak, cumulative)
+        drawdown = min(drawdown, cumulative - peak)
+    return abs(drawdown)
+
+
+def max_position_drawdown(positions: list[PositionRoundTrip]) -> float:
+    peak = 0.0
+    cumulative = 0.0
+    drawdown = 0.0
+    for position in sorted(positions, key=lambda item: item.final_sell_timestamp_ms):
+        cumulative += position.pnl
         peak = max(peak, cumulative)
         drawdown = min(drawdown, cumulative - peak)
     return abs(drawdown)
@@ -397,6 +590,37 @@ def print_text(summary: dict) -> None:
     )
     print(f"Avg hold: {summary['average_hold_seconds']:.1f}s | Median hold: {summary['median_hold_seconds']:.1f}s")
 
+    positions = summary.get("positions", {})
+    if positions:
+        print(
+            "\nPositions "
+            f"(partials/runners combined): {positions['count']} | Wins: {positions['wins']} | "
+            f"Losses: {positions['losses']} | Win rate: {positions['win_rate']:.1%}"
+        )
+        print(
+            f"Position P/L: {positions['total_pnl']:.2f} | Avg: {positions['average_pnl']:.2f} | "
+            f"Median: {positions['median_pnl']:.2f} | Expectancy full R: {positions['expectancy_full_r']:.2f}R | "
+            f"Avg legs: {positions['average_legs']:.2f}"
+        )
+        if positions.get("by_strategy"):
+            print("\nPosition Strategies")
+            for strategy, item in sorted(
+                positions["by_strategy"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True
+            ):
+                print(
+                    f"- {strategy}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
+                    f"win rate {item['win_rate']:.1%}, avg legs {item['average_legs']:.2f}"
+                )
+        if positions.get("by_entry_market_regime"):
+            print("\nPosition Entry Market Regime")
+            for regime, item in sorted(
+                positions["by_entry_market_regime"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True
+            ):
+                print(
+                    f"- {regime}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
+                    f"win rate {item['win_rate']:.1%}"
+                )
+
     if summary["by_exit_reason"]:
         print("\nExit Reasons")
         for reason, item in sorted(summary["by_exit_reason"].items(), key=lambda pair: pair[1]["trades"], reverse=True):
@@ -415,6 +639,13 @@ def print_text(summary: dict) -> None:
         print("\nStrategies")
         for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True):
             print(f"- {strategy}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+
+    if summary.get("by_entry_market_regime"):
+        print("\nEntry Market Regime")
+        for regime, item in sorted(
+            summary["by_entry_market_regime"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True
+        ):
+            print(f"- {regime}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
 
     if summary.get("by_entry_time_et"):
         b = summary["by_entry_time_et"]["before_12_00_et"]
@@ -452,6 +683,12 @@ def print_text(summary: dict) -> None:
         print(f"\nBest: {summary['best_trade']['symbol']} P/L {summary['best_trade']['pnl']:.2f} via {summary['best_trade']['reason']}")
     if summary["worst_trade"]:
         print(f"Worst: {summary['worst_trade']['symbol']} P/L {summary['worst_trade']['pnl']:.2f} via {summary['worst_trade']['reason']}")
+    if positions.get("best_position"):
+        best = positions["best_position"]
+        print(f"Best position: {best['symbol']} P/L {best['pnl']:.2f} via {best['final_reason']}")
+    if positions.get("worst_position"):
+        worst = positions["worst_position"]
+        print(f"Worst position: {worst['symbol']} P/L {worst['pnl']:.2f} via {worst['final_reason']}")
 
     if summary["unmatched_events"]:
         print(f"\nUnmatched events: {len(summary['unmatched_events'])}")

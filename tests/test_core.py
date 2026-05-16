@@ -545,6 +545,7 @@ class CoreTradingTests(unittest.TestCase):
             summary = analyze_trade_journal.analyze(journal)
 
             self.assertEqual(summary["trades"], 2)
+            self.assertEqual(summary["positions"]["count"], 2)
             self.assertEqual(summary["wins"], 1)
             self.assertEqual(summary["losses"], 1)
             self.assertAlmostEqual(summary["total_pnl"], 3.0)
@@ -570,9 +571,23 @@ class CoreTradingTests(unittest.TestCase):
         events = [
             analyze_trade_journal.TradeEvent("buy", "AAPL", 1_000, 10, 100.0, 0.0, "opening_impulse", "entry", "buy-1"),
             analyze_trade_journal.TradeEvent("mark", "AAPL", 3_000, 0, 102.0, 0.0, "opening_impulse", "mark", ""),
-            analyze_trade_journal.TradeEvent("sell", "AAPL", 6_000, 4, 101.0, 4.0, "opening_impulse", "partial", "sell-1"),
+            analyze_trade_journal.TradeEvent(
+                "sell", "AAPL", 6_000, 4, 101.0, 4.0, "opening_impulse", "partial", "sell-1", exit_stage="partial"
+            ),
             analyze_trade_journal.TradeEvent("mark", "AAPL", 8_000, 0, 98.0, 0.0, "opening_impulse", "mark", ""),
-            analyze_trade_journal.TradeEvent("sell", "AAPL", 11_000, 6, 99.0, -6.0, "opening_impulse", "stop loss", "sell-2"),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "AAPL",
+                11_000,
+                6,
+                99.0,
+                -6.0,
+                "opening_impulse",
+                "stop loss",
+                "sell-2",
+                full_trade_r_multiple=-0.4,
+                exit_stage="runner",
+            ),
         ]
 
         round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
@@ -586,6 +601,45 @@ class CoreTradingTests(unittest.TestCase):
         self.assertAlmostEqual(round_trips[0].pnl_pct, 0.01)
         self.assertAlmostEqual(round_trips[0].mfe_pct, 0.02)
         self.assertAlmostEqual(round_trips[1].mae_pct, -0.02)
+        self.assertEqual(summary["positions"]["count"], 1)
+        self.assertEqual(summary["positions"]["losses"], 1)
+        self.assertAlmostEqual(summary["positions"]["total_pnl"], -2.0)
+        self.assertAlmostEqual(summary["positions"]["expectancy_full_r"], -0.4)
+        self.assertEqual(summary["positions"]["worst_position"]["legs"], 2)
+        self.assertEqual(summary["positions"]["worst_position"]["exit_stages"], ["partial", "runner"])
+
+    def test_trade_journal_analyzer_groups_by_entry_market_regime(self):
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy",
+                "AAPL",
+                1_000,
+                10,
+                100.0,
+                0.0,
+                "stoch_macd_reversal",
+                "entry | market_regime risk_off score=-3/9 SPY:-1 size_mult=0.50",
+                "buy-1",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "AAPL", 6_000, 10, 101.0, 10.0, "stoch_macd_reversal", "target", "sell-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy", "MSFT", 10_000, 5, 200.0, 0.0, "steady_intraday", "entry", "buy-2"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "MSFT", 16_000, 5, 198.0, -10.0, "steady_intraday", "stop", "sell-2"
+            ),
+        ]
+
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+
+        self.assertEqual(unmatched, [])
+        self.assertEqual(summary["by_entry_market_regime"]["risk_off"]["trades"], 1)
+        self.assertEqual(summary["by_entry_market_regime"]["unknown"]["trades"], 1)
+        self.assertEqual(summary["positions"]["by_entry_market_regime"]["risk_off"]["positions"], 1)
+        self.assertAlmostEqual(round_trips[0].entry_size_multiplier, 0.5)
 
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
         events = [
