@@ -28,7 +28,7 @@ from alpaca_stream import (
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
-from market_regime import MarketRegimeMonitor
+from market_regime import MarketRegime, MarketRegimeMonitor
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote, Signal
 from opening_plan import (
@@ -5038,6 +5038,45 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(adjusted)
         self.assertIn("market regime panic", reject_reason)
 
+    def test_market_regime_bypass_strategy_ignores_panic_block(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            market_regime_symbols=["SPY", "QQQ", "IWM"],
+            market_regime_min_bars=20,
+            market_regime_bypass_strategies=["steady_intraday"],
+        )
+        monitor = MarketRegimeMonitor(settings)
+        states = {
+            "SPY": self._market_regime_state("SPY", 100.0, -0.2),
+            "QQQ": self._market_regime_state("QQQ", 100.0, -0.2),
+            "IWM": self._market_regime_state("IWM", 100.0, -0.2),
+        }
+        signal = self._market_regime_signal(strategy="steady_intraday")
+
+        regime = monitor.evaluate(states)
+        strategy_regime = monitor.regime_for_strategy(regime, "steady_intraday")
+        adjusted, reject_reason = monitor.apply_to_signal(signal, regime)
+
+        self.assertEqual(regime.name, "panic")
+        self.assertEqual(strategy_regime.name, "bypassed")
+        self.assertIs(adjusted, signal)
+        self.assertIsNone(reject_reason)
+
+    def test_market_regime_bypass_is_strategy_specific(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            market_regime_symbols=["SPY", "QQQ", "IWM"],
+            market_regime_min_bars=20,
+            market_regime_bypass_strategies=["steady_intraday"],
+        )
+        monitor = MarketRegimeMonitor(settings)
+        regime = MarketRegime("panic", -9, 9, False, 0.0, "panic score=-9/9")
+
+        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
+
+        self.assertIsNone(adjusted)
+        self.assertIn("market regime panic", reject_reason)
+
     @staticmethod
     def _market_regime_state(symbol: str, start: float, step: float) -> SymbolState:
         state = SymbolState(symbol)
@@ -5061,9 +5100,9 @@ class CoreTradingTests(unittest.TestCase):
         return state
 
     @staticmethod
-    def _market_regime_signal() -> Signal:
+    def _market_regime_signal(strategy: str = "stoch_macd_reversal") -> Signal:
         return Signal(
-            strategy="stoch_macd_reversal",
+            strategy=strategy,
             symbol="AAPL",
             side="BUY",
             price=100.0,

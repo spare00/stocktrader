@@ -84,7 +84,9 @@ class MarketRegimeMonitor:
         return MarketRegime(name, score, max_score, allow, max(0.0, size_mult), reason)
 
     def apply_to_signal(self, signal: Signal, regime: MarketRegime) -> tuple[Signal | None, str | None]:
-        if not self.settings.market_regime_enabled or regime.name in {"disabled", "neutral"}:
+        if self.strategy_bypasses(signal.strategy):
+            return signal, None
+        if not self.settings.market_regime_enabled or regime.name in {"disabled", "bypassed", "neutral"}:
             return signal, None
         if not regime.allow_new_entries:
             return None, f"market regime {regime.reason}"
@@ -106,6 +108,26 @@ class MarketRegimeMonitor:
             position_size_multiplier=signal.position_size_multiplier * regime.position_size_multiplier,
         )
         return adjusted, None
+
+    def regime_for_strategy(self, regime: MarketRegime, strategy_name: str) -> MarketRegime:
+        if not self.strategy_bypasses(strategy_name):
+            return regime
+        return MarketRegime(
+            "bypassed",
+            regime.score,
+            regime.max_score,
+            True,
+            1.0,
+            f"market regime bypassed for {strategy_name}; actual {regime.reason}",
+        )
+
+    def strategy_bypasses(self, strategy_name: str) -> bool:
+        normalized = strategy_name.strip().lower()
+        return normalized in {
+            str(name).strip().lower()
+            for name in self.settings.market_regime_bypass_strategies
+            if str(name).strip()
+        }
 
     def should_log_change(self, regime: MarketRegime) -> bool:
         if not self.settings.market_regime_log_changes:

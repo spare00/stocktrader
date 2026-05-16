@@ -90,6 +90,7 @@ class Settings:
     market_regime_risk_off_size_multiplier: float = 0.5
     market_regime_risk_on_size_multiplier: float = 1.0
     market_regime_log_changes: bool = True
+    market_regime_bypass_strategies: list[str] = field(default_factory=list)
 
     indicator_preload_bars: int = 1000
     indicator_max_bars_per_symbol: int = 3000
@@ -372,6 +373,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("market_regime_risk_off_size_multiplier", "MARKET_REGIME_RISK_OFF_SIZE_MULTIPLIER", _float_env, 0.5),
     ("market_regime_risk_on_size_multiplier", "MARKET_REGIME_RISK_ON_SIZE_MULTIPLIER", _float_env, 1.0),
     ("market_regime_log_changes", "MARKET_REGIME_LOG_CHANGES", _bool_env, True),
+    ("market_regime_bypass_strategies", "MARKET_REGIME_BYPASS_STRATEGIES", _csv_env, ""),
     ("indicator_preload_bars", "INDICATOR_PRELOAD_BARS", _int_env, 1000),
     ("indicator_max_bars_per_symbol", "INDICATOR_MAX_BARS_PER_SYMBOL", _int_env, 3000),
     ("indicator_include_afterhours", "INDICATOR_INCLUDE_AFTERHOURS", _bool_env, False),

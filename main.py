@@ -806,6 +806,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         "risk_on_score": settings.market_regime_risk_on_score,
         "risk_off_size_multiplier": settings.market_regime_risk_off_size_multiplier,
         "risk_on_size_multiplier": settings.market_regime_risk_on_size_multiplier,
+        "bypass_strategies": list(settings.market_regime_bypass_strategies),
     }
     settings_snapshot["effective_symbols"] = {
         strategy: sorted(set(settings.symbols) | set(local_symbols))
@@ -916,7 +917,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 logging.info("Market regime %s", regime.reason)
 
             for strategy in strategies:
-                strategy.set_market_regime(regime)
+                strategy.set_market_regime(market_regime.regime_for_strategy(regime, strategy.name))
                 signal = strategy.evaluate(state)
                 if not signal:
                     continue
