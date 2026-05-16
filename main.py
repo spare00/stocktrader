@@ -916,6 +916,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 logging.info("Market regime %s", regime.reason)
 
             for strategy in strategies:
+                strategy.set_market_regime(regime)
                 signal = strategy.evaluate(state)
                 if not signal:
                     continue

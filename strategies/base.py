@@ -22,6 +22,7 @@ class Strategy(ABC):
     selector_command: ClassVar[str | None] = None
     requires_plan: ClassVar[bool] = True
     _symbol_manager: Any = None
+    _market_regime: Any = None
 
     @classmethod
     def runtime_settings_section(cls, settings: Any) -> dict[str, Any] | None:
@@ -42,6 +43,9 @@ class Strategy(ABC):
 
     def set_symbol_manager(self, manager: Any) -> None:
         self._symbol_manager = manager
+
+    def set_market_regime(self, regime: Any) -> None:
+        self._market_regime = regime
 
     def is_symbol_allowed(self, symbol: str) -> bool:
         normalized = symbol.strip().upper()

@@ -76,6 +76,21 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 120),
         (
+            "stoch_macd_risk_off_stoch_cross_lookback_bars",
+            "STOCH_MACD_RISK_OFF_STOCH_CROSS_LOOKBACK_BARS",
+            int_env,
+            3,
+        ),
+        ("stoch_macd_risk_off_hist_multiplier", "STOCH_MACD_RISK_OFF_HIST_MULTIPLIER", float_env, 1.5),
+        ("stoch_macd_risk_off_volume_add", "STOCH_MACD_RISK_OFF_VOLUME_ADD", float_env, 0.3),
+        (
+            "stoch_macd_risk_off_vwap_buffer_multiplier",
+            "STOCH_MACD_RISK_OFF_VWAP_BUFFER_MULTIPLIER",
+            float_env,
+            1.5,
+        ),
+        ("stoch_macd_risk_off_max_r_multiplier", "STOCH_MACD_RISK_OFF_MAX_R_MULTIPLIER", float_env, 0.8),
+        (
             "stoch_macd_respect_consecutive_loss_limits",
             "STOCH_MACD_RESPECT_CONSECUTIVE_LOSS_LIMITS",
             bool_env,
@@ -133,6 +148,13 @@ class StochMACDReversalStrategy(Strategy):
             "max_trades_per_symbol_per_session": settings.stoch_macd_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.stoch_macd_symbol_loss_lock_count,
             "macd_warmup_bars": settings.stoch_macd_macd_warmup_bars,
+            "risk_off": {
+                "stoch_cross_lookback_bars": settings.stoch_macd_risk_off_stoch_cross_lookback_bars,
+                "hist_multiplier": settings.stoch_macd_risk_off_hist_multiplier,
+                "volume_add": settings.stoch_macd_risk_off_volume_add,
+                "vwap_buffer_multiplier": settings.stoch_macd_risk_off_vwap_buffer_multiplier,
+                "max_r_multiplier": settings.stoch_macd_risk_off_max_r_multiplier,
+            },
             "respect_consecutive_loss_limits": settings.stoch_macd_respect_consecutive_loss_limits,
         }
 
@@ -165,6 +187,7 @@ class StochMACDReversalStrategy(Strategy):
         if last is None:
             return self._reject(state, "quote", "invalid or missing latest quote")
         early_window = self._in_early_window(state.last_event_ms)
+        risk_off = self._risk_off_market_regime()
         max_spread_bps = self.settings.stoch_macd_max_spread_bps
         if early_window:
             max_spread_bps = min(max_spread_bps, self.settings.stoch_macd_early_max_spread_bps)
@@ -196,12 +219,18 @@ class StochMACDReversalStrategy(Strategy):
                 "stoch",
                 f"STOCH not bullish k={k_now:.1f} d={d_now:.1f}",
             )
-        if not self._stoch_cross_recent(
-            k_values,
-            d_values,
-            self.settings.stoch_macd_stoch_cross_lookback_bars,
-        ):
-            return self._reject(state, "stoch_timing", "STOCH bullish cross is stale")
+        stoch_cross_lookback = max(0, self.settings.stoch_macd_stoch_cross_lookback_bars)
+        if risk_off:
+            stoch_cross_lookback = min(
+                stoch_cross_lookback,
+                max(1, self.settings.stoch_macd_risk_off_stoch_cross_lookback_bars),
+            )
+        if not self._stoch_cross_recent(k_values, d_values, stoch_cross_lookback):
+            return self._reject(
+                state,
+                "stoch_timing",
+                f"STOCH bullish cross is stale lookback={stoch_cross_lookback}",
+            )
         if not self._last_n_rising(k_values, 1):
             return self._reject(state, "stoch_timing", f"STOCH K not rising k={k_now:.1f}")
 
@@ -215,11 +244,13 @@ class StochMACDReversalStrategy(Strategy):
         min_hist_norm = self.settings.stoch_macd_min_hist_norm
         if early_window:
             min_hist_norm = max(min_hist_norm, self.settings.stoch_macd_early_min_hist_norm)
+        if risk_off:
+            min_hist_norm *= max(1.0, self.settings.stoch_macd_risk_off_hist_multiplier)
         if hist_norm < min_hist_norm:
             return self._reject(
                 state,
                 "macd_strength",
-                f"hist too weak hist_norm={hist_norm:.5f}",
+                f"hist too weak hist_norm={hist_norm:.5f} min={min_hist_norm:.5f}",
             )
         if not self._last_n_rising(hist, self.settings.stoch_macd_hist_rise_bars):
             return self._reject(state, "macd_strength", "histogram not rising")
@@ -259,8 +290,10 @@ class StochMACDReversalStrategy(Strategy):
         min_volume_ratio = self.settings.stoch_macd_min_volume_ratio
         if early_window:
             min_volume_ratio = max(min_volume_ratio, self.settings.stoch_macd_early_min_volume_ratio)
+        if risk_off:
+            min_volume_ratio += max(0.0, self.settings.stoch_macd_risk_off_volume_add)
         if vol_r < min_volume_ratio:
-            return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low")
+            return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low min={min_volume_ratio:.2f}")
 
         current_session_bars = self._current_session_indicator_bars(state)
         atr = self._atr(current_session_bars, self.settings.stoch_macd_atr_period)
@@ -283,6 +316,8 @@ class StochMACDReversalStrategy(Strategy):
             vwap_buffer_pct = self.settings.stoch_macd_vwap_buffer_pct
             if early_window:
                 vwap_buffer_pct = max(vwap_buffer_pct, self.settings.stoch_macd_early_vwap_buffer_pct)
+            if risk_off:
+                vwap_buffer_pct *= max(1.0, self.settings.stoch_macd_risk_off_vwap_buffer_multiplier)
             min_price = session_vwap * (1.0 + max(0.0, vwap_buffer_pct))
             if last.ask <= min_price:
                 return self._reject(
@@ -301,10 +336,14 @@ class StochMACDReversalStrategy(Strategy):
 
         stop_price = self._entry_stop_price(current_session_bars, last.ask)
         r_pct = (last.ask - stop_price) / last.ask if last.ask > 0 else 0.0
+        max_r_pct = self.settings.stoch_macd_max_r_pct
+        if risk_off:
+            max_r_pct *= max(0.0, self.settings.stoch_macd_risk_off_max_r_multiplier)
         if r_pct < self.settings.stoch_macd_min_r_pct:
             return self._reject(state, "risk", f"R too small r={r_pct:.2%}")
-        if r_pct > self.settings.stoch_macd_max_r_pct:
-            return self._reject(state, "risk", f"R too wide r={r_pct:.2%}")
+        if r_pct > max_r_pct:
+            return self._reject(state, "risk", f"R too wide r={r_pct:.2%} max={max_r_pct:.2%}")
+        regime_reason = " regime=risk_off" if risk_off else ""
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -318,7 +357,7 @@ class StochMACDReversalStrategy(Strategy):
                 "stoch_macd_reversal confirmed trend "
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
                 f"ccc={ccc:.4f} signal={macd_signal:.4f} hist_norm={hist_norm:.5f} r={r_pct:.2%} "
-                f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x"
+                f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x{regime_reason}"
             ),
             stop_price=stop_price,
             position_size_multiplier=0.8,
@@ -416,6 +455,9 @@ class StochMACDReversalStrategy(Strategy):
         market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
         elapsed = minutes - market_open
         return 0 <= elapsed < self.settings.stoch_macd_early_window_minutes
+
+    def _risk_off_market_regime(self) -> bool:
+        return getattr(getattr(self, "_market_regime", None), "name", "") == "risk_off"
 
     def _current_session_indicator_bars(self, state: SymbolState) -> list:
         if state.last_event_ms is None:

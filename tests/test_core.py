@@ -6493,6 +6493,80 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_risk_off_requires_fresher_stoch_cross(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_stoch_cross_lookback_bars=10,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+        state = self._stoch_macd_state(closes)
+        stoch = (
+            [35.0, 38.0, 42.0, 48.0, 55.0, 64.0, 70.0, 76.0, 82.0],
+            [45.0, 43.0, 40.0, 40.0, 42.0, 50.0, 58.0, 66.0, 74.0],
+        )
+
+        with patch.object(strategy, "_compute_stoch", return_value=stoch), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(strategy, "_compute_supertrend", return_value=(60.80, True)), patch.object(
+            strategy, "_fast_ema", return_value=60.92
+        ), patch.object(
+            strategy, "_volume_ratio", return_value=2.0
+        ), patch.object(
+            strategy, "_entry_stop_price", return_value=97.32
+        ):
+            neutral_signal = strategy.evaluate(state)
+            strategy.set_market_regime(types.SimpleNamespace(name="risk_off"))
+            risk_off_signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(neutral_signal)
+        self.assertIsNone(risk_off_signal)
+
+    def test_stoch_macd_reversal_risk_off_requires_stronger_macd_histogram(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+        state = self._stoch_macd_state(closes)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.004, 0.008, 0.012],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ), patch.object(
+            strategy, "_volume_ratio", return_value=2.0
+        ), patch.object(
+            strategy, "_entry_stop_price", return_value=97.32
+        ):
+            neutral_signal = strategy.evaluate(state)
+            strategy.set_market_regime(types.SimpleNamespace(name="risk_off"))
+            risk_off_signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(neutral_signal)
+        self.assertIsNone(risk_off_signal)
+
     def test_stoch_macd_reversal_rejects_weak_macd_histogram(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
