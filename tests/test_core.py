@@ -5861,6 +5861,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
+    def test_steady_intraday_min_hold_blocks_immediate_vwap_exit(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["UBER"],
+            strategy_names=["steady_intraday"],
+            steady_intraday_min_hold_seconds=30,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("UBER")
+        start_ms = market_ms(2026, 5, 11, 10, 0)
+        for index in range(12):
+            end_ms = start_ms + (index + 1) * 60_000
+            state.add_bar(Bar("UBER", 100.0, 100.1, 99.9, 100.0, 100_000, 100.0, end_ms - 60_000, end_ms))
+
+        entry_ms = state.bars[-1].end_ms
+        position = Position("UBER", "steady_intraday", 10, 100.0, entry_ms, 102.0, 99.0, 99.0, max_price=100.0)
+        state.update_quote(Quote("UBER", 99.88, 99.90, 100, 100, entry_ms + 10_000))
+
+        self.assertIsNone(strategy.should_exit(state, position))
+
+        state.update_quote(Quote("UBER", 99.88, 99.90, 100, 100, entry_ms + 31_000))
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "lost VWAP")
+
     def test_steady_intraday_ignores_symbols_outside_selected_universe(self):
         settings = Settings(
             alpaca_api_key="test",
