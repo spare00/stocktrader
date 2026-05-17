@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time
+import json
 import logging
 from statistics import median
 from typing import Any, ClassVar
@@ -200,6 +201,9 @@ class StochMACDReversalStrategy(Strategy):
         self.market_tz = MARKET_TZ
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
         self._last_entry_ms_by_symbol: dict[str, int] = {}
+
+    def bootstrap_states(self, states: dict[str, SymbolState]) -> None:
+        self._restore_reentry_history(states)
 
     def _indicator_bars(self, state: SymbolState) -> list:
         """Chronological rolling bars for indicators: no session-date filter (preload + prior days kept)."""
@@ -567,6 +571,49 @@ class StochMACDReversalStrategy(Strategy):
         entry_date = datetime.fromtimestamp(last_entry_ms / 1000, tz=MARKET_TZ).date()
         return current_date == entry_date
 
+    def _restore_reentry_history(self, states: dict[str, SymbolState]) -> None:
+        if not self.settings.stoch_macd_reentry_fresh_enabled:
+            return
+        session_dates: dict[str, Any] = {}
+        for symbol, state in states.items():
+            if state.last_event_ms is None:
+                continue
+            session_dates[symbol.upper()] = datetime.fromtimestamp(state.last_event_ms / 1000, tz=MARKET_TZ).date()
+        if not session_dates:
+            return
+
+        try:
+            import execution as execution_module
+
+            journal_path = execution_module.TRADE_JOURNAL_FILE
+            if not journal_path.exists():
+                return
+            with journal_path.open("r", encoding="utf-8") as journal:
+                for line in journal:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("event") != "buy" or row.get("strategy") != self.name:
+                        continue
+                    symbol = str(row.get("symbol", "")).strip().upper()
+                    timestamp_ms = row.get("timestamp_ms")
+                    if symbol not in session_dates or timestamp_ms is None:
+                        continue
+                    try:
+                        entry_ms = int(timestamp_ms)
+                    except (TypeError, ValueError):
+                        continue
+                    entry_date = datetime.fromtimestamp(entry_ms / 1000, tz=MARKET_TZ).date()
+                    if entry_date != session_dates[symbol]:
+                        continue
+                    self._last_entry_ms_by_symbol[symbol] = max(
+                        entry_ms,
+                        self._last_entry_ms_by_symbol.get(symbol, 0),
+                    )
+        except OSError:
+            LOG.exception("Failed to restore stoch_macd_reversal reentry history")
+
     def _current_session_indicator_bars(self, state: SymbolState) -> list:
         if state.last_event_ms is None:
             return []
@@ -773,7 +820,8 @@ class StochMACDReversalStrategy(Strategy):
         return out
 
     def _volume_ratio(self, state: SymbolState) -> float:
-        bars = self._indicator_bars(state)
+        session_bars = self._current_session_indicator_bars(state)
+        bars = session_bars if len(session_bars) >= 2 else self._indicator_bars(state)
         if len(bars) < 2:
             return 0.0
         baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])

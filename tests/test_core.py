@@ -6606,6 +6606,60 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.timestamp_ms, decision_ms)
 
+    def test_stoch_macd_reversal_volume_ratio_prefers_current_session(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+        state = SymbolState("AAPL")
+        prior_start = market_ms(2026, 4, 23, 15, 50)
+        current_start = market_ms(2026, 4, 24, 9, 30)
+        for index in range(5):
+            ts = prior_start + index * 60_000
+            state.add_bar(
+                Bar("AAPL", 100.0, 100.2, 99.8, 100.0, 1_000_000, 100.0, ts, ts + 60_000)
+            )
+        for index, volume in enumerate([100_000, 100_000, 200_000]):
+            ts = current_start + index * 60_000
+            state.add_bar(
+                Bar("AAPL", 100.0, 100.2, 99.8, 100.0, volume, 100.0, ts, ts + 60_000)
+            )
+
+        self.assertEqual(state.last_event_ms, current_start + 3 * 60_000)
+        self.assertAlmostEqual(strategy._volume_ratio(state), 2.0)
+
+    def test_stoch_macd_reversal_restores_same_day_reentry_history_from_journal(self):
+        old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                journal = Path(tmpdir) / "trade_journal.jsonl"
+                execution_module.TRADE_JOURNAL_FILE = journal
+                entry_ms = market_ms(2026, 4, 24, 9, 45)
+                journal.parent.mkdir(parents=True, exist_ok=True)
+                journal.write_text(
+                    json.dumps(
+                        {
+                            "event": "buy",
+                            "strategy": "stoch_macd_reversal",
+                            "symbol": "AAPL",
+                            "timestamp_ms": entry_ms,
+                            "shares": 10,
+                            "price": 100.0,
+                            "pnl": 0.0,
+                            "reason": "test",
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                state = self._stoch_macd_state([90.0 + index * 0.2 for index in range(40)])
+                strategy = StochMACDReversalStrategy(Settings(symbols=["AAPL"]))
+
+                strategy.bootstrap_states({"AAPL": state})
+
+                self.assertEqual(strategy._last_entry_ms_by_symbol["AAPL"], entry_ms)
+                self.assertTrue(strategy._requires_reentry_freshness(state))
+        finally:
+            execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
+
     def test_stoch_macd_reversal_can_enter_near_0940_with_premarket_warmup(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=26)
         strategy = StochMACDReversalStrategy(settings)
