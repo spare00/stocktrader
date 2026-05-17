@@ -452,6 +452,10 @@ def trade_day(trade: RoundTrip) -> str:
     return datetime.fromtimestamp(trade.sell_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
 
 
+def event_day(event: TradeEvent) -> str:
+    return datetime.fromtimestamp(event.timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
+
+
 def entry_before_noon_et(buy_timestamp_ms: int) -> bool:
     """True when the entry (buy) instant is strictly before 12:00:00 in America/New_York."""
     dt = datetime.fromtimestamp(buy_timestamp_ms / 1000, tz=TRADING_TZ)
@@ -694,17 +698,33 @@ def print_text(summary: dict) -> None:
         print(f"\nUnmatched events: {len(summary['unmatched_events'])}")
 
 
-def analyze(path: Path, strategy: str | None = None) -> dict:
-    round_trips, unmatched = build_round_trips(load_events(path))
+def analyze(path: Path, strategy: str | None = None, target_date: str | None = None) -> dict:
+    events = load_events(path)
+    if target_date:
+        events = [event for event in events if event_day(event) == target_date]
+    round_trips, unmatched = build_round_trips(events)
     if strategy:
         needle = strategy.strip().lower()
         round_trips = [t for t in round_trips if (t.strategy or "").lower() == needle]
     return summarize(round_trips, unmatched)
 
 
+def parse_target_date(value: str) -> str:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be YYYY-MM-DD") from exc
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze confirmed buy/sell events from logs/trade_journal.jsonl.")
     parser.add_argument("--journal", type=Path, default=DEFAULT_JOURNAL_FILE, help="Path to trade_journal.jsonl.")
+    parser.add_argument(
+        "--date",
+        type=parse_target_date,
+        default=None,
+        help="Only include journal events whose timestamp falls on this YYYY-MM-DD trading date in America/New_York.",
+    )
     parser.add_argument(
         "--strategy",
         type=str,
@@ -717,7 +737,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    summary = analyze(args.journal, strategy=args.strategy or None)
+    summary = analyze(args.journal, strategy=args.strategy or None, target_date=args.date or None)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
