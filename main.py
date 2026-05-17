@@ -957,6 +957,12 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 if fill:
                     heartbeat.record_entry(signal.strategy)
                     risk.record_trade(signal.symbol, signal.timestamp_ms, signal.strategy)
+                    strategy_obj = strategies_by_name.get(signal.strategy)
+                    if strategy_obj is not None:
+                        try:
+                            strategy_obj.on_entry_fill(fill)
+                        except Exception:
+                            logging.exception("Strategy entry-fill hook failed for %s", signal.strategy)
                     break
                 if executor.consume_failed_entry(signal.symbol):
                     risk.record_failed_entry(signal.symbol, signal.timestamp_ms)

@@ -9,7 +9,7 @@ from env_vars import EnvSpec
 from models import ExitDecision, Signal
 
 if TYPE_CHECKING:
-    from execution import Position
+    from execution import Fill, Position
 
 
 class Strategy(ABC):
@@ -56,6 +56,9 @@ class Strategy(ABC):
         return not allowed or normalized in allowed
 
     def bootstrap_states(self, states: dict[str, SymbolState]) -> None:
+        return None
+
+    def on_entry_fill(self, fill: "Fill") -> None:
         return None
 
     def should_exit(self, state: SymbolState, position: "Position") -> ExitDecision | None:

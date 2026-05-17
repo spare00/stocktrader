@@ -331,6 +331,15 @@ class Settings:
     stoch_macd_risk_off_volume_add: float = 0.3
     stoch_macd_risk_off_vwap_buffer_multiplier: float = 1.5
     stoch_macd_risk_off_max_r_multiplier: float = 0.8
+    stoch_macd_neutral_hist_multiplier: float = 1.15
+    stoch_macd_neutral_volume_add: float = 0.10
+    stoch_macd_neutral_vwap_buffer_multiplier: float = 1.20
+    stoch_macd_neutral_max_r_multiplier: float = 0.90
+    stoch_macd_reentry_fresh_enabled: bool = True
+    stoch_macd_reentry_fresh_lookback_bars: int = 20
+    stoch_macd_reentry_high_buffer_pct: float = 0.0005
+    stoch_macd_reentry_hist_rise_multiplier: float = 1.25
+    stoch_macd_reentry_volume_add: float = 0.25
     stoch_macd_respect_consecutive_loss_limits: bool = False
 
     ai_review: bool = False

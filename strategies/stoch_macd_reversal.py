@@ -90,6 +90,30 @@ class StochMACDReversalStrategy(Strategy):
             1.5,
         ),
         ("stoch_macd_risk_off_max_r_multiplier", "STOCH_MACD_RISK_OFF_MAX_R_MULTIPLIER", float_env, 0.8),
+        ("stoch_macd_neutral_hist_multiplier", "STOCH_MACD_NEUTRAL_HIST_MULTIPLIER", float_env, 1.15),
+        ("stoch_macd_neutral_volume_add", "STOCH_MACD_NEUTRAL_VOLUME_ADD", float_env, 0.10),
+        (
+            "stoch_macd_neutral_vwap_buffer_multiplier",
+            "STOCH_MACD_NEUTRAL_VWAP_BUFFER_MULTIPLIER",
+            float_env,
+            1.20,
+        ),
+        ("stoch_macd_neutral_max_r_multiplier", "STOCH_MACD_NEUTRAL_MAX_R_MULTIPLIER", float_env, 0.90),
+        ("stoch_macd_reentry_fresh_enabled", "STOCH_MACD_REENTRY_FRESH_ENABLED", bool_env, True),
+        (
+            "stoch_macd_reentry_fresh_lookback_bars",
+            "STOCH_MACD_REENTRY_FRESH_LOOKBACK_BARS",
+            int_env,
+            20,
+        ),
+        ("stoch_macd_reentry_high_buffer_pct", "STOCH_MACD_REENTRY_HIGH_BUFFER_PCT", float_env, 0.0005),
+        (
+            "stoch_macd_reentry_hist_rise_multiplier",
+            "STOCH_MACD_REENTRY_HIST_RISE_MULTIPLIER",
+            float_env,
+            1.25,
+        ),
+        ("stoch_macd_reentry_volume_add", "STOCH_MACD_REENTRY_VOLUME_ADD", float_env, 0.25),
         (
             "stoch_macd_respect_consecutive_loss_limits",
             "STOCH_MACD_RESPECT_CONSECUTIVE_LOSS_LIMITS",
@@ -155,6 +179,19 @@ class StochMACDReversalStrategy(Strategy):
                 "vwap_buffer_multiplier": settings.stoch_macd_risk_off_vwap_buffer_multiplier,
                 "max_r_multiplier": settings.stoch_macd_risk_off_max_r_multiplier,
             },
+            "neutral_regime": {
+                "hist_multiplier": settings.stoch_macd_neutral_hist_multiplier,
+                "volume_add": settings.stoch_macd_neutral_volume_add,
+                "vwap_buffer_multiplier": settings.stoch_macd_neutral_vwap_buffer_multiplier,
+                "max_r_multiplier": settings.stoch_macd_neutral_max_r_multiplier,
+            },
+            "reentry_freshness": {
+                "enabled": settings.stoch_macd_reentry_fresh_enabled,
+                "lookback_bars": settings.stoch_macd_reentry_fresh_lookback_bars,
+                "high_buffer_pct": settings.stoch_macd_reentry_high_buffer_pct,
+                "hist_rise_multiplier": settings.stoch_macd_reentry_hist_rise_multiplier,
+                "volume_add": settings.stoch_macd_reentry_volume_add,
+            },
             "respect_consecutive_loss_limits": settings.stoch_macd_respect_consecutive_loss_limits,
         }
 
@@ -162,6 +199,7 @@ class StochMACDReversalStrategy(Strategy):
         self.settings = settings
         self.market_tz = MARKET_TZ
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
+        self._last_entry_ms_by_symbol: dict[str, int] = {}
 
     def _indicator_bars(self, state: SymbolState) -> list:
         """Chronological rolling bars for indicators: no session-date filter (preload + prior days kept)."""
@@ -188,6 +226,8 @@ class StochMACDReversalStrategy(Strategy):
             return self._reject(state, "quote", "invalid or missing latest quote")
         early_window = self._in_early_window(state.last_event_ms)
         risk_off = self._risk_off_market_regime()
+        neutral_hardening = self._neutral_market_regime_hardening()
+        reentry_freshness = self._requires_reentry_freshness(state)
         max_spread_bps = self.settings.stoch_macd_max_spread_bps
         if early_window:
             max_spread_bps = min(max_spread_bps, self.settings.stoch_macd_early_max_spread_bps)
@@ -246,6 +286,10 @@ class StochMACDReversalStrategy(Strategy):
             min_hist_norm = max(min_hist_norm, self.settings.stoch_macd_early_min_hist_norm)
         if risk_off:
             min_hist_norm *= max(1.0, self.settings.stoch_macd_risk_off_hist_multiplier)
+        elif neutral_hardening > 0:
+            min_hist_norm *= 1.0 + (
+                max(1.0, self.settings.stoch_macd_neutral_hist_multiplier) - 1.0
+            ) * neutral_hardening
         if hist_norm < min_hist_norm:
             return self._reject(
                 state,
@@ -292,10 +336,36 @@ class StochMACDReversalStrategy(Strategy):
             min_volume_ratio = max(min_volume_ratio, self.settings.stoch_macd_early_min_volume_ratio)
         if risk_off:
             min_volume_ratio += max(0.0, self.settings.stoch_macd_risk_off_volume_add)
+        elif neutral_hardening > 0:
+            min_volume_ratio += max(0.0, self.settings.stoch_macd_neutral_volume_add) * neutral_hardening
+        if reentry_freshness:
+            min_volume_ratio += max(0.0, self.settings.stoch_macd_reentry_volume_add)
         if vol_r < min_volume_ratio:
             return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low min={min_volume_ratio:.2f}")
 
         current_session_bars = self._current_session_indicator_bars(state)
+        if reentry_freshness:
+            lookback = max(2, self.settings.stoch_macd_reentry_fresh_lookback_bars)
+            if len(current_session_bars) >= lookback + 1:
+                recent_high = max(bar.high for bar in current_session_bars[-(lookback + 1) : -1])
+                required_high = recent_high * (1.0 + max(0.0, self.settings.stoch_macd_reentry_high_buffer_pct))
+                if last.ask < required_high:
+                    return self._reject(
+                        state,
+                        "reentry_freshness",
+                        f"repeat entry lacks fresh high ask={last.ask:.2f} required={required_high:.2f}",
+                    )
+            hist_rise_norm = self._rise_over_bars(hist, self.settings.stoch_macd_hist_rise_bars) / price_ref
+            min_reentry_hist_rise = self.settings.stoch_macd_overbought_min_hist_rise_norm * max(
+                1.0,
+                self.settings.stoch_macd_reentry_hist_rise_multiplier,
+            )
+            if hist_rise_norm < min_reentry_hist_rise:
+                return self._reject(
+                    state,
+                    "reentry_freshness",
+                    f"repeat entry MACD expansion weak hist_rise_norm={hist_rise_norm:.5f} min={min_reentry_hist_rise:.5f}",
+                )
         atr = self._atr(current_session_bars, self.settings.stoch_macd_atr_period)
         if atr is not None:
             atr_pct = atr / last.ask if last.ask > 0 else 0.0
@@ -318,6 +388,10 @@ class StochMACDReversalStrategy(Strategy):
                 vwap_buffer_pct = max(vwap_buffer_pct, self.settings.stoch_macd_early_vwap_buffer_pct)
             if risk_off:
                 vwap_buffer_pct *= max(1.0, self.settings.stoch_macd_risk_off_vwap_buffer_multiplier)
+            elif neutral_hardening > 0:
+                vwap_buffer_pct *= 1.0 + (
+                    max(1.0, self.settings.stoch_macd_neutral_vwap_buffer_multiplier) - 1.0
+                ) * neutral_hardening
             min_price = session_vwap * (1.0 + max(0.0, vwap_buffer_pct))
             if last.ask <= min_price:
                 return self._reject(
@@ -339,11 +413,17 @@ class StochMACDReversalStrategy(Strategy):
         max_r_pct = self.settings.stoch_macd_max_r_pct
         if risk_off:
             max_r_pct *= max(0.0, self.settings.stoch_macd_risk_off_max_r_multiplier)
+        elif neutral_hardening > 0:
+            neutral_max_r_multiplier = min(1.0, max(0.0, self.settings.stoch_macd_neutral_max_r_multiplier))
+            max_r_pct *= 1.0 - ((1.0 - neutral_max_r_multiplier) * neutral_hardening)
         if r_pct < self.settings.stoch_macd_min_r_pct:
             return self._reject(state, "risk", f"R too small r={r_pct:.2%}")
         if r_pct > max_r_pct:
             return self._reject(state, "risk", f"R too wide r={r_pct:.2%} max={max_r_pct:.2%}")
         regime_reason = " regime=risk_off" if risk_off else ""
+        if not risk_off and neutral_hardening > 0:
+            regime_reason = f" regime=neutral_hardened:{neutral_hardening:.2f}"
+        reentry_reason = " reentry=fresh" if reentry_freshness else ""
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -357,7 +437,7 @@ class StochMACDReversalStrategy(Strategy):
                 "stoch_macd_reversal confirmed trend "
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
                 f"ccc={ccc:.4f} signal={macd_signal:.4f} hist_norm={hist_norm:.5f} r={r_pct:.2%} "
-                f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x{regime_reason}"
+                f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x{regime_reason}{reentry_reason}"
             ),
             stop_price=stop_price,
             position_size_multiplier=0.8,
@@ -458,6 +538,34 @@ class StochMACDReversalStrategy(Strategy):
 
     def _risk_off_market_regime(self) -> bool:
         return getattr(getattr(self, "_market_regime", None), "name", "") == "risk_off"
+
+    def _neutral_market_regime_hardening(self) -> float:
+        regime = getattr(self, "_market_regime", None)
+        if getattr(regime, "name", "") != "neutral":
+            return 0.0
+        risk_off_score = self.settings.market_regime_risk_off_score
+        risk_on_score = self.settings.market_regime_risk_on_score
+        span = max(1, risk_on_score - risk_off_score)
+        score = getattr(regime, "score", 0)
+        return min(1.0, max(0.0, (risk_on_score - score) / span))
+
+    def on_entry_fill(self, fill) -> None:
+        if getattr(fill, "strategy", "") != self.name:
+            return
+        symbol = str(getattr(fill, "symbol", "")).strip().upper()
+        timestamp_ms = getattr(fill, "timestamp_ms", None)
+        if symbol and timestamp_ms is not None:
+            self._last_entry_ms_by_symbol[symbol] = int(timestamp_ms)
+
+    def _requires_reentry_freshness(self, state: SymbolState) -> bool:
+        if not self.settings.stoch_macd_reentry_fresh_enabled or state.last_event_ms is None:
+            return False
+        last_entry_ms = self._last_entry_ms_by_symbol.get(state.symbol.upper())
+        if last_entry_ms is None or state.last_event_ms <= last_entry_ms:
+            return False
+        current_date = datetime.fromtimestamp(state.last_event_ms / 1000, tz=MARKET_TZ).date()
+        entry_date = datetime.fromtimestamp(last_entry_ms / 1000, tz=MARKET_TZ).date()
+        return current_date == entry_date
 
     def _current_session_indicator_bars(self, state: SymbolState) -> list:
         if state.last_event_ms is None:
