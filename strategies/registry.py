@@ -12,6 +12,7 @@ from strategies.opening_impulse import OpeningImpulseStrategy
 from strategies.spike import SpikeStrategy
 from strategies.steady_intraday import SteadyIntradayStrategy
 from strategies.stoch_macd_reversal import StochMACDReversalStrategy
+from order_prefixes import validate_strategy_order_prefixes
 
 # Registration order (used by available_strategy_names); lookup is by `name`.
 _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
@@ -70,6 +71,7 @@ def selector_command_hint(strategy_name: str) -> str:
 
 
 def build_strategies(settings: "Settings"):
+    validate_strategy_order_prefixes(settings.strategy_names)
     strategies = []
     for name in settings.strategy_names:
         try:

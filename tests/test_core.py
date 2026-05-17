@@ -31,6 +31,11 @@ import main as trading_main
 from market_regime import MarketRegime, MarketRegimeMonitor
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote, Signal
+from order_prefixes import (
+    CLIENT_ORDER_ID_ROOT,
+    STRATEGY_ORDER_PREFIXES,
+    validate_strategy_order_prefixes,
+)
 from opening_plan import (
     DEFAULT_OPENING_PLAN_FILE,
     PLAN_SETTING_MAP,
@@ -2638,8 +2643,15 @@ class CoreTradingTests(unittest.TestCase):
             second = executor.clients.trading.submitted_orders[1].client_order_id
 
             self.assertNotEqual(first, second)
+            self.assertRegex(first, rf"^{CLIENT_ORDER_ID_ROOT}-oi-aapl-\d+-b-[a-f0-9]{{8}}$")
+            self.assertRegex(second, rf"^{CLIENT_ORDER_ID_ROOT}-oi-aapl-\d+-b-[a-f0-9]{{8}}$")
         finally:
             remove_fake_alpaca_modules()
+
+    def test_strategy_order_prefixes_cover_registered_strategies(self):
+        validate_strategy_order_prefixes(available_strategy_names())
+        self.assertTrue(set(available_strategy_names()).issubset(set(STRATEGY_ORDER_PREFIXES)))
+        self.assertEqual(len(set(STRATEGY_ORDER_PREFIXES.values())), len(STRATEGY_ORDER_PREFIXES))
 
     def test_alpaca_buy_api_error_is_logged_and_skipped(self):
         install_fake_alpaca_modules()

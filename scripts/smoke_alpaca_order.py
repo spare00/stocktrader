@@ -62,7 +62,7 @@ def run(symbol: str, qty: int, cancel_after_submit: bool, wait_seconds: float, f
         qty=qty,
         side=OrderSide.BUY,
         time_in_force=TimeInForce.DAY,
-        client_order_id=f"codex-smoke-{symbol.lower()}-{int(time.time())}",
+        client_order_id=f"bk-smoke-{symbol.lower()}-{int(time.time())}",
     )
     order = clients.trading.submit_order(order_data=order_request)
 

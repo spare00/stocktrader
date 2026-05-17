@@ -11,6 +11,7 @@ from requests.exceptions import RequestException
 from config import Settings
 from market_hours import is_regular_market_time, should_flatten_before_close
 from models import Bar, Signal
+from order_prefixes import CLIENT_ORDER_ID_ROOT, strategy_order_prefix
 
 
 LOG = logging.getLogger(__name__)
@@ -506,7 +507,7 @@ class AlpacaPaperExecutor:
             qty=shares,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY,
-            client_order_id=self._new_client_order_id(signal.symbol, "buy", signal.timestamp_ms),
+            client_order_id=self._new_client_order_id(signal.symbol, signal.strategy, "buy", signal.timestamp_ms),
         )
         started = time.monotonic()
         try:
@@ -615,7 +616,7 @@ class AlpacaPaperExecutor:
             qty=shares_to_sell,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
-            client_order_id=self._new_client_order_id(state.symbol, "sell", event_ms),
+            client_order_id=self._new_client_order_id(state.symbol, position.strategy, "sell", event_ms),
         )
         try:
             order = self.clients.trading.submit_order(order_data=request)
@@ -680,9 +681,11 @@ class AlpacaPaperExecutor:
         return is_open
 
     @staticmethod
-    def _new_client_order_id(symbol: str, side: str, timestamp_ms: int) -> str:
+    def _new_client_order_id(symbol: str, strategy: str, side: str, timestamp_ms: int) -> str:
         nonce = uuid4().hex[:8]
-        return f"codex-{symbol.lower()}-{timestamp_ms}-{side}-{nonce}"
+        prefix = strategy_order_prefix(strategy)
+        side_code = "s" if side.lower().startswith("s") else "b"
+        return f"{CLIENT_ORDER_ID_ROOT}-{prefix}-{symbol.lower()}-{timestamp_ms}-{side_code}-{nonce}"
 
     def _sync_account_cash(self) -> None:
         try:
