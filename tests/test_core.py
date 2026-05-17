@@ -7613,6 +7613,75 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_allows_green_supertrend_when_ema_is_below_line_by_default(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=(
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 34.0, 40.0, 46.0],
+                [46.0, 38.0, 28.0, 18.0, 16.0, 19.0, 26.0, 32.0, 36.0, 40.0],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.005, 0.012, 0.020],
+                [0.000, 0.006, 0.012],
+                [0.002, 0.006, 0.012],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(95.0, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=94.0,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.side, "BUY")
+
+    def test_stoch_macd_reversal_can_require_ema_above_supertrend_when_enabled(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_require_ema_above_supertrend=True,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=(
+                [45.0, 32.0, 18.0, 12.0, 15.0, 18.0, 24.0, 34.0, 40.0, 46.0],
+                [46.0, 38.0, 28.0, 18.0, 16.0, 19.0, 26.0, 32.0, 36.0, 40.0],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.005, 0.012, 0.020],
+                [0.000, 0.006, 0.012],
+                [0.002, 0.006, 0.012],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(95.0, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=94.0,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state())
+
+        self.assertIsNone(signal)
+
     def test_stoch_macd_reversal_rejects_red_current_session_supertrend(self):
         settings = Settings(symbols=["F"], stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)

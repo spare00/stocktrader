@@ -33,6 +33,7 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_min_bars", "STOCH_MACD_MIN_BARS", int_env, 0),
         ("stoch_macd_ema_period", "STOCH_MACD_EMA_PERIOD", int_env, 5),
         ("stoch_macd_supertrend_enabled", "STOCH_MACD_SUPERTREND_ENABLED", bool_env, True),
+        ("stoch_macd_require_ema_above_supertrend", "STOCH_MACD_REQUIRE_EMA_ABOVE_SUPERTREND", bool_env, False),
         ("stoch_macd_supertrend_buffer_pct", "STOCH_MACD_SUPERTREND_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_supertrend_period", "STOCH_MACD_SUPERTREND_PERIOD", int_env, 7),
         ("stoch_macd_supertrend_multiplier", "STOCH_MACD_SUPERTREND_MULTIPLIER", float_env, 3.0),
@@ -137,6 +138,7 @@ class StochMACDReversalStrategy(Strategy):
             "min_bars": settings.stoch_macd_min_bars,
             "ema_period": settings.stoch_macd_ema_period,
             "supertrend_enabled": settings.stoch_macd_supertrend_enabled,
+            "require_ema_above_supertrend": settings.stoch_macd_require_ema_above_supertrend,
             "supertrend_buffer_pct": settings.stoch_macd_supertrend_buffer_pct,
             "supertrend_period": settings.stoch_macd_supertrend_period,
             "supertrend_multiplier": settings.stoch_macd_supertrend_multiplier,
@@ -331,7 +333,7 @@ class StochMACDReversalStrategy(Strategy):
             supertrend_value, supertrend_bullish = supertrend
             buffer_pct = max(0.0, self.settings.stoch_macd_supertrend_buffer_pct)
             min_ema = supertrend_value * (1.0 - buffer_pct)
-            if ema_fast < min_ema:
+            if self.settings.stoch_macd_require_ema_above_supertrend and ema_fast < min_ema:
                 return self._reject(
                     state,
                     "supertrend_bearish",
@@ -359,7 +361,7 @@ class StochMACDReversalStrategy(Strategy):
                 return self._reject(state, "supertrend", "could not compute regular-session SuperTrend")
             regular_supertrend_value, regular_supertrend_bullish = regular_supertrend
             regular_min_ema = regular_supertrend_value * (1.0 - buffer_pct)
-            if regular_ema_fast < regular_min_ema:
+            if self.settings.stoch_macd_require_ema_above_supertrend and regular_ema_fast < regular_min_ema:
                 return self._reject(
                     state,
                     "supertrend_bearish",
