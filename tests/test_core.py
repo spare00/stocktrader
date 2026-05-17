@@ -6817,6 +6817,123 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(state.last_event_ms, current_start + 3 * 60_000)
         self.assertAlmostEqual(strategy._volume_ratio(state), 2.0)
 
+    def test_stoch_macd_reversal_early_volume_can_use_recent_average(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_early_min_volume_ratio=1.2,
+            stoch_macd_early_volume_lookback_bars=3,
+            stoch_macd_early_min_avg_volume_ratio=0.9,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+        state = SymbolState("AAPL")
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        volumes = [100_000.0] * (len(closes) - 3) + [100_000.0, 100_000.0, 80_000.0]
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=volumes[index],
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        state.update_quote(Quote("AAPL", closes[-1] - 0.01, closes[-1] + 0.01, 100, 100, state.last_event_ms or 0))
+
+        self.assertAlmostEqual(strategy._volume_ratio(state), 0.8)
+        self.assertAlmostEqual(strategy._recent_average_volume_ratio(state, 3) or 0.0, 0.9333333333333333)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.side, "BUY")
+
+    def test_stoch_macd_reversal_early_volume_rejects_weak_recent_average(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_early_min_volume_ratio=1.2,
+            stoch_macd_early_volume_lookback_bars=3,
+            stoch_macd_early_min_avg_volume_ratio=0.9,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+        state = SymbolState("AAPL")
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        volumes = [100_000.0] * (len(closes) - 3) + [100_000.0, 100_000.0, 60_000.0]
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=volumes[index],
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        state.update_quote(Quote("AAPL", closes[-1] - 0.01, closes[-1] + 0.01, 100, 100, state.last_event_ms or 0))
+
+        self.assertAlmostEqual(strategy._volume_ratio(state), 0.6)
+        self.assertLess(strategy._recent_average_volume_ratio(state, 3) or 0.0, 0.9)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_stoch_macd_reversal_restores_same_day_reentry_history_from_journal(self):
         old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
         try:

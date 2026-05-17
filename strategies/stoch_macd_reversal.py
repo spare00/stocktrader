@@ -60,6 +60,8 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_max_r_pct", "STOCH_MACD_MAX_R_PCT", float_env, 0.0120),
         ("stoch_macd_early_window_minutes", "STOCH_MACD_EARLY_WINDOW_MINUTES", int_env, 60),
         ("stoch_macd_early_min_volume_ratio", "STOCH_MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.20),
+        ("stoch_macd_early_volume_lookback_bars", "STOCH_MACD_EARLY_VOLUME_LOOKBACK_BARS", int_env, 3),
+        ("stoch_macd_early_min_avg_volume_ratio", "STOCH_MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 0.90),
         ("stoch_macd_early_max_spread_bps", "STOCH_MACD_EARLY_MAX_SPREAD_BPS", float_env, 12.0),
         ("stoch_macd_early_min_hist_norm", "STOCH_MACD_EARLY_MIN_HIST_NORM", float_env, 0.00010),
         ("stoch_macd_early_vwap_buffer_pct", "STOCH_MACD_EARLY_VWAP_BUFFER_PCT", float_env, 0.0010),
@@ -162,6 +164,8 @@ class StochMACDReversalStrategy(Strategy):
             "max_r_pct": settings.stoch_macd_max_r_pct,
             "early_window_minutes": settings.stoch_macd_early_window_minutes,
             "early_min_volume_ratio": settings.stoch_macd_early_min_volume_ratio,
+            "early_volume_lookback_bars": settings.stoch_macd_early_volume_lookback_bars,
+            "early_min_avg_volume_ratio": settings.stoch_macd_early_min_avg_volume_ratio,
             "early_max_spread_bps": settings.stoch_macd_early_max_spread_bps,
             "early_min_hist_norm": settings.stoch_macd_early_min_hist_norm,
             "early_vwap_buffer_pct": settings.stoch_macd_early_vwap_buffer_pct,
@@ -375,14 +379,37 @@ class StochMACDReversalStrategy(Strategy):
         min_volume_ratio = self.settings.stoch_macd_min_volume_ratio
         if early_window:
             min_volume_ratio = max(min_volume_ratio, self.settings.stoch_macd_early_min_volume_ratio)
+        volume_add = 0.0
         if risk_off:
-            min_volume_ratio += max(0.0, self.settings.stoch_macd_risk_off_volume_add)
+            volume_add += max(0.0, self.settings.stoch_macd_risk_off_volume_add)
         elif neutral_hardening > 0:
-            min_volume_ratio += max(0.0, self.settings.stoch_macd_neutral_volume_add) * neutral_hardening
+            volume_add += max(0.0, self.settings.stoch_macd_neutral_volume_add) * neutral_hardening
         if reentry_freshness:
-            min_volume_ratio += max(0.0, self.settings.stoch_macd_reentry_volume_add)
+            volume_add += max(0.0, self.settings.stoch_macd_reentry_volume_add)
+        min_volume_ratio += volume_add
         if vol_r < min_volume_ratio:
-            return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low min={min_volume_ratio:.2f}")
+            recent_vol_r = None
+            if early_window:
+                recent_vol_r = self._recent_average_volume_ratio(
+                    state,
+                    self.settings.stoch_macd_early_volume_lookback_bars,
+                )
+                min_recent_vol_r = max(0.0, self.settings.stoch_macd_early_min_avg_volume_ratio) + volume_add
+                if recent_vol_r is not None and recent_vol_r >= min_recent_vol_r:
+                    pass
+                else:
+                    avg_detail = f"{recent_vol_r:.2f}" if recent_vol_r is not None else "n/a"
+                    return self._reject(
+                        state,
+                        "volume",
+                        (
+                            f"volume ratio {vol_r:.2f} too low min={min_volume_ratio:.2f} "
+                            f"avg{self.settings.stoch_macd_early_volume_lookback_bars}={avg_detail} "
+                            f"min_avg={min_recent_vol_r:.2f}"
+                        ),
+                    )
+            else:
+                return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low min={min_volume_ratio:.2f}")
 
         if reentry_freshness:
             lookback = max(2, self.settings.stoch_macd_reentry_fresh_lookback_bars)
@@ -875,6 +902,19 @@ class StochMACDReversalStrategy(Strategy):
             return 0.0
         baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
         return bars[-1].volume / baseline if baseline > 0 else 0.0
+
+    def _recent_average_volume_ratio(self, state: SymbolState, lookback_bars: int) -> float | None:
+        lookback = max(1, lookback_bars)
+        session_bars = self._current_session_indicator_bars(state)
+        bars = session_bars if len(session_bars) >= lookback + 2 else self._indicator_bars(state)
+        if len(bars) < lookback + 2:
+            return None
+        baseline_bars = bars[:-lookback]
+        baseline = median([bar.volume for bar in baseline_bars if bar.volume > 0] or [0.0])
+        if baseline <= 0:
+            return None
+        recent_avg = sum(bar.volume for bar in bars[-lookback:]) / lookback
+        return recent_avg / baseline
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0

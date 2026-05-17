@@ -322,6 +322,8 @@ class Settings:
     stoch_macd_max_r_pct: float = 0.0120
     stoch_macd_early_window_minutes: int = 60
     stoch_macd_early_min_volume_ratio: float = 1.20
+    stoch_macd_early_volume_lookback_bars: int = 3
+    stoch_macd_early_min_avg_volume_ratio: float = 0.90
     stoch_macd_early_max_spread_bps: float = 12.0
     stoch_macd_early_min_hist_norm: float = 0.00010
     stoch_macd_early_vwap_buffer_pct: float = 0.0010
