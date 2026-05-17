@@ -34,6 +34,7 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_ema_period", "STOCH_MACD_EMA_PERIOD", int_env, 5),
         ("stoch_macd_supertrend_enabled", "STOCH_MACD_SUPERTREND_ENABLED", bool_env, True),
         ("stoch_macd_require_ema_above_supertrend", "STOCH_MACD_REQUIRE_EMA_ABOVE_SUPERTREND", bool_env, False),
+        ("stoch_macd_require_regular_supertrend", "STOCH_MACD_REQUIRE_REGULAR_SUPERTREND", bool_env, False),
         ("stoch_macd_supertrend_buffer_pct", "STOCH_MACD_SUPERTREND_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_supertrend_period", "STOCH_MACD_SUPERTREND_PERIOD", int_env, 7),
         ("stoch_macd_supertrend_multiplier", "STOCH_MACD_SUPERTREND_MULTIPLIER", float_env, 3.0),
@@ -139,6 +140,7 @@ class StochMACDReversalStrategy(Strategy):
             "ema_period": settings.stoch_macd_ema_period,
             "supertrend_enabled": settings.stoch_macd_supertrend_enabled,
             "require_ema_above_supertrend": settings.stoch_macd_require_ema_above_supertrend,
+            "require_regular_supertrend": settings.stoch_macd_require_regular_supertrend,
             "supertrend_buffer_pct": settings.stoch_macd_supertrend_buffer_pct,
             "supertrend_period": settings.stoch_macd_supertrend_period,
             "supertrend_multiplier": settings.stoch_macd_supertrend_multiplier,
@@ -327,10 +329,14 @@ class StochMACDReversalStrategy(Strategy):
             self.settings.stoch_macd_supertrend_multiplier,
         )
         ema_fast = self._fast_ema(indicator_bars, self.settings.stoch_macd_ema_period)
+        supertrend_reason = "st=disabled"
+        regular_supertrend_reason = ""
         if self.settings.stoch_macd_supertrend_enabled:
             if supertrend is None or ema_fast is None:
                 return self._reject(state, "supertrend", "could not compute EMA/SuperTrend")
             supertrend_value, supertrend_bullish = supertrend
+            supertrend_color = "green" if supertrend_bullish else "red"
+            supertrend_reason = f"st={supertrend_color} st_line={supertrend_value:.2f} st_basis=extended"
             buffer_pct = max(0.0, self.settings.stoch_macd_supertrend_buffer_pct)
             min_ema = supertrend_value * (1.0 - buffer_pct)
             if self.settings.stoch_macd_require_ema_above_supertrend and ema_fast < min_ema:
@@ -341,41 +347,44 @@ class StochMACDReversalStrategy(Strategy):
                 )
             if not supertrend_bullish:
                 return self._reject(state, "supertrend_bearish", f"SuperTrend bearish line={supertrend_value:.2f}")
-            required_regular_bars = self.settings.stoch_macd_supertrend_period + 1
-            if len(current_regular_bars) < required_regular_bars:
-                return self._reject(
-                    state,
-                    "supertrend",
-                    (
-                        "need regular-session SuperTrend bars "
-                        f"required={required_regular_bars} have={len(current_regular_bars)}"
-                    ),
+            if self.settings.stoch_macd_require_regular_supertrend:
+                required_regular_bars = self.settings.stoch_macd_supertrend_period + 1
+                if len(current_regular_bars) < required_regular_bars:
+                    return self._reject(
+                        state,
+                        "supertrend",
+                        (
+                            "need regular-session SuperTrend bars "
+                            f"required={required_regular_bars} have={len(current_regular_bars)}"
+                        ),
+                    )
+                regular_supertrend = self._compute_supertrend(
+                    current_regular_bars,
+                    self.settings.stoch_macd_supertrend_period,
+                    self.settings.stoch_macd_supertrend_multiplier,
                 )
-            regular_supertrend = self._compute_supertrend(
-                current_regular_bars,
-                self.settings.stoch_macd_supertrend_period,
-                self.settings.stoch_macd_supertrend_multiplier,
-            )
-            regular_ema_fast = self._fast_ema(current_regular_bars, self.settings.stoch_macd_ema_period)
-            if regular_supertrend is None or regular_ema_fast is None:
-                return self._reject(state, "supertrend", "could not compute regular-session SuperTrend")
-            regular_supertrend_value, regular_supertrend_bullish = regular_supertrend
-            regular_min_ema = regular_supertrend_value * (1.0 - buffer_pct)
-            if self.settings.stoch_macd_require_ema_above_supertrend and regular_ema_fast < regular_min_ema:
-                return self._reject(
-                    state,
-                    "supertrend_bearish",
-                    (
-                        f"regular EMA{self.settings.stoch_macd_ema_period} <= SuperTrend "
-                        f"ema={regular_ema_fast:.2f} line={regular_supertrend_value:.2f}"
-                    ),
-                )
-            if not regular_supertrend_bullish:
-                return self._reject(
-                    state,
-                    "supertrend_bearish",
-                    f"regular SuperTrend bearish line={regular_supertrend_value:.2f}",
-                )
+                regular_ema_fast = self._fast_ema(current_regular_bars, self.settings.stoch_macd_ema_period)
+                if regular_supertrend is None or regular_ema_fast is None:
+                    return self._reject(state, "supertrend", "could not compute regular-session SuperTrend")
+                regular_supertrend_value, regular_supertrend_bullish = regular_supertrend
+                regular_color = "green" if regular_supertrend_bullish else "red"
+                regular_supertrend_reason = f" regular_st={regular_color} regular_st_line={regular_supertrend_value:.2f}"
+                regular_min_ema = regular_supertrend_value * (1.0 - buffer_pct)
+                if self.settings.stoch_macd_require_ema_above_supertrend and regular_ema_fast < regular_min_ema:
+                    return self._reject(
+                        state,
+                        "supertrend_bearish",
+                        (
+                            f"regular EMA{self.settings.stoch_macd_ema_period} <= SuperTrend "
+                            f"ema={regular_ema_fast:.2f} line={regular_supertrend_value:.2f}"
+                        ),
+                    )
+                if not regular_supertrend_bullish:
+                    return self._reject(
+                        state,
+                        "supertrend_bearish",
+                        f"regular SuperTrend bearish line={regular_supertrend_value:.2f}",
+                    )
 
         vol_r = self._volume_ratio(state)
         min_volume_ratio = self.settings.stoch_macd_min_volume_ratio
@@ -505,6 +514,7 @@ class StochMACDReversalStrategy(Strategy):
             reason=(
                 "stoch_macd_reversal confirmed trend "
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
+                f"{supertrend_reason}{regular_supertrend_reason} "
                 f"ccc={ccc:.4f} signal={macd_signal:.4f} hist_norm={hist_norm:.5f} r={r_pct:.2%} "
                 f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x{regime_reason}{reentry_reason}"
             ),

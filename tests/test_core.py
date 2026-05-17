@@ -6920,6 +6920,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.strategy, "stoch_macd_reversal")
         self.assertEqual(signal.side, "BUY")
         self.assertIn("confirmed trend", signal.reason)
+        self.assertIn("st=green", signal.reason)
+        self.assertIn("st_line=60.80", signal.reason)
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
@@ -7736,8 +7738,12 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_stoch_macd_reversal_rejects_red_current_session_supertrend(self):
-        settings = Settings(symbols=["F"], stoch_macd_vwap_enabled=False)
+    def test_stoch_macd_reversal_can_require_regular_supertrend_confirmation(self):
+        settings = Settings(
+            symbols=["F"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_require_regular_supertrend=True,
+        )
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("F")
         rows = [
@@ -7838,7 +7844,11 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_rejects_when_regular_supertrend_bars_missing(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_require_regular_supertrend=True,
+        )
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("AAPL")
         prior_start_ms = market_ms(2026, 5, 8, 15, 0)
