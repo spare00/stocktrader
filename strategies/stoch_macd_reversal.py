@@ -245,6 +245,8 @@ class StochMACDReversalStrategy(Strategy):
                 "bars",
                 f"need >= {self.settings.stoch_macd_min_bars} indicator bars, have {len(indicator_bars)}",
             )
+        current_session_bars = self._current_session_indicator_bars(state)
+        current_regular_bars = self._current_regular_session_indicator_bars(state)
 
         stoch = self._compute_stoch(state)
         macd = self._compute_macd(state)
@@ -333,6 +335,41 @@ class StochMACDReversalStrategy(Strategy):
                 )
             if not supertrend_bullish:
                 return self._reject(state, "supertrend_bearish", f"SuperTrend bearish line={supertrend_value:.2f}")
+            required_regular_bars = self.settings.stoch_macd_supertrend_period + 1
+            if len(current_regular_bars) < required_regular_bars:
+                return self._reject(
+                    state,
+                    "supertrend",
+                    (
+                        "need regular-session SuperTrend bars "
+                        f"required={required_regular_bars} have={len(current_regular_bars)}"
+                    ),
+                )
+            regular_supertrend = self._compute_supertrend(
+                current_regular_bars,
+                self.settings.stoch_macd_supertrend_period,
+                self.settings.stoch_macd_supertrend_multiplier,
+            )
+            regular_ema_fast = self._fast_ema(current_regular_bars, self.settings.stoch_macd_ema_period)
+            if regular_supertrend is None or regular_ema_fast is None:
+                return self._reject(state, "supertrend", "could not compute regular-session SuperTrend")
+            regular_supertrend_value, regular_supertrend_bullish = regular_supertrend
+            regular_min_ema = regular_supertrend_value * (1.0 - buffer_pct)
+            if regular_ema_fast < regular_min_ema:
+                return self._reject(
+                    state,
+                    "supertrend_bearish",
+                    (
+                        f"regular EMA{self.settings.stoch_macd_ema_period} <= SuperTrend "
+                        f"ema={regular_ema_fast:.2f} line={regular_supertrend_value:.2f}"
+                    ),
+                )
+            if not regular_supertrend_bullish:
+                return self._reject(
+                    state,
+                    "supertrend_bearish",
+                    f"regular SuperTrend bearish line={regular_supertrend_value:.2f}",
+                )
 
         vol_r = self._volume_ratio(state)
         min_volume_ratio = self.settings.stoch_macd_min_volume_ratio
@@ -347,7 +384,6 @@ class StochMACDReversalStrategy(Strategy):
         if vol_r < min_volume_ratio:
             return self._reject(state, "volume", f"volume ratio {vol_r:.2f} too low min={min_volume_ratio:.2f}")
 
-        current_session_bars = self._current_session_indicator_bars(state)
         if reentry_freshness:
             lookback = max(2, self.settings.stoch_macd_reentry_fresh_lookback_bars)
             if len(current_session_bars) >= lookback + 1:
@@ -622,6 +658,19 @@ class StochMACDReversalStrategy(Strategy):
             bar
             for bar in self._indicator_bars(state)
             if datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).date() == current.date()
+        ]
+
+    def _current_regular_session_indicator_bars(self, state: SymbolState) -> list:
+        if state.last_event_ms is None:
+            return []
+        current = datetime.fromtimestamp(state.last_event_ms / 1000, tz=MARKET_TZ)
+        return [
+            bar
+            for bar in self._indicator_bars(state)
+            if (
+                datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).date() == current.date()
+                and MARKET_OPEN <= datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).time() < MARKET_CLOSE
+            )
         ]
 
     @staticmethod

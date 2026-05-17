@@ -7387,6 +7387,174 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_rejects_red_current_session_supertrend(self):
+        settings = Settings(symbols=["F"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        state = SymbolState("F")
+        rows = [
+            (12.35, 12.38, 12.32, 12.38, 4173, 12.371),
+            (12.34, 12.34, 12.29, 12.29, 26470, 12.301042),
+            (12.31, 12.32, 12.31, 12.32, 1717, 12.315271),
+            (12.305, 12.305, 12.275, 12.28, 8021, 12.279061),
+            (12.28, 12.29, 12.28, 12.29, 10586, 12.285999),
+            (12.285, 12.285, 12.255, 12.255, 16374, 12.257501),
+            (12.255, 12.255, 12.24, 12.24, 7283, 12.252409),
+            (12.22, 12.22, 12.19, 12.19, 37305, 12.211746),
+            (12.19, 12.195, 12.185, 12.185, 7599, 12.193076),
+            (12.185, 12.195, 12.185, 12.195, 9888, 12.187295),
+            (12.195, 12.215, 12.195, 12.21, 8597, 12.211943),
+            (12.225, 12.225, 12.215, 12.215, 3815, 12.223296),
+            (12.22, 12.245, 12.22, 12.245, 22408, 12.23181),
+            (12.22, 12.22, 12.215, 12.22, 5917, 12.219829),
+            (12.225, 12.24, 12.215, 12.235, 21518, 12.223303),
+            (12.24, 12.27, 12.24, 12.26, 3052, 12.252342),
+            (12.255, 12.27, 12.255, 12.27, 1498, 12.262652),
+            (12.27, 12.28, 12.245, 12.245, 22445, 12.256286),
+        ]
+        prior_start_ms = market_ms(2026, 5, 8, 15, 0)
+        for index in range(20):
+            close = 11.8 + index * 0.02
+            ts = prior_start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "F",
+                    open=close - 0.01,
+                    high=close + 0.03,
+                    low=close - 0.03,
+                    close=close,
+                    volume=10_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+
+        start_ms = market_ms(2026, 5, 11, 9, 30)
+        for index, (open_px, high, low, close, volume, vwap) in enumerate(rows):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "F",
+                    open=open_px,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=volume,
+                    vwap=vwap,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        state.update_quote(Quote("F", bid=12.265, ask=12.275, bid_size=100, ask_size=100, timestamp_ms=state.last_event_ms or 0))
+
+        real_supertrend = strategy._compute_supertrend
+        real_fast_ema = strategy._fast_ema
+        current_day = datetime.fromtimestamp(state.last_event_ms / 1000, tz=MARKET_TZ).date()
+
+        def supertrend_for_chain(bars, period=7, multiplier=3.0):
+            first_day = datetime.fromtimestamp(bars[0].start_ms / 1000, tz=MARKET_TZ).date() if bars else current_day
+            if first_day != current_day:
+                return 11.90, True
+            return real_supertrend(bars, period, multiplier)
+
+        def fast_ema_for_chain(bars, period):
+            first_day = datetime.fromtimestamp(bars[0].start_ms / 1000, tz=MARKET_TZ).date() if bars else current_day
+            if first_day != current_day:
+                return 12.40
+            return real_fast_ema(bars, period)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([45.0, 55.0, 61.2], [50.0, 49.0, 49.8]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.0200, -0.0170, -0.0152],
+                [-0.0190, -0.0185, -0.0181],
+                [0.0010, 0.0020, 0.0030],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            side_effect=supertrend_for_chain,
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            side_effect=fast_ema_for_chain,
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_rejects_when_regular_supertrend_bars_missing(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        state = SymbolState("AAPL")
+        prior_start_ms = market_ms(2026, 5, 8, 15, 0)
+        for index in range(120):
+            close = 100.0 + index * 0.02
+            ts = prior_start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=close - 0.01,
+                    high=close + 0.03,
+                    low=close - 0.03,
+                    close=close,
+                    volume=10_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        start_ms = market_ms(2026, 5, 11, 9, 30)
+        for index in range(settings.stoch_macd_supertrend_period):
+            close = 103.0 + index * 0.03
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=close - 0.01,
+                    high=close + 0.03,
+                    low=close - 0.02,
+                    close=close,
+                    volume=20_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        state.update_quote(
+            Quote("AAPL", bid=103.18, ask=103.19, bid_size=100, ask_size=100, timestamp_ms=state.last_event_ms or 0)
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([45.0, 55.0, 61.2], [50.0, 49.0, 49.8]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.0200, -0.0170, -0.0152],
+                [-0.0190, -0.0185, -0.0181],
+                [0.0010, 0.0020, 0.0030],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(102.00, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=103.10,
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False, stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
