@@ -282,6 +282,13 @@ class Settings:
     macd_risk_on_max_extension_multiplier: float = 1.10
     macd_risk_on_max_vwap_extension_multiplier: float = 1.10
     macd_risk_on_max_r_multiplier: float = 1.05
+    macd_neutral_hist_multiplier: float = 1.10
+    macd_neutral_volume_add: float = 0.08
+    macd_neutral_chop_range_multiplier: float = 1.10
+    macd_neutral_min_range_multiplier: float = 1.10
+    macd_neutral_max_extension_multiplier: float = 0.90
+    macd_neutral_max_vwap_extension_multiplier: float = 0.90
+    macd_neutral_max_r_multiplier: float = 0.92
 
     stoch_macd_start_minute: int = 0
     stoch_macd_end_minute: int = 360

@@ -139,6 +139,18 @@ class MACDEarlyImpulseStrategy(Strategy):
             1.10,
         ),
         ("macd_risk_on_max_r_multiplier", "MACD_RISK_ON_MAX_R_MULTIPLIER", float_env, 1.05),
+        ("macd_neutral_hist_multiplier", "MACD_NEUTRAL_HIST_MULTIPLIER", float_env, 1.10),
+        ("macd_neutral_volume_add", "MACD_NEUTRAL_VOLUME_ADD", float_env, 0.08),
+        ("macd_neutral_chop_range_multiplier", "MACD_NEUTRAL_CHOP_RANGE_MULTIPLIER", float_env, 1.10),
+        ("macd_neutral_min_range_multiplier", "MACD_NEUTRAL_MIN_RANGE_MULTIPLIER", float_env, 1.10),
+        ("macd_neutral_max_extension_multiplier", "MACD_NEUTRAL_MAX_EXTENSION_MULTIPLIER", float_env, 0.90),
+        (
+            "macd_neutral_max_vwap_extension_multiplier",
+            "MACD_NEUTRAL_MAX_VWAP_EXTENSION_MULTIPLIER",
+            float_env,
+            0.90,
+        ),
+        ("macd_neutral_max_r_multiplier", "MACD_NEUTRAL_MAX_R_MULTIPLIER", float_env, 0.92),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.macd_early_impulse",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12"
@@ -205,6 +217,15 @@ class MACDEarlyImpulseStrategy(Strategy):
                 "max_vwap_extension_multiplier": s.macd_risk_on_max_vwap_extension_multiplier,
                 "max_r_multiplier": s.macd_risk_on_max_r_multiplier,
             },
+            "neutral_regime": {
+                "hist_multiplier": s.macd_neutral_hist_multiplier,
+                "volume_add": s.macd_neutral_volume_add,
+                "chop_range_multiplier": s.macd_neutral_chop_range_multiplier,
+                "min_range_multiplier": s.macd_neutral_min_range_multiplier,
+                "max_extension_multiplier": s.macd_neutral_max_extension_multiplier,
+                "max_vwap_extension_multiplier": s.macd_neutral_max_vwap_extension_multiplier,
+                "max_r_multiplier": s.macd_neutral_max_r_multiplier,
+            },
         }
 
     def __init__(self, settings: Settings):
@@ -265,6 +286,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         regime_name = self._market_regime_name()
         risk_off = regime_name == "risk_off"
         risk_on = regime_name == "risk_on"
+        neutral_hardening = self._neutral_market_regime_hardening()
         max_spread_bps = self.settings.macd_max_spread_bps
         if early_window:
             max_spread_bps = min(max_spread_bps, self.settings.macd_early_max_spread_bps)
@@ -303,6 +325,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             chop_range_pct *= max(0.0, self.settings.macd_risk_off_chop_range_multiplier)
         elif risk_on:
             chop_range_pct *= max(0.0, self.settings.macd_risk_on_chop_range_multiplier)
+        elif neutral_hardening > 0:
+            chop_range_pct *= 1.0 + (
+                max(1.0, self.settings.macd_neutral_chop_range_multiplier) - 1.0
+            ) * neutral_hardening
         if self._is_chop(state, chop_range_pct) and not runner_mode:
             return self._reject(
                 state,
@@ -326,6 +352,10 @@ class MACDEarlyImpulseStrategy(Strategy):
                 min_range_pct *= max(0.0, self.settings.macd_risk_off_min_range_multiplier)
             elif risk_on:
                 min_range_pct *= max(0.0, self.settings.macd_risk_on_min_range_multiplier)
+            elif neutral_hardening > 0:
+                min_range_pct *= 1.0 + (
+                    max(1.0, self.settings.macd_neutral_min_range_multiplier) - 1.0
+                ) * neutral_hardening
             if recent_range_pct < min_range_pct:
                 return self._reject(state, "range", f"range {recent_range_pct:.2%} too compressed")
 
@@ -363,6 +393,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             min_hist_norm *= max(1.0, self.settings.macd_risk_off_hist_multiplier)
         elif risk_on:
             min_hist_norm *= max(0.0, self.settings.macd_risk_on_hist_multiplier)
+        elif neutral_hardening > 0:
+            min_hist_norm *= 1.0 + (
+                max(1.0, self.settings.macd_neutral_hist_multiplier) - 1.0
+            ) * neutral_hardening
         if hist_norm < min_hist_norm:
             return self._reject(
                 state,
@@ -379,6 +413,8 @@ class MACDEarlyImpulseStrategy(Strategy):
             min_volume_ratio += max(0.0, self.settings.macd_risk_off_volume_add)
         elif risk_on:
             min_volume_ratio = max(0.0, min_volume_ratio + self.settings.macd_risk_on_volume_add)
+        elif neutral_hardening > 0:
+            min_volume_ratio += max(0.0, self.settings.macd_neutral_volume_add) * neutral_hardening
         if vol_r < min_volume_ratio:
             return self._reject(
                 state,
@@ -396,6 +432,9 @@ class MACDEarlyImpulseStrategy(Strategy):
             max_extension_pct *= max(0.0, self.settings.macd_risk_off_max_extension_multiplier)
         elif risk_on:
             max_extension_pct *= max(0.0, self.settings.macd_risk_on_max_extension_multiplier)
+        elif neutral_hardening > 0:
+            neutral_max_extension_multiplier = min(1.0, max(0.0, self.settings.macd_neutral_max_extension_multiplier))
+            max_extension_pct *= 1.0 - ((1.0 - neutral_max_extension_multiplier) * neutral_hardening)
         if extension > max_extension_pct:
             return self._reject(state, "overextended", f"extension {extension:.3%} too high")
 
@@ -408,6 +447,9 @@ class MACDEarlyImpulseStrategy(Strategy):
                 max_vwap_extension_pct *= max(0.0, self.settings.macd_risk_off_max_vwap_extension_multiplier)
             elif risk_on:
                 max_vwap_extension_pct *= max(0.0, self.settings.macd_risk_on_max_vwap_extension_multiplier)
+            elif neutral_hardening > 0:
+                neutral_vwap_multiplier = min(1.0, max(0.0, self.settings.macd_neutral_max_vwap_extension_multiplier))
+                max_vwap_extension_pct *= 1.0 - ((1.0 - neutral_vwap_multiplier) * neutral_hardening)
             if vwap_extension > max_vwap_extension_pct:
                 return self._reject(state, "vwap_overextended", f"VWAP extension {vwap_extension:.3%} too high")
 
@@ -436,11 +478,16 @@ class MACDEarlyImpulseStrategy(Strategy):
             max_r_pct *= max(0.0, self.settings.macd_risk_off_max_r_multiplier)
         elif risk_on:
             max_r_pct *= max(0.0, self.settings.macd_risk_on_max_r_multiplier)
+        elif neutral_hardening > 0:
+            neutral_max_r_multiplier = min(1.0, max(0.0, self.settings.macd_neutral_max_r_multiplier))
+            max_r_pct *= 1.0 - ((1.0 - neutral_max_r_multiplier) * neutral_hardening)
         if r_pct < self.settings.macd_min_r_pct:
             return self._reject(state, "risk", f"R {r_pct:.2%} too small")
         if r_pct > max_r_pct:
             return self._reject(state, "risk", f"R {r_pct:.2%} too wide")
         regime_reason = f" regime={regime_name}" if regime_name in {"risk_off", "risk_on"} else ""
+        if not regime_reason and neutral_hardening > 0:
+            regime_reason = f" regime=neutral_hardened:{neutral_hardening:.2f}"
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -579,6 +626,16 @@ class MACDEarlyImpulseStrategy(Strategy):
 
     def _market_regime_name(self) -> str:
         return getattr(getattr(self, "_market_regime", None), "name", "")
+
+    def _neutral_market_regime_hardening(self) -> float:
+        regime = getattr(self, "_market_regime", None)
+        if getattr(regime, "name", "") != "neutral":
+            return 0.0
+        risk_off_score = self.settings.market_regime_risk_off_score
+        risk_on_score = self.settings.market_regime_risk_on_score
+        span = max(1, risk_on_score - risk_off_score)
+        score = getattr(regime, "score", 0)
+        return min(1.0, max(0.0, (risk_on_score - score) / span))
 
     def _is_chop(self, state: SymbolState, chop_range_pct: float | None = None) -> bool:
         bars = self._regular_bars(state)[-10:]
