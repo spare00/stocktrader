@@ -429,7 +429,7 @@ class StochMACDReversalStrategy(Strategy):
             symbol=state.symbol,
             side="BUY",
             price=last.ask,
-            timestamp_ms=last.timestamp_ms,
+            timestamp_ms=state.last_event_ms,
             change_pct=hist[-1],
             volume_ratio=vol_r,
             spread_bps=last.spread_bps,

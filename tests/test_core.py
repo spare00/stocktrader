@@ -6569,6 +6569,43 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
+    def test_stoch_macd_reversal_signal_time_uses_decision_event_not_stale_quote(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+        state = self._stoch_macd_state(closes)
+        decision_ms = state.last_event_ms or 0
+        stale_quote_ms = decision_ms - 90_000
+        state.update_quote(Quote("AAPL", closes[-1] - 0.01, closes[-1] + 0.01, 100, 100, stale_quote_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = decision_ms
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.timestamp_ms, decision_ms)
+
     def test_stoch_macd_reversal_can_enter_near_0940_with_premarket_warmup(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=26)
         strategy = StochMACDReversalStrategy(settings)
