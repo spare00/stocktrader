@@ -1662,7 +1662,34 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(broker.tracker.positions["AAPL"].max_price, 100.4)
         self.assertEqual(broker.tracker.positions["AAPL"].last_high_ts, 20_000)
 
-    def test_opening_impulse_max_hold_still_applies_with_strategy_exit_logic(self):
+    def test_opening_impulse_max_hold_still_applies_to_losing_trade_with_strategy_exit_logic(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            opening_impulse_min_hold_seconds=15,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=99.78, ask=99.82, bid_size=20, ask_size=20, timestamp_ms=70_000))
+
+        fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max hold")
+
+    def test_opening_impulse_max_hold_does_not_cut_winner(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -1686,8 +1713,7 @@ class CoreTradingTests(unittest.TestCase):
 
         fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
 
-        self.assertIsNotNone(fill)
-        self.assertEqual(fill.reason, "max hold")
+        self.assertIsNone(fill)
 
     def test_paper_broker_forces_exit_at_max_trade_loss_r(self):
         settings = Settings(

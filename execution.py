@@ -368,7 +368,7 @@ class LocalPaperExecutor:
         ):
             reason = "stop loss"
             exit_price = position.stop_price
-        elif age_seconds >= self.tracker.settings.max_hold_seconds:
+        elif age_seconds >= self.tracker.settings.max_hold_seconds and current_price < position.entry_price:
             reason = "max hold"
         elif age_seconds < exit_activation_delay:
             return None
@@ -581,7 +581,7 @@ class AlpacaPaperExecutor:
             or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
         ):
             reason = "stop loss"
-        elif age_seconds >= self.settings.max_hold_seconds:
+        elif age_seconds >= self.settings.max_hold_seconds and current_price < position.entry_price:
             reason = "max hold"
         elif age_seconds < exit_activation_delay:
             return None
