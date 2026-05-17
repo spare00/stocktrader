@@ -72,3 +72,6 @@ class Strategy(ABC):
 
     def use_fixed_target_exit(self, position: "Position") -> bool:
         return True
+
+    def allow_max_hold_exit(self, state: SymbolState, position: "Position", age_seconds: float, pnl_pct: float) -> bool:
+        return True

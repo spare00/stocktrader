@@ -596,6 +596,30 @@ class StochMACDReversalStrategy(Strategy):
     def delay_stop_loss_until_exit_activation(self, position) -> bool:
         return True
 
+    def allow_max_hold_exit(self, state: SymbolState, position, age_seconds: float, pnl_pct: float) -> bool:
+        if getattr(position, "strategy", "") != self.name or not self.settings.stoch_macd_supertrend_enabled:
+            return True
+
+        indicator_bars = self._indicator_bars(state)
+        supertrend = self._compute_supertrend(
+            indicator_bars,
+            self.settings.stoch_macd_supertrend_period,
+            self.settings.stoch_macd_supertrend_multiplier,
+        )
+        if supertrend is None:
+            return True
+
+        _, supertrend_bullish = supertrend
+        if supertrend_bullish:
+            LOG.debug(
+                "Max hold deferred %s [stoch_macd_reversal]: SuperTrend bullish age=%.1fs pnl=%.3f%%",
+                state.symbol,
+                age_seconds,
+                pnl_pct * 100,
+            )
+            return False
+        return True
+
     def _in_early_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None or self.settings.stoch_macd_early_window_minutes <= 0:
             return False

@@ -2200,6 +2200,60 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "stop loss")
 
+    def test_stoch_macd_reversal_defers_max_hold_while_supertrend_bullish(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            stoch_macd_min_hold_seconds=0,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        state = self._stoch_macd_state()
+        event_ms = state.last_event_ms or market_ms(2026, 4, 24, 10, 0)
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=10,
+            entry_price=96.0,
+            entry_ms=event_ms - 70_000,
+            target_price=120.0,
+            stop_price=90.0,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(strategy, "_compute_supertrend", return_value=(95.0, True)):
+            fill = broker.manage_exit(state, {"stoch_macd_reversal": strategy})
+
+        self.assertIsNone(fill)
+        self.assertIn("AAPL", broker.tracker.positions)
+
+    def test_stoch_macd_reversal_allows_max_hold_when_supertrend_bearish(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            stoch_macd_min_hold_seconds=0,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        state = self._stoch_macd_state()
+        event_ms = state.last_event_ms or market_ms(2026, 4, 24, 10, 0)
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=10,
+            entry_price=96.0,
+            entry_ms=event_ms - 70_000,
+            target_price=120.0,
+            stop_price=90.0,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+
+        with patch.object(strategy, "_compute_supertrend", return_value=(95.0, False)):
+            fill = broker.manage_exit(state, {"stoch_macd_reversal": strategy})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max hold")
+
     def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
         settings = Settings(
             alpaca_api_key="test",
