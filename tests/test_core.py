@@ -4323,6 +4323,102 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertTrue(signal.reason.startswith("macd early impulse entry"))
 
+    def test_macd_signal_time_uses_decision_event_not_stale_quote(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.2,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.08,
+                low=101.80,
+                close=102.02,
+                volume=2_000,
+                vwap=101.88,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        decision_ms = state.last_event_ms or 0
+        state.update_quote(
+            Quote(
+                "SMR",
+                bid=102.01,
+                ask=102.03,
+                bid_size=100,
+                ask_size=100,
+                timestamp_ms=decision_ms - 90_000,
+            )
+        )
+        state.last_event_kind = "bar"
+        state.last_event_ms = decision_ms
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0014, 0.0022],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.timestamp_ms, decision_ms)
+
+    def test_macd_bootstrap_uses_latest_state_event_as_replay_clock(self):
+        strategy = MACDEarlyImpulseStrategy(Settings(symbols=["SMR"]))
+        state = SymbolState("SMR")
+        ts = market_ms(2026, 5, 11, 10, 15)
+        state.add_bar(Bar("SMR", 100.0, 100.2, 99.8, 100.1, 1_000, 100.0, ts - 60_000, ts))
+
+        end_time = strategy._bootstrap_end_time({"SMR": state})
+
+        self.assertEqual(end_time.date(), datetime.fromtimestamp(ts / 1000, tz=MARKET_TZ).date())
+        self.assertEqual(end_time.hour, 10)
+        self.assertEqual(end_time.minute, 15)
+
+    def test_macd_volume_ratio_prefers_current_regular_session(self):
+        strategy = MACDEarlyImpulseStrategy(Settings(symbols=["SMR"]))
+        state = SymbolState("SMR")
+        prior_start = market_ms(2026, 5, 8, 15, 50)
+        current_start = market_ms(2026, 5, 11, 9, 30)
+        for index in range(5):
+            ts = prior_start + index * 60_000
+            state.add_bar(Bar("SMR", 100.0, 100.2, 99.8, 100.0, 1_000_000, 100.0, ts, ts + 60_000))
+        for index, volume in enumerate([100_000, 100_000, 200_000]):
+            ts = current_start + index * 60_000
+            state.add_bar(Bar("SMR", 100.0, 100.2, 99.8, 100.0, volume, 100.0, ts, ts + 60_000))
+
+        self.assertEqual(state.last_event_ms, current_start + 3 * 60_000)
+        self.assertAlmostEqual(strategy._volume_ratio(state), 2.0)
+
     def test_macd_risk_off_requires_stronger_histogram(self):
         settings = Settings(
             alpaca_api_key="test",

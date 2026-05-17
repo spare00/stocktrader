@@ -248,7 +248,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         if not symbols:
             return
 
-        now = datetime.now(tz=self.market_tz)
+        now = self._bootstrap_end_time(states)
         start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=self.market_tz)
 
         try:
@@ -493,7 +493,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             symbol=state.symbol,
             side="BUY",
             price=last.ask,
-            timestamp_ms=last.timestamp_ms,
+            timestamp_ms=state.last_event_ms,
             change_pct=change_pct,
             volume_ratio=vol_r,
             spread_bps=spread_bps,
@@ -627,6 +627,12 @@ class MACDEarlyImpulseStrategy(Strategy):
     def _market_regime_name(self) -> str:
         return getattr(getattr(self, "_market_regime", None), "name", "")
 
+    def _bootstrap_end_time(self, states: dict[str, SymbolState]) -> datetime:
+        latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
+        if latest_event_ms > 0:
+            return datetime.fromtimestamp(latest_event_ms / 1000, tz=self.market_tz)
+        return datetime.now(tz=self.market_tz)
+
     def _neutral_market_regime_hardening(self) -> float:
         regime = getattr(self, "_market_regime", None)
         if getattr(regime, "name", "") != "neutral":
@@ -732,11 +738,12 @@ class MACDEarlyImpulseStrategy(Strategy):
         return total_value / total_volume if total_value > 0 else None
 
     def _volume_ratio(self, state: SymbolState) -> float:
-        ib = continuous_indicator_bars(state, self.settings)
-        if len(ib) < 2:
+        session_bars = self._regular_bars(state)
+        bars = session_bars if len(session_bars) >= 2 else continuous_indicator_bars(state, self.settings)
+        if len(bars) < 2:
             return 0.0
-        latest_volume = ib[-1].volume
-        baseline = median([bar.volume for bar in ib[:-1] if bar.volume > 0] or [0.0])
+        latest_volume = bars[-1].volume
+        baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
         return latest_volume / baseline if baseline > 0 else 0.0
 
     def _load_runner_plan_ranks(self) -> None:
