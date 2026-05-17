@@ -4445,6 +4445,115 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(state.last_event_ms, current_start + 3 * 60_000)
         self.assertAlmostEqual(strategy._volume_ratio(state), 2.0)
 
+    def test_macd_early_volume_can_use_strong_recent_average(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.35,
+            macd_early_min_volume_ratio=1.5,
+            macd_early_volume_lookback_bars=3,
+            macd_early_min_avg_volume_ratio=1.4,
+            macd_early_min_latest_volume_ratio=0.7,
+            macd_early_min_hist_norm=0.00001,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 11, 9, 30)
+        volumes = [1_000.0] * 22 + [1_700.0, 1_700.0, 800.0]
+        for index, volume in enumerate(volumes):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=volume,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote("SMR", bid=101.91, ask=101.93, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms)
+        )
+
+        self.assertAlmostEqual(strategy._volume_ratio(state), 0.8)
+        self.assertAlmostEqual(strategy._recent_average_volume_ratio(state, 3) or 0.0, 1.4)
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0020, 0.0030],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.side, "BUY")
+
+    def test_macd_early_volume_rejects_dead_latest_bar_even_with_strong_average(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.35,
+            macd_early_min_volume_ratio=1.5,
+            macd_early_volume_lookback_bars=3,
+            macd_early_min_avg_volume_ratio=1.4,
+            macd_early_min_latest_volume_ratio=0.7,
+            macd_early_min_hist_norm=0.00001,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 11, 9, 30)
+        volumes = [1_000.0] * 22 + [2_500.0, 2_500.0, 600.0]
+        for index, volume in enumerate(volumes):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=volume,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(
+            Quote("SMR", bid=101.91, ask=101.93, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms)
+        )
+
+        self.assertAlmostEqual(strategy._volume_ratio(state), 0.6)
+        self.assertGreater(strategy._recent_average_volume_ratio(state, 3) or 0.0, 1.4)
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.010, 0.014, 0.018, 0.024],
+                [0.009, 0.012, 0.015, 0.019],
+                [0.0010, 0.0015, 0.0020, 0.0030],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_macd_risk_off_requires_stronger_histogram(self):
         settings = Settings(
             alpaca_api_key="test",

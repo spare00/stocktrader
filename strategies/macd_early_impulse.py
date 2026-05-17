@@ -92,6 +92,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_runner_pullback_pct", "MACD_RUNNER_PULLBACK_PCT", float_env, 0.0090),
         ("macd_early_window_minutes", "MACD_EARLY_WINDOW_MINUTES", int_env, 60),
         ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.50),
+        ("macd_early_volume_lookback_bars", "MACD_EARLY_VOLUME_LOOKBACK_BARS", int_env, 3),
+        ("macd_early_min_avg_volume_ratio", "MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 1.40),
+        ("macd_early_min_latest_volume_ratio", "MACD_EARLY_MIN_LATEST_VOLUME_RATIO", float_env, 0.70),
         ("macd_early_max_spread_bps", "MACD_EARLY_MAX_SPREAD_BPS", float_env, 12.0),
         ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.0012),
         ("macd_early_max_vwap_extension_pct", "MACD_EARLY_MAX_VWAP_EXTENSION_PCT", float_env, 0.015),
@@ -186,6 +189,9 @@ class MACDEarlyImpulseStrategy(Strategy):
             "runner_pullback_pct": s.macd_runner_pullback_pct,
             "early_window_minutes": s.macd_early_window_minutes,
             "early_min_volume_ratio": s.macd_early_min_volume_ratio,
+            "early_volume_lookback_bars": s.macd_early_volume_lookback_bars,
+            "early_min_avg_volume_ratio": s.macd_early_min_avg_volume_ratio,
+            "early_min_latest_volume_ratio": s.macd_early_min_latest_volume_ratio,
             "early_max_spread_bps": s.macd_early_max_spread_bps,
             "early_min_hist_norm": s.macd_early_min_hist_norm,
             "early_max_vwap_extension_pct": s.macd_early_max_vwap_extension_pct,
@@ -409,18 +415,41 @@ class MACDEarlyImpulseStrategy(Strategy):
             min_volume_ratio = min(min_volume_ratio, _RUNNER_MIN_VOLUME_RATIO)
         if early_window:
             min_volume_ratio = max(min_volume_ratio, self.settings.macd_early_min_volume_ratio)
+        volume_add = 0.0
         if risk_off:
-            min_volume_ratio += max(0.0, self.settings.macd_risk_off_volume_add)
+            volume_add += max(0.0, self.settings.macd_risk_off_volume_add)
         elif risk_on:
-            min_volume_ratio = max(0.0, min_volume_ratio + self.settings.macd_risk_on_volume_add)
+            volume_add += self.settings.macd_risk_on_volume_add
         elif neutral_hardening > 0:
-            min_volume_ratio += max(0.0, self.settings.macd_neutral_volume_add) * neutral_hardening
+            volume_add += max(0.0, self.settings.macd_neutral_volume_add) * neutral_hardening
+        min_volume_ratio = max(0.0, min_volume_ratio + volume_add)
         if vol_r < min_volume_ratio:
-            return self._reject(
-                state,
-                "volume",
-                f"volume_ratio {vol_r:.2f} < {min_volume_ratio}",
-            )
+            if early_window:
+                recent_vol_r = self._recent_average_volume_ratio(
+                    state,
+                    self.settings.macd_early_volume_lookback_bars,
+                )
+                min_latest_vol_r = max(0.0, self.settings.macd_early_min_latest_volume_ratio)
+                min_recent_vol_r = max(0.0, self.settings.macd_early_min_avg_volume_ratio + volume_add)
+                if vol_r >= min_latest_vol_r and recent_vol_r is not None and recent_vol_r >= min_recent_vol_r:
+                    pass
+                else:
+                    avg_detail = f"{recent_vol_r:.2f}" if recent_vol_r is not None else "n/a"
+                    return self._reject(
+                        state,
+                        "volume",
+                        (
+                            f"volume_ratio {vol_r:.2f} < {min_volume_ratio} "
+                            f"avg{self.settings.macd_early_volume_lookback_bars}={avg_detail} "
+                            f"min_avg={min_recent_vol_r:.2f} min_latest={min_latest_vol_r:.2f}"
+                        ),
+                    )
+            else:
+                return self._reject(
+                    state,
+                    "volume",
+                    f"volume_ratio {vol_r:.2f} < {min_volume_ratio}",
+                )
 
         if not speed_ok and not self._runner_pullback_reclaim_confirmed(rb, last.ask, ema_trend[-1], vwap):
             return self._reject(state, "no_speed", "close[-1] not above close[-3]")
@@ -745,6 +774,19 @@ class MACDEarlyImpulseStrategy(Strategy):
         latest_volume = bars[-1].volume
         baseline = median([bar.volume for bar in bars[:-1] if bar.volume > 0] or [0.0])
         return latest_volume / baseline if baseline > 0 else 0.0
+
+    def _recent_average_volume_ratio(self, state: SymbolState, lookback_bars: int) -> float | None:
+        lookback = max(1, lookback_bars)
+        session_bars = self._regular_bars(state)
+        bars = session_bars if len(session_bars) >= lookback + 2 else continuous_indicator_bars(state, self.settings)
+        if len(bars) < lookback + 2:
+            return None
+        baseline_bars = bars[:-lookback]
+        baseline = median([bar.volume for bar in baseline_bars if bar.volume > 0] or [0.0])
+        if baseline <= 0:
+            return None
+        recent_avg = sum(bar.volume for bar in bars[-lookback:]) / lookback
+        return recent_avg / baseline
 
     def _load_runner_plan_ranks(self) -> None:
         plan_path = Path("data") / f"{self.name}_plan.json"

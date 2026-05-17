@@ -255,6 +255,9 @@ class Settings:
     macd_runner_pullback_pct: float = 0.0090
     macd_early_window_minutes: int = 60
     macd_early_min_volume_ratio: float = 1.50
+    macd_early_volume_lookback_bars: int = 3
+    macd_early_min_avg_volume_ratio: float = 1.40
+    macd_early_min_latest_volume_ratio: float = 0.70
     macd_early_max_spread_bps: float = 12.0
     macd_early_min_hist_norm: float = 0.0012
     macd_early_max_vwap_extension_pct: float = 0.015
