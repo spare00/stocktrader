@@ -591,7 +591,7 @@ class MACDEarlyImpulseStrategy(Strategy):
                 if trail_high > 0 and price < trail_high * (1.0 - trail_stop_pct):
                     return ExitDecision("trailing stop")
 
-            if pnl_pct <= -max(self.settings.macd_stop_loss_pct, _RUNNER_STOP_MIN_PCT):
+            if r_initial <= 0 and pnl_pct <= -max(self.settings.macd_stop_loss_pct, _RUNNER_STOP_MIN_PCT):
                 return ExitDecision("stop loss")
             return None
 
@@ -619,7 +619,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             if trail_high > 0 and price < trail_high * (1.0 - self.settings.macd_trailing_stop_pct):
                 return ExitDecision("trailing stop")
 
-        if pnl_pct <= -self.settings.macd_stop_loss_pct:
+        if r_initial <= 0 and pnl_pct <= -self.settings.macd_stop_loss_pct:
             return ExitDecision("stop loss")
 
         return None
