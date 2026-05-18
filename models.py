@@ -69,3 +69,4 @@ class Signal:
     session_open_price: float | None = None
     entry_open_pct: float | None = None
     position_size_multiplier: float = 1.0
+    runner_mode: bool = False

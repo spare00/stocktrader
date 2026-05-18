@@ -106,6 +106,7 @@ class MarketRegimeMonitor:
             session_open_price=signal.session_open_price,
             entry_open_pct=signal.entry_open_pct,
             position_size_multiplier=signal.position_size_multiplier * regime.position_size_multiplier,
+            runner_mode=signal.runner_mode,
         )
         return adjusted, None
 

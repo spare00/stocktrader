@@ -5290,6 +5290,70 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(signal.reason.startswith("macd early impulse entry"))
         self.assertLess(signal.stop_price, signal.price * (1.0 - settings.macd_stop_loss_pct))
 
+    def test_macd_volume_impulse_entry_marks_runner_mode(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.35,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+            macd_early_min_volume_ratio=1.5,
+            macd_early_min_hist_norm=0.00001,
+            macd_volume_impulse_runner_volume_ratio=3.0,
+            macd_volume_impulse_runner_hist_norm=0.0015,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 11, 9, 30)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.10,
+                low=101.80,
+                close=102.04,
+                volume=5_000,
+                vwap=101.86,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(
+            Quote("SMR", bid=102.03, ask=102.05, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms)
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.10, 0.16, 0.22, 0.30],
+                [0.08, 0.12, 0.16, 0.20],
+                [0.010, 0.040, 0.070, 0.180],
+            ),
+        ), patch.object(strategy, "_runner_mode", return_value=False):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertTrue(signal.runner_mode)
+        self.assertIn("runner=volume", signal.reason)
+
     def test_macd_runner_mode_holds_through_small_early_pullback(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -5680,12 +5744,13 @@ class CoreTradingTests(unittest.TestCase):
         states = {"SPY": self._market_regime_state("SPY", 100.0, -0.2)}
 
         regime = monitor.evaluate(states)
-        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
+        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(runner_mode=True), regime)
 
         self.assertEqual(regime.name, "risk_off")
         self.assertIsNone(reject_reason)
         self.assertIsNotNone(adjusted)
         self.assertAlmostEqual(adjusted.position_size_multiplier, 0.5)
+        self.assertTrue(adjusted.runner_mode)
         self.assertIn("market_regime risk_off", adjusted.reason)
 
     def test_market_regime_panic_blocks_signal(self):
@@ -5770,7 +5835,7 @@ class CoreTradingTests(unittest.TestCase):
         return state
 
     @staticmethod
-    def _market_regime_signal(strategy: str = "stoch_macd_reversal") -> Signal:
+    def _market_regime_signal(strategy: str = "stoch_macd_reversal", runner_mode: bool = False) -> Signal:
         return Signal(
             strategy=strategy,
             symbol="AAPL",
@@ -5782,6 +5847,7 @@ class CoreTradingTests(unittest.TestCase):
             spread_bps=5.0,
             reason="test",
             position_size_multiplier=1.0,
+            runner_mode=runner_mode,
         )
 
     def test_news_sentiment_prioritizes_negative_terms(self):
@@ -6365,6 +6431,39 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "lost VWAP")
+
+    def test_macd_volume_runner_does_not_take_same_tick_full_target_after_partial(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_macd_warmup_bars=5,
+            macd_min_hold_seconds=0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        event_ms = market_ms(2026, 5, 8, 9, 34)
+        state.update_quote(
+            Quote("SMR", bid=100.89, ask=100.91, bid_size=100, ask_size=100, timestamp_ms=event_ms)
+        )
+        position = Position(
+            symbol="SMR",
+            strategy="macd_early_impulse",
+            shares=5,
+            entry_price=100.0,
+            entry_ms=event_ms - 15_000,
+            target_price=101.2,
+            stop_price=99.65,
+            initial_stop_price=99.65,
+            max_price=100.9,
+            partial_exit_taken=True,
+            original_shares=10,
+            runner_mode=True,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
 
     def test_steady_intraday_ignores_symbols_outside_selected_universe(self):
         settings = Settings(

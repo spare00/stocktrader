@@ -37,6 +37,7 @@ class Position:
     realized_pnl: float = 0.0
     session_open_price: float | None = None
     entry_open_pct: float | None = None
+    runner_mode: bool = False
 
 
 @dataclass
@@ -123,6 +124,7 @@ class PositionTracker:
             original_shares=shares,
             session_open_price=signal.session_open_price,
             entry_open_pct=signal.entry_open_pct,
+            runner_mode=signal.runner_mode,
         )
         fill = Fill(
             signal.symbol,
