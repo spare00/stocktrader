@@ -624,6 +624,33 @@ class MACDEarlyImpulseStrategy(Strategy):
 
         return None
 
+    def allow_max_hold_exit(self, state: SymbolState, position, age_seconds: float, pnl_pct: float) -> bool:
+        if getattr(position, "strategy", "") != self.name:
+            return True
+
+        macd = self._compute_macd(state)
+        if macd is None:
+            return True
+
+        macd_line, signal_line, hist = macd
+        if not macd_line or not signal_line or not hist:
+            return True
+
+        hist_not_fading = len(hist) < 2 or hist[-1] >= hist[-2]
+        if macd_line[-1] > signal_line[-1] and hist[-1] > 0 and hist_not_fading:
+            LOG.debug(
+                "Max hold deferred %s [macd_early_impulse]: MACD constructive age=%.1fs pnl=%.3f%% macd=%.5f signal=%.5f hist=%.5f",
+                state.symbol,
+                age_seconds,
+                pnl_pct * 100,
+                macd_line[-1],
+                signal_line[-1],
+                hist[-1],
+            )
+            return False
+
+        return True
+
     def _within_entry_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None:
             return False

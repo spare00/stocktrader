@@ -2254,6 +2254,62 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "max hold")
 
+    def test_macd_early_impulse_defers_max_hold_while_macd_constructive(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            macd_min_hold_seconds=0,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", bid=98.98, ask=99.0, bid_size=100, ask_size=100, timestamp_ms=event_ms))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=event_ms - 70_000,
+            target_price=120.0,
+            stop_price=95.0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+
+        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.005, 0.006])):
+            fill = broker.manage_exit(state, {"macd_early_impulse": strategy})
+
+        self.assertIsNone(fill)
+        self.assertIn("AAPL", broker.tracker.positions)
+
+    def test_macd_early_impulse_allows_max_hold_when_histogram_fades(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            macd_min_hold_seconds=0,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", bid=98.98, ask=99.0, bid_size=100, ask_size=100, timestamp_ms=event_ms))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=event_ms - 70_000,
+            target_price=120.0,
+            stop_price=95.0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+
+        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.006, 0.005])):
+            fill = broker.manage_exit(state, {"macd_early_impulse": strategy})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max hold")
+
     def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
         settings = Settings(
             alpaca_api_key="test",
