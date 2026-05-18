@@ -92,6 +92,12 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_runner_pullback_pct", "MACD_RUNNER_PULLBACK_PCT", float_env, 0.0090),
         ("macd_early_window_minutes", "MACD_EARLY_WINDOW_MINUTES", int_env, 60),
         ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.50),
+        (
+            "macd_early_volume_average_fallback_enabled",
+            "MACD_EARLY_VOLUME_AVERAGE_FALLBACK_ENABLED",
+            bool_env,
+            False,
+        ),
         ("macd_early_volume_lookback_bars", "MACD_EARLY_VOLUME_LOOKBACK_BARS", int_env, 3),
         ("macd_early_min_avg_volume_ratio", "MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 1.40),
         ("macd_early_min_latest_volume_ratio", "MACD_EARLY_MIN_LATEST_VOLUME_RATIO", float_env, 0.70),
@@ -189,6 +195,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             "runner_pullback_pct": s.macd_runner_pullback_pct,
             "early_window_minutes": s.macd_early_window_minutes,
             "early_min_volume_ratio": s.macd_early_min_volume_ratio,
+            "early_volume_average_fallback_enabled": s.macd_early_volume_average_fallback_enabled,
             "early_volume_lookback_bars": s.macd_early_volume_lookback_bars,
             "early_min_avg_volume_ratio": s.macd_early_min_avg_volume_ratio,
             "early_min_latest_volume_ratio": s.macd_early_min_latest_volume_ratio,
@@ -424,7 +431,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             volume_add += max(0.0, self.settings.macd_neutral_volume_add) * neutral_hardening
         min_volume_ratio = max(0.0, min_volume_ratio + volume_add)
         if vol_r < min_volume_ratio:
-            if early_window:
+            if early_window and self.settings.macd_early_volume_average_fallback_enabled:
                 recent_vol_r = self._recent_average_volume_ratio(
                     state,
                     self.settings.macd_early_volume_lookback_bars,
@@ -591,7 +598,7 @@ class MACDEarlyImpulseStrategy(Strategy):
                 if trail_high > 0 and price < trail_high * (1.0 - trail_stop_pct):
                     return ExitDecision("trailing stop")
 
-            if r_initial <= 0 and pnl_pct <= -max(self.settings.macd_stop_loss_pct, _RUNNER_STOP_MIN_PCT):
+            if pnl_pct <= -max(self.settings.macd_stop_loss_pct, _RUNNER_STOP_MIN_PCT):
                 return ExitDecision("stop loss")
             return None
 
@@ -619,7 +626,7 @@ class MACDEarlyImpulseStrategy(Strategy):
             if trail_high > 0 and price < trail_high * (1.0 - self.settings.macd_trailing_stop_pct):
                 return ExitDecision("trailing stop")
 
-        if r_initial <= 0 and pnl_pct <= -self.settings.macd_stop_loss_pct:
+        if pnl_pct <= -self.settings.macd_stop_loss_pct:
             return ExitDecision("stop loss")
 
         return None

@@ -255,6 +255,7 @@ class Settings:
     macd_runner_pullback_pct: float = 0.0090
     macd_early_window_minutes: int = 60
     macd_early_min_volume_ratio: float = 1.50
+    macd_early_volume_average_fallback_enabled: bool = False
     macd_early_volume_lookback_bars: int = 3
     macd_early_min_avg_volume_ratio: float = 1.40
     macd_early_min_latest_volume_ratio: float = 0.70
