@@ -466,6 +466,11 @@ def entry_hour_bucket_et(buy_timestamp_ms: int) -> str:
     return f"{dt.hour:02d}:00-{dt.hour:02d}:59"
 
 
+def entry_noon_bucket_et(buy_timestamp_ms: int) -> str:
+    dt = datetime.fromtimestamp(buy_timestamp_ms / 1000, tz=TRADING_TZ)
+    return "before 12:00" if dt.hour < 12 else "12:00 and after"
+
+
 def entry_day_et(trade: RoundTrip) -> str:
     """Calendar date of the buy in America/New_York (for per-day entry-time stats)."""
     return datetime.fromtimestamp(trade.buy_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
@@ -493,11 +498,22 @@ def summarize_entry_time_hour_et(trades: list[RoundTrip]) -> dict[str, dict]:
 
 
 def summarize_entry_time_hour_et_by_entry_day(trades: list[RoundTrip]) -> dict[str, dict[str, dict]]:
-    """Same hourly buckets as by_entry_time_et, grouped by entry calendar day (America/New_York)."""
+    """Before/after noon buckets grouped by entry calendar day (America/New_York)."""
     by_day: dict[str, list[RoundTrip]] = defaultdict(list)
     for t in trades:
         by_day[entry_day_et(t)].append(t)
-    return {day: summarize_entry_time_hour_et(day_trades) for day, day_trades in sorted(by_day.items())}
+
+    summary = {}
+    for day, day_trades in sorted(by_day.items()):
+        buckets: dict[str, list[RoundTrip]] = defaultdict(list)
+        for trade in day_trades:
+            buckets[entry_noon_bucket_et(trade.buy_timestamp_ms)].append(trade)
+        summary[day] = {
+            name: entry_time_bucket_stats(buckets[name])
+            for name in ("before 12:00", "12:00 and after")
+            if name in buckets
+        }
+    return summary
 
 
 def trade_summary(trade: RoundTrip) -> dict:
@@ -661,11 +677,11 @@ def print_text(summary: dict) -> None:
             )
 
     if summary.get("by_day_entry_time_et"):
-        print("\nPer day — entry time by hour (America/New_York, entry date)")
+        print("\nPer day - entry time vs 12:00 (America/New_York, entry date)")
         for day, buckets in summary["by_day_entry_time_et"].items():
             parts = [
-                f"{hour} {item['trades']} @ {item['win_rate']:.1%} P/L {item['total_pnl']:.2f}"
-                for hour, item in buckets.items()
+                f"{bucket} {item['trades']} @ {item['win_rate']:.1%} P/L {item['total_pnl']:.2f}"
+                for bucket, item in buckets.items()
             ]
             print(f"- {day}: {' | '.join(parts)}")
 

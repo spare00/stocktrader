@@ -733,8 +733,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(h12["win_rate"], 0.5)
         self.assertEqual(list(summary["by_day_entry_time_et"].keys()), ["2026-04-28"])
         d0 = summary["by_day_entry_time_et"]["2026-04-28"]
-        self.assertEqual(d0["09:00-09:59"]["trades"], 1)
-        self.assertEqual(d0["12:00-12:59"]["trades"], 2)
+        self.assertEqual(d0["before 12:00"]["trades"], 1)
+        self.assertEqual(d0["before 12:00"]["wins"], 1)
+        self.assertEqual(d0["12:00 and after"]["trades"], 2)
+        self.assertEqual(d0["12:00 and after"]["wins"], 1)
 
     def test_trade_journal_analyzer_win_rate_by_entry_hour_et_splits_multiple_days(self):
         """Per-day hourly buckets use entry date in ET."""
@@ -757,10 +759,10 @@ class CoreTradingTests(unittest.TestCase):
         summary = analyze_trade_journal.summarize(round_trips, unmatched)
         byd = summary["by_day_entry_time_et"]
         self.assertEqual(list(byd.keys()), ["2026-04-28", "2026-04-29"])
-        self.assertEqual(byd["2026-04-28"]["09:00-09:59"]["trades"], 1)
-        self.assertNotIn("14:00-14:59", byd["2026-04-28"])
-        self.assertNotIn("09:00-09:59", byd["2026-04-29"])
-        self.assertEqual(byd["2026-04-29"]["14:00-14:59"]["trades"], 1)
+        self.assertEqual(byd["2026-04-28"]["before 12:00"]["trades"], 1)
+        self.assertNotIn("12:00 and after", byd["2026-04-28"])
+        self.assertNotIn("before 12:00", byd["2026-04-29"])
+        self.assertEqual(byd["2026-04-29"]["12:00 and after"]["trades"], 1)
 
     def test_trade_journal_analyze_filters_by_strategy(self):
         with tempfile.TemporaryDirectory() as tmpdir:
