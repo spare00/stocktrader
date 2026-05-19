@@ -635,6 +635,20 @@ class CoreTradingTests(unittest.TestCase):
             analyze_trade_journal.TradeEvent(
                 "sell", "MSFT", 16_000, 5, 198.0, -10.0, "steady_intraday", "stop", "sell-2"
             ),
+            analyze_trade_journal.TradeEvent(
+                "buy",
+                "NVDA",
+                20_000,
+                2,
+                500.0,
+                0.0,
+                "stoch_macd_reversal",
+                "entry regime=neutral_hardened:0.75",
+                "buy-3",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "NVDA", 26_000, 2, 501.0, 2.0, "stoch_macd_reversal", "target", "sell-3"
+            ),
         ]
 
         round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
@@ -643,7 +657,9 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(unmatched, [])
         self.assertEqual(summary["by_entry_market_regime"]["risk_off"]["trades"], 1)
         self.assertEqual(summary["by_entry_market_regime"]["unknown"]["trades"], 1)
+        self.assertEqual(summary["by_entry_market_regime"]["neutral_hardened"]["trades"], 1)
         self.assertEqual(summary["positions"]["by_entry_market_regime"]["risk_off"]["positions"], 1)
+        self.assertEqual(summary["positions"]["by_entry_market_regime"]["neutral_hardened"]["positions"], 1)
         self.assertAlmostEqual(round_trips[0].entry_size_multiplier, 0.5)
 
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
@@ -5753,6 +5769,28 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(adjusted.runner_mode)
         self.assertIn("market_regime risk_off", adjusted.reason)
 
+    def test_market_regime_neutral_annotates_signal(self):
+        monitor = MarketRegimeMonitor(Settings(symbols=["AAPL"]))
+        regime = MarketRegime("neutral", 0, 9, True, 1.0, "neutral score=0/9 SPY:0 QQQ:0 IWM:0")
+
+        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
+
+        self.assertIsNone(reject_reason)
+        self.assertIsNotNone(adjusted)
+        self.assertAlmostEqual(adjusted.position_size_multiplier, 1.0)
+        self.assertIn("market_regime neutral", adjusted.reason)
+
+    def test_market_regime_risk_on_annotates_signal_without_resizing(self):
+        monitor = MarketRegimeMonitor(Settings(symbols=["AAPL"]))
+        regime = MarketRegime("risk_on", 6, 9, True, 1.0, "risk_on score=6/9 SPY:3 QQQ:2 IWM:1")
+
+        adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
+
+        self.assertIsNone(reject_reason)
+        self.assertIsNotNone(adjusted)
+        self.assertAlmostEqual(adjusted.position_size_multiplier, 1.0)
+        self.assertIn("market_regime risk_on", adjusted.reason)
+
     def test_market_regime_panic_blocks_signal(self):
         settings = Settings(
             symbols=["AAPL"],
@@ -5794,7 +5832,8 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(regime.name, "panic")
         self.assertEqual(strategy_regime.name, "bypassed")
-        self.assertIs(adjusted, signal)
+        self.assertIsNot(adjusted, signal)
+        self.assertIn("market_regime bypassed", adjusted.reason)
         self.assertIsNone(reject_reason)
 
     def test_market_regime_bypass_is_strategy_specific(self):

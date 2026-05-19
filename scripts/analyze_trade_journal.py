@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 DEFAULT_JOURNAL_FILE = ROOT / "logs" / "trade_journal.jsonl"
 TRADING_TZ = ZoneInfo("America/New_York")
 MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+([a-z_]+)\b")
+STRATEGY_REGIME_RE = re.compile(r"\bregime=([a-z_]+)(?::[0-9]+(?:\.[0-9]+)?)?\b")
 SIZE_MULT_RE = re.compile(r"\bsize_mult=([0-9]+(?:\.[0-9]+)?)\b")
 
 
@@ -276,7 +277,11 @@ def clean_reason(reason: str) -> str:
 
 
 def market_regime_from_reason(reason: str) -> str:
-    match = MARKET_REGIME_RE.search(str(reason or ""))
+    reason_text = str(reason or "")
+    match = MARKET_REGIME_RE.search(reason_text)
+    if match:
+        return match.group(1)
+    match = STRATEGY_REGIME_RE.search(reason_text)
     return match.group(1) if match else "unknown"
 
 

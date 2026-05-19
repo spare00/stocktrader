@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from statistics import mean
 
 from candle import SymbolState
 from config import Settings
 from models import Signal
+
+
+MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+[a-z_]+\b")
 
 
 @dataclass(frozen=True)
@@ -85,13 +89,28 @@ class MarketRegimeMonitor:
 
     def apply_to_signal(self, signal: Signal, regime: MarketRegime) -> tuple[Signal | None, str | None]:
         if self.strategy_bypasses(signal.strategy):
-            return signal, None
+            return self._signal_with_market_regime(signal, self.regime_for_strategy(regime, signal.strategy)), None
         if not self.settings.market_regime_enabled or regime.name in {"disabled", "bypassed", "neutral"}:
-            return signal, None
+            return self._signal_with_market_regime(signal, regime), None
         if not regime.allow_new_entries:
             return None, f"market regime {regime.reason}"
         if regime.position_size_multiplier == 1.0:
-            return signal, None
+            return self._signal_with_market_regime(signal, regime), None
+        return self._signal_with_market_regime(signal, regime, regime.position_size_multiplier), None
+
+    def _signal_with_market_regime(
+        self,
+        signal: Signal,
+        regime: MarketRegime,
+        size_multiplier: float = 1.0,
+    ) -> Signal:
+        if MARKET_REGIME_RE.search(signal.reason):
+            reason = signal.reason
+        else:
+            suffix = f" | market_regime {regime.reason}"
+            if size_multiplier != 1.0:
+                suffix += f" size_mult={size_multiplier:.2f}"
+            reason = f"{signal.reason}{suffix}"
         adjusted = Signal(
             strategy=signal.strategy,
             symbol=signal.symbol,
@@ -101,14 +120,14 @@ class MarketRegimeMonitor:
             change_pct=signal.change_pct,
             volume_ratio=signal.volume_ratio,
             spread_bps=signal.spread_bps,
-            reason=f"{signal.reason} | market_regime {regime.reason} size_mult={regime.position_size_multiplier:.2f}",
+            reason=reason,
             stop_price=signal.stop_price,
             session_open_price=signal.session_open_price,
             entry_open_pct=signal.entry_open_pct,
-            position_size_multiplier=signal.position_size_multiplier * regime.position_size_multiplier,
+            position_size_multiplier=signal.position_size_multiplier * size_multiplier,
             runner_mode=signal.runner_mode,
         )
-        return adjusted, None
+        return adjusted
 
     def regime_for_strategy(self, regime: MarketRegime, strategy_name: str) -> MarketRegime:
         if not self.strategy_bypasses(strategy_name):
@@ -119,7 +138,7 @@ class MarketRegimeMonitor:
             regime.max_score,
             True,
             1.0,
-            f"market regime bypassed for {strategy_name}; actual {regime.reason}",
+            f"bypassed for {strategy_name}; actual {regime.reason}",
         )
 
     def strategy_bypasses(self, strategy_name: str) -> bool:
