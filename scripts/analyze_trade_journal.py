@@ -360,8 +360,8 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "by_entry_market_regime": summarize_groups(by_entry_market_regime),
         "by_day": summarize_groups(by_day),
         "by_day_strategy": summarize_nested_groups(by_day_strategy),
-        "by_entry_time_et": summarize_entry_time_noon_et(round_trips),
-        "by_day_entry_time_et": summarize_entry_time_noon_et_by_entry_day(round_trips),
+        "by_entry_time_et": summarize_entry_time_hour_et(round_trips),
+        "by_day_entry_time_et": summarize_entry_time_hour_et_by_entry_day(round_trips),
         "exit_reason_counts": dict(Counter(trade.reason or "unknown" for trade in round_trips)),
         "unmatched_events": unmatched,
     }
@@ -456,11 +456,9 @@ def event_day(event: TradeEvent) -> str:
     return datetime.fromtimestamp(event.timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
 
 
-def entry_before_noon_et(buy_timestamp_ms: int) -> bool:
-    """True when the entry (buy) instant is strictly before 12:00:00 in America/New_York."""
+def entry_hour_bucket_et(buy_timestamp_ms: int) -> str:
     dt = datetime.fromtimestamp(buy_timestamp_ms / 1000, tz=TRADING_TZ)
-    noon = dt.replace(hour=12, minute=0, second=0, microsecond=0)
-    return dt < noon
+    return f"{dt.hour:02d}:00-{dt.hour:02d}:59"
 
 
 def entry_day_et(trade: RoundTrip) -> str:
@@ -468,7 +466,7 @@ def entry_day_et(trade: RoundTrip) -> str:
     return datetime.fromtimestamp(trade.buy_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
 
 
-def noon_bucket_stats(bucket: list[RoundTrip]) -> dict:
+def entry_time_bucket_stats(bucket: list[RoundTrip]) -> dict:
     if not bucket:
         return {"trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "total_pnl": 0.0}
     wins = sum(1 for t in bucket if t.pnl > 0)
@@ -482,21 +480,19 @@ def noon_bucket_stats(bucket: list[RoundTrip]) -> dict:
     }
 
 
-def summarize_entry_time_noon_et(trades: list[RoundTrip]) -> dict[str, dict]:
-    before = [t for t in trades if entry_before_noon_et(t.buy_timestamp_ms)]
-    after = [t for t in trades if not entry_before_noon_et(t.buy_timestamp_ms)]
-    return {
-        "before_12_00_et": noon_bucket_stats(before),
-        "from_12_00_et": noon_bucket_stats(after),
-    }
+def summarize_entry_time_hour_et(trades: list[RoundTrip]) -> dict[str, dict]:
+    by_hour: dict[str, list[RoundTrip]] = defaultdict(list)
+    for trade in trades:
+        by_hour[entry_hour_bucket_et(trade.buy_timestamp_ms)].append(trade)
+    return {hour: entry_time_bucket_stats(hour_trades) for hour, hour_trades in sorted(by_hour.items())}
 
 
-def summarize_entry_time_noon_et_by_entry_day(trades: list[RoundTrip]) -> dict[str, dict[str, dict]]:
-    """Same noon buckets as by_entry_time_et, grouped by entry calendar day (America/New_York)."""
+def summarize_entry_time_hour_et_by_entry_day(trades: list[RoundTrip]) -> dict[str, dict[str, dict]]:
+    """Same hourly buckets as by_entry_time_et, grouped by entry calendar day (America/New_York)."""
     by_day: dict[str, list[RoundTrip]] = defaultdict(list)
     for t in trades:
         by_day[entry_day_et(t)].append(t)
-    return {day: summarize_entry_time_noon_et(day_trades) for day, day_trades in sorted(by_day.items())}
+    return {day: summarize_entry_time_hour_et(day_trades) for day, day_trades in sorted(by_day.items())}
 
 
 def trade_summary(trade: RoundTrip) -> dict:
@@ -652,27 +648,21 @@ def print_text(summary: dict) -> None:
             print(f"- {regime}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
 
     if summary.get("by_entry_time_et"):
-        b = summary["by_entry_time_et"]["before_12_00_et"]
-        a = summary["by_entry_time_et"]["from_12_00_et"]
-        print("\nWin rate by entry time (America/New_York vs 12:00)")
-        print(
-            f"- Before 12:00: {b['trades']} trades, win rate {b['win_rate']:.1%}, "
-            f"P/L {b['total_pnl']:.2f} (wins {b['wins']}, losses {b['losses']})"
-        )
-        print(
-            f"- From 12:00:   {a['trades']} trades, win rate {a['win_rate']:.1%}, "
-            f"P/L {a['total_pnl']:.2f} (wins {a['wins']}, losses {a['losses']})"
-        )
+        print("\nWin rate by entry time (America/New_York, hourly)")
+        for hour, item in summary["by_entry_time_et"].items():
+            print(
+                f"- {hour}: {item['trades']} trades, win rate {item['win_rate']:.1%}, "
+                f"P/L {item['total_pnl']:.2f} (wins {item['wins']}, losses {item['losses']})"
+            )
 
     if summary.get("by_day_entry_time_et"):
-        print("\nPer day — entry time vs 12:00 (America/New_York, entry date)")
+        print("\nPer day — entry time by hour (America/New_York, entry date)")
         for day, buckets in summary["by_day_entry_time_et"].items():
-            b = buckets["before_12_00_et"]
-            a = buckets["from_12_00_et"]
-            print(
-                f"- {day}: before {b['trades']} @ {b['win_rate']:.1%} P/L {b['total_pnl']:.2f} | "
-                f"from 12:00 {a['trades']} @ {a['win_rate']:.1%} P/L {a['total_pnl']:.2f}"
-            )
+            parts = [
+                f"{hour} {item['trades']} @ {item['win_rate']:.1%} P/L {item['total_pnl']:.2f}"
+                for hour, item in buckets.items()
+            ]
+            print(f"- {day}: {' | '.join(parts)}")
 
     if summary["by_day"]:
         print("\nTrading Days")

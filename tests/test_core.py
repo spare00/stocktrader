@@ -673,25 +673,25 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(summary["by_day_strategy"]["2026-04-29"]["gap_and_go"]["trades"], 1)
         self.assertEqual(summary["best_trade"]["trade_day"], "2026-04-28")
 
-    def test_trade_journal_analyzer_win_rate_by_entry_noon_et(self):
+    def test_trade_journal_analyzer_win_rate_by_entry_hour_et(self):
         day = 2026, 4, 28
         y, m, d = day
         events = [
-            # Before noon: win
+            # 09:00 hour: win
             analyze_trade_journal.TradeEvent(
                 "buy", "AAPL", market_ms(y, m, d, 9, 45), 10, 100.0, 0.0, "opening_impulse", "entry", "buy-1"
             ),
             analyze_trade_journal.TradeEvent(
                 "sell", "AAPL", market_ms(y, m, d, 10, 0), 10, 101.0, 10.0, "opening_impulse", "target", "sell-1"
             ),
-            # After noon: loss
+            # 12:00 hour: loss
             analyze_trade_journal.TradeEvent(
                 "buy", "MSFT", market_ms(y, m, d, 12, 15), 5, 200.0, 0.0, "opening_impulse", "entry", "buy-2"
             ),
             analyze_trade_journal.TradeEvent(
                 "sell", "MSFT", market_ms(y, m, d, 12, 20), 5, 199.0, -5.0, "opening_impulse", "stop", "sell-2"
             ),
-            # Exactly 12:00 ET: counts as "from 12:00"
+            # Exactly 12:00 ET: counts in the 12:00 hour.
             analyze_trade_journal.TradeEvent(
                 "buy", "NVDA", market_ms(y, m, d, 12, 0), 1, 50.0, 0.0, "opening_impulse", "entry", "buy-3"
             ),
@@ -702,22 +702,22 @@ class CoreTradingTests(unittest.TestCase):
         round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
         self.assertEqual(unmatched, [])
         summary = analyze_trade_journal.summarize(round_trips, unmatched)
-        b = summary["by_entry_time_et"]["before_12_00_et"]
-        a = summary["by_entry_time_et"]["from_12_00_et"]
-        self.assertEqual(b["trades"], 1)
-        self.assertEqual(b["wins"], 1)
-        self.assertEqual(b["win_rate"], 1.0)
-        self.assertEqual(a["trades"], 2)
-        self.assertEqual(a["wins"], 1)
-        self.assertEqual(a["losses"], 1)
-        self.assertEqual(a["win_rate"], 0.5)
+        h9 = summary["by_entry_time_et"]["09:00-09:59"]
+        h12 = summary["by_entry_time_et"]["12:00-12:59"]
+        self.assertEqual(h9["trades"], 1)
+        self.assertEqual(h9["wins"], 1)
+        self.assertEqual(h9["win_rate"], 1.0)
+        self.assertEqual(h12["trades"], 2)
+        self.assertEqual(h12["wins"], 1)
+        self.assertEqual(h12["losses"], 1)
+        self.assertEqual(h12["win_rate"], 0.5)
         self.assertEqual(list(summary["by_day_entry_time_et"].keys()), ["2026-04-28"])
         d0 = summary["by_day_entry_time_et"]["2026-04-28"]
-        self.assertEqual(d0["before_12_00_et"]["trades"], 1)
-        self.assertEqual(d0["from_12_00_et"]["trades"], 2)
+        self.assertEqual(d0["09:00-09:59"]["trades"], 1)
+        self.assertEqual(d0["12:00-12:59"]["trades"], 2)
 
-    def test_trade_journal_analyzer_win_rate_by_entry_noon_et_splits_multiple_days(self):
-        """Per-day noon buckets use entry date in ET."""
+    def test_trade_journal_analyzer_win_rate_by_entry_hour_et_splits_multiple_days(self):
+        """Per-day hourly buckets use entry date in ET."""
         events = [
             analyze_trade_journal.TradeEvent(
                 "buy", "AAPL", market_ms(2026, 4, 28, 9, 31), 10, 100.0, 0.0, "opening_impulse", "entry", "b1"
@@ -737,10 +737,10 @@ class CoreTradingTests(unittest.TestCase):
         summary = analyze_trade_journal.summarize(round_trips, unmatched)
         byd = summary["by_day_entry_time_et"]
         self.assertEqual(list(byd.keys()), ["2026-04-28", "2026-04-29"])
-        self.assertEqual(byd["2026-04-28"]["before_12_00_et"]["trades"], 1)
-        self.assertEqual(byd["2026-04-28"]["from_12_00_et"]["trades"], 0)
-        self.assertEqual(byd["2026-04-29"]["before_12_00_et"]["trades"], 0)
-        self.assertEqual(byd["2026-04-29"]["from_12_00_et"]["trades"], 1)
+        self.assertEqual(byd["2026-04-28"]["09:00-09:59"]["trades"], 1)
+        self.assertNotIn("14:00-14:59", byd["2026-04-28"])
+        self.assertNotIn("09:00-09:59", byd["2026-04-29"])
+        self.assertEqual(byd["2026-04-29"]["14:00-14:59"]["trades"], 1)
 
     def test_trade_journal_analyze_filters_by_strategy(self):
         with tempfile.TemporaryDirectory() as tmpdir:
