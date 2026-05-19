@@ -100,6 +100,16 @@ Recommended baseline for a “reliable first 1%” style:
 - `FLATTEN_BEFORE_CLOSE_MINUTES=15`
 - `HEARTBEAT_SECONDS=5`
 
+When running multiple strategies together, `MAX_OPEN_POSITIONS` remains the account-wide cap and
+`TRADE_COOLDOWN_SECONDS` remains the default symbol cooldown. Optional strategy-specific overrides
+can be set when one strategy needs a different book size or pacing:
+
+- `STOCH_MACD_MAX_OPEN_POSITIONS` / `STOCH_MACD_TRADE_COOLDOWN_SECONDS`
+- `MACD_MAX_OPEN_POSITIONS` / `MACD_TRADE_COOLDOWN_SECONDS`
+- `STEADY_INTRADAY_MAX_OPEN_POSITIONS` / `STEADY_INTRADAY_TRADE_COOLDOWN_SECONDS`
+
+Leave these unset or `0` to use the global defaults.
+
 The default opening-impulse tuning is intentionally stricter than before: shorter trading window, tighter spreads, stronger volume requirement, and faster momentum-fade exits.
 
 ## Run

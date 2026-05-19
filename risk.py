@@ -26,7 +26,13 @@ class RiskManager:
     session_symbol_loss_streaks: dict[tuple[str, str, str], int] = field(default_factory=dict)
     session_symbol_locks: set[tuple[str, str, str]] = field(default_factory=set)
 
-    def check_entry(self, signal: Signal, open_symbols: set[str], total_pnl: float) -> RiskDecision:
+    def check_entry(
+        self,
+        signal: Signal,
+        open_symbols: set[str],
+        total_pnl: float,
+        open_strategy_counts: dict[str, int] | None = None,
+    ) -> RiskDecision:
         if self.settings.regular_market_only and not is_regular_market_time(signal.timestamp_ms):
             return RiskDecision(False, "outside regular market hours")
 
@@ -55,6 +61,12 @@ class RiskManager:
         if len(open_symbols) >= self.settings.max_open_positions:
             return RiskDecision(False, "max open positions reached")
 
+        strategy_max_open = self._max_open_positions_for_strategy(signal.strategy)
+        if strategy_max_open > 0:
+            strategy_open = (open_strategy_counts or {}).get(signal.strategy, 0)
+            if strategy_open >= strategy_max_open:
+                return RiskDecision(False, "max open positions for strategy reached")
+
         opening_impulse_ms = self.last_trade_by_strategy_ms.get((signal.symbol, "opening_impulse"))
         if signal.strategy == "maha7" and opening_impulse_ms is not None:
             elapsed = (signal.timestamp_ms - opening_impulse_ms) / 1000
@@ -77,7 +89,7 @@ class RiskManager:
         if last_ms is not None:
             elapsed = (signal.timestamp_ms - last_ms) / 1000
             cooldown_seconds = max(
-                self.settings.trade_cooldown_seconds,
+                self._trade_cooldown_seconds_for_strategy(signal.strategy),
                 self._reentry_cooldown_seconds_for_strategy(signal.strategy),
             )
             if elapsed < cooldown_seconds:
@@ -95,6 +107,13 @@ class RiskManager:
         if strategy == "maha7":
             return self.settings.maha7_reentry_cooldown_seconds
         return getattr(self.settings, f"{self._settings_prefix(strategy)}_reentry_cooldown_seconds", 0)
+
+    def _max_open_positions_for_strategy(self, strategy: str) -> int:
+        return int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_max_open_positions", 0) or 0)
+
+    def _trade_cooldown_seconds_for_strategy(self, strategy: str) -> int:
+        cooldown = int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_trade_cooldown_seconds", 0) or 0)
+        return cooldown if cooldown > 0 else self.settings.trade_cooldown_seconds
 
     def _respects_consecutive_loss_limits(self, strategy: str) -> bool:
         return bool(getattr(self.settings, f"{self._settings_prefix(strategy)}_respect_consecutive_loss_limits", True))
@@ -151,6 +170,14 @@ class RiskManager:
     def _settings_prefix(strategy: str) -> str:
         if strategy == "stoch_macd_reversal":
             return "stoch_macd"
+        return strategy
+
+    @staticmethod
+    def _compact_settings_prefix(strategy: str) -> str:
+        if strategy == "stoch_macd_reversal":
+            return "stoch_macd"
+        if strategy == "macd_early_impulse":
+            return "macd"
         return strategy
 
     @staticmethod

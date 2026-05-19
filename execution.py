@@ -80,6 +80,13 @@ class PositionTracker:
     def open_symbols(self) -> set[str]:
         return set(self.positions)
 
+    def open_strategy_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for position in self.positions.values():
+            strategy = position.strategy or "unknown"
+            counts[strategy] = counts.get(strategy, 0) + 1
+        return counts
+
     def planned_shares(self, price: float, stop_price: float | None = None, size_multiplier: float = 1.0) -> int:
         budget = min(self.settings.max_position_value, self.cash)
         budget *= max(0.0, size_multiplier)
@@ -306,6 +313,9 @@ class LocalPaperExecutor:
     def open_symbols(self) -> set[str]:
         return self.tracker.open_symbols()
 
+    def open_strategy_counts(self) -> dict[str, int]:
+        return self.tracker.open_strategy_counts()
+
     def total_pnl(self, mark_prices: dict[str, float]) -> float:
         return self.tracker.total_pnl(mark_prices)
 
@@ -464,6 +474,9 @@ class AlpacaPaperExecutor:
 
     def open_symbols(self) -> set[str]:
         return self.tracker.open_symbols()
+
+    def open_strategy_counts(self) -> dict[str, int]:
+        return self.tracker.open_strategy_counts()
 
     def total_pnl(self, mark_prices: dict[str, float]) -> float:
         return self.tracker.total_pnl(mark_prices)

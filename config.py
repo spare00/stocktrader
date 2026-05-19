@@ -67,6 +67,12 @@ class Settings:
     max_trade_loss_r: float = 1.2
     max_open_positions: int = 8
     trade_cooldown_seconds: int = 60
+    stoch_macd_max_open_positions: int = 0
+    stoch_macd_trade_cooldown_seconds: int = 0
+    macd_max_open_positions: int = 0
+    macd_trade_cooldown_seconds: int = 0
+    steady_intraday_max_open_positions: int = 0
+    steady_intraday_trade_cooldown_seconds: int = 0
     failed_entry_cooldown_seconds: int = 30
     daily_max_loss: float = 250.0
     daily_max_loss_pct: float = 0.02
@@ -392,6 +398,12 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("max_trade_loss_r", "MAX_TRADE_LOSS_R", _float_env, 1.2),
     ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 8),
     ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
+    ("stoch_macd_max_open_positions", "STOCH_MACD_MAX_OPEN_POSITIONS", _int_env, 0),
+    ("stoch_macd_trade_cooldown_seconds", "STOCH_MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    ("macd_max_open_positions", "MACD_MAX_OPEN_POSITIONS", _int_env, 0),
+    ("macd_trade_cooldown_seconds", "MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    ("steady_intraday_max_open_positions", "STEADY_INTRADAY_MAX_OPEN_POSITIONS", _int_env, 0),
+    ("steady_intraday_trade_cooldown_seconds", "STEADY_INTRADAY_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
     ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
     ("daily_max_loss_pct", "DAILY_MAX_LOSS_PCT", _float_env, 0.02),

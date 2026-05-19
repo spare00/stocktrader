@@ -511,6 +511,20 @@ def runtime_settings_snapshot(settings) -> dict:
             "max_trade_loss_r": settings.max_trade_loss_r,
             "max_open_positions": settings.max_open_positions,
             "trade_cooldown_seconds": settings.trade_cooldown_seconds,
+            "strategy_overrides": {
+                "stoch_macd_reversal": {
+                    "max_open_positions": settings.stoch_macd_max_open_positions,
+                    "trade_cooldown_seconds": settings.stoch_macd_trade_cooldown_seconds,
+                },
+                "macd_early_impulse": {
+                    "max_open_positions": settings.macd_max_open_positions,
+                    "trade_cooldown_seconds": settings.macd_trade_cooldown_seconds,
+                },
+                "steady_intraday": {
+                    "max_open_positions": settings.steady_intraday_max_open_positions,
+                    "trade_cooldown_seconds": settings.steady_intraday_trade_cooldown_seconds,
+                },
+            },
             "daily_max_loss": settings.daily_max_loss,
             "daily_max_loss_pct": settings.daily_max_loss_pct,
             "consecutive_loss_pause_count": settings.consecutive_loss_pause_count,
@@ -936,7 +950,12 @@ async def main(args: argparse.Namespace | None = None) -> None:
                         )
                     continue
                 signal = adjusted_signal or signal
-                decision = risk.check_entry(signal, executor.open_symbols(), executor.total_pnl(mark_prices(states)))
+                decision = risk.check_entry(
+                    signal,
+                    executor.open_symbols(),
+                    executor.total_pnl(mark_prices(states)),
+                    executor.open_strategy_counts(),
+                )
                 if not decision.allowed:
                     heartbeat.record_rejection(signal.strategy, decision.reason)
                     if rejection_logs.should_log(signal.symbol, signal.side, signal.strategy, decision.reason):

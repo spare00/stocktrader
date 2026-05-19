@@ -239,6 +239,8 @@ class CoreTradingTests(unittest.TestCase):
                 "SYMBOLS": "AAPL,MSFT",
                 "ALPACA_MARKET_DATA_MODE": "rest",
                 "ALPACA_MARKET_DATA_POLL_SECONDS": "7.5",
+                "STOCH_MACD_MAX_OPEN_POSITIONS": "12",
+                "STOCH_MACD_TRADE_COOLDOWN_SECONDS": "45",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
             clear=True,
@@ -249,6 +251,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.symbols, ["AAPL", "MSFT"])
         self.assertEqual(settings.alpaca_market_data_mode, "rest")
         self.assertEqual(settings.alpaca_market_data_poll_seconds, 7.5)
+        self.assertEqual(settings.stoch_macd_max_open_positions, 12)
+        self.assertEqual(settings.stoch_macd_trade_cooldown_seconds, 45)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
@@ -6636,6 +6640,155 @@ class CoreTradingTests(unittest.TestCase):
         decision = RiskManager(settings).check_entry(signal, set(), 0)
 
         self.assertTrue(decision.allowed)
+
+    def test_risk_rejects_strategy_specific_open_position_cap(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_open_positions=10,
+            stoch_macd_max_open_positions=2,
+        )
+        signal = Signal(
+            strategy="stoch_macd_reversal",
+            symbol="GDX",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = RiskManager(settings).check_entry(
+            signal,
+            {"AAPL", "MSFT"},
+            0,
+            {"stoch_macd_reversal": 2},
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "max open positions for strategy reached")
+
+    def test_risk_uses_compact_macd_strategy_prefix_for_open_position_cap(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_open_positions=10,
+            macd_max_open_positions=1,
+        )
+        signal = Signal(
+            strategy="macd_early_impulse",
+            symbol="GDX",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = RiskManager(settings).check_entry(
+            signal,
+            {"AAPL"},
+            0,
+            {"macd_early_impulse": 1},
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "max open positions for strategy reached")
+
+    def test_risk_keeps_global_open_position_cap(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_open_positions=2,
+            stoch_macd_max_open_positions=5,
+        )
+        signal = Signal(
+            strategy="stoch_macd_reversal",
+            symbol="GDX",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = RiskManager(settings).check_entry(
+            signal,
+            {"AAPL", "MSFT"},
+            0,
+            {"stoch_macd_reversal": 1},
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "max open positions reached")
+
+    def test_risk_uses_strategy_specific_trade_cooldown(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            trade_cooldown_seconds=120,
+            stoch_macd_trade_cooldown_seconds=30,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_trade("AAPL", base_ms, "stoch_macd_reversal")
+        signal = Signal(
+            strategy="stoch_macd_reversal",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 45_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertTrue(decision.allowed)
+
+    def test_risk_uses_global_trade_cooldown_without_strategy_override(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            trade_cooldown_seconds=120,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_trade("AAPL", base_ms, "stoch_macd_reversal")
+        signal = Signal(
+            strategy="stoch_macd_reversal",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 45_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "symbol cooldown active")
 
     def test_risk_rejects_entries_during_close_flatten_window(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], flatten_before_close_minutes=5)
