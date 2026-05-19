@@ -90,13 +90,21 @@ class Settings:
     market_regime_enabled: bool = True
     market_regime_symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
     market_regime_min_bars: int = 20
-    market_regime_risk_off_score: int = -3
-    market_regime_block_score: int = -7
-    market_regime_risk_on_score: int = 5
+    market_regime_risk_off_score: float = -3.0
+    market_regime_block_score: float = -7.0
+    market_regime_risk_on_score: float = 5.0
     market_regime_risk_off_size_multiplier: float = 0.5
     market_regime_risk_on_size_multiplier: float = 1.0
     market_regime_log_changes: bool = True
     market_regime_bypass_strategies: list[str] = field(default_factory=list)
+    market_regime_positive_weight: float = 1.0
+    market_regime_below_vwap_weight: float = 2.0
+    market_regime_vwap_falling_weight: float = 1.0
+    market_regime_below_ema_weight: float = 2.0
+    market_regime_spy_weight: float = 1.25
+    market_regime_qqq_weight: float = 1.5
+    market_regime_iwm_weight: float = 1.0
+    market_regime_default_symbol_weight: float = 1.0
 
     indicator_preload_bars: int = 1000
     indicator_max_bars_per_symbol: int = 3000
@@ -420,13 +428,21 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("market_regime_enabled", "MARKET_REGIME_ENABLED", _bool_env, True),
     ("market_regime_symbols", "MARKET_REGIME_SYMBOLS", _csv_env, "SPY,QQQ,IWM"),
     ("market_regime_min_bars", "MARKET_REGIME_MIN_BARS", _int_env, 20),
-    ("market_regime_risk_off_score", "MARKET_REGIME_RISK_OFF_SCORE", _int_env, -3),
-    ("market_regime_block_score", "MARKET_REGIME_BLOCK_SCORE", _int_env, -7),
-    ("market_regime_risk_on_score", "MARKET_REGIME_RISK_ON_SCORE", _int_env, 5),
+    ("market_regime_risk_off_score", "MARKET_REGIME_RISK_OFF_SCORE", _float_env, -3.0),
+    ("market_regime_block_score", "MARKET_REGIME_BLOCK_SCORE", _float_env, -7.0),
+    ("market_regime_risk_on_score", "MARKET_REGIME_RISK_ON_SCORE", _float_env, 5.0),
     ("market_regime_risk_off_size_multiplier", "MARKET_REGIME_RISK_OFF_SIZE_MULTIPLIER", _float_env, 0.5),
     ("market_regime_risk_on_size_multiplier", "MARKET_REGIME_RISK_ON_SIZE_MULTIPLIER", _float_env, 1.0),
     ("market_regime_log_changes", "MARKET_REGIME_LOG_CHANGES", _bool_env, True),
     ("market_regime_bypass_strategies", "MARKET_REGIME_BYPASS_STRATEGIES", _csv_env, ""),
+    ("market_regime_positive_weight", "MARKET_REGIME_POSITIVE_WEIGHT", _float_env, 1.0),
+    ("market_regime_below_vwap_weight", "MARKET_REGIME_BELOW_VWAP_WEIGHT", _float_env, 2.0),
+    ("market_regime_vwap_falling_weight", "MARKET_REGIME_VWAP_FALLING_WEIGHT", _float_env, 1.0),
+    ("market_regime_below_ema_weight", "MARKET_REGIME_BELOW_EMA_WEIGHT", _float_env, 2.0),
+    ("market_regime_spy_weight", "MARKET_REGIME_SPY_WEIGHT", _float_env, 1.25),
+    ("market_regime_qqq_weight", "MARKET_REGIME_QQQ_WEIGHT", _float_env, 1.5),
+    ("market_regime_iwm_weight", "MARKET_REGIME_IWM_WEIGHT", _float_env, 1.0),
+    ("market_regime_default_symbol_weight", "MARKET_REGIME_DEFAULT_SYMBOL_WEIGHT", _float_env, 1.0),
     ("indicator_preload_bars", "INDICATOR_PRELOAD_BARS", _int_env, 1000),
     ("indicator_max_bars_per_symbol", "INDICATOR_MAX_BARS_PER_SYMBOL", _int_env, 3000),
     ("indicator_include_afterhours", "INDICATOR_INCLUDE_AFTERHOURS", _bool_env, False),

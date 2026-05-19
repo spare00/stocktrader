@@ -69,7 +69,7 @@ Strategies:
 - `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold
-- `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when EMA 5 is above SuperTrend (7,3), MACD/CCC is above signal, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
+- `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when SuperTrend (7,3) is bullish, MACD/CCC is above signal, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
 
 Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal`.
 When running `main.py`, you can override that directly with `--strategy`; if neither is set, the runner asks for the strategy before starting.
@@ -109,6 +109,16 @@ can be set when one strategy needs a different book size or pacing:
 - `STEADY_INTRADAY_MAX_OPEN_POSITIONS` / `STEADY_INTRADAY_TRADE_COOLDOWN_SECONDS`
 
 Leave these unset or `0` to use the global defaults.
+
+The global market-regime gate is enabled by default. It watches `MARKET_REGIME_SYMBOLS`
+(`SPY,QQQ,IWM` by default) and annotates every accepted trade with the active regime.
+Negative conditions are weighted more heavily than positive conditions so weak broad-market
+signals harden entries faster than strong signals loosen them. Useful tuning knobs:
+
+- `MARKET_REGIME_ENABLED` and `MARKET_REGIME_BYPASS_STRATEGIES`
+- `MARKET_REGIME_RISK_OFF_SCORE`, `MARKET_REGIME_BLOCK_SCORE`, `MARKET_REGIME_RISK_ON_SCORE`
+- `MARKET_REGIME_BELOW_VWAP_WEIGHT`, `MARKET_REGIME_VWAP_FALLING_WEIGHT`, `MARKET_REGIME_BELOW_EMA_WEIGHT`
+- `MARKET_REGIME_SPY_WEIGHT`, `MARKET_REGIME_QQQ_WEIGHT`, `MARKET_REGIME_IWM_WEIGHT`
 
 The default opening-impulse tuning is intentionally stricter than before: shorter trading window, tighter spreads, stronger volume requirement, and faster momentum-fade exits.
 

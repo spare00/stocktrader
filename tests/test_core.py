@@ -5756,7 +5756,7 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             market_regime_symbols=["SPY"],
             market_regime_min_bars=20,
-            market_regime_block_score=-4,
+            market_regime_block_score=-7,
             market_regime_risk_off_score=-3,
             market_regime_risk_off_size_multiplier=0.5,
         )
@@ -5767,6 +5767,8 @@ class CoreTradingTests(unittest.TestCase):
         adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(runner_mode=True), regime)
 
         self.assertEqual(regime.name, "risk_off")
+        self.assertAlmostEqual(regime.score, -6.25)
+        self.assertAlmostEqual(regime.max_score, 3.75)
         self.assertIsNone(reject_reason)
         self.assertIsNotNone(adjusted)
         self.assertAlmostEqual(adjusted.position_size_multiplier, 0.5)
@@ -5812,6 +5814,8 @@ class CoreTradingTests(unittest.TestCase):
         adjusted, reject_reason = monitor.apply_to_signal(self._market_regime_signal(), regime)
 
         self.assertEqual(regime.name, "panic")
+        self.assertAlmostEqual(regime.score, -18.75)
+        self.assertAlmostEqual(regime.max_score, 11.25)
         self.assertIsNone(adjusted)
         self.assertIn("market regime panic", reject_reason)
 

@@ -15,8 +15,8 @@ MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+[a-z_]+\b")
 @dataclass(frozen=True)
 class MarketRegime:
     name: str
-    score: int
-    max_score: int
+    score: float
+    max_score: float
     allow_new_entries: bool
     position_size_multiplier: float
     reason: str
@@ -37,8 +37,8 @@ class MarketRegimeMonitor:
         if not symbols:
             return MarketRegime("neutral", 0, 0, True, 1.0, "no market regime symbols configured")
 
-        score = 0
-        max_score = 0
+        score = 0.0
+        max_score = 0.0
         details: list[str] = []
         for symbol in symbols:
             state = states.get(symbol)
@@ -51,18 +51,29 @@ class MarketRegimeMonitor:
             session_vwap = self._session_vwap(bars)
             prev_vwap = self._session_vwap(bars[:-5]) if len(bars) > 5 else None
             ema20 = self._ema([bar.close for bar in bars], 20)
-            symbol_score = 0
+            symbol_score = 0.0
+            symbol_weight = self._symbol_weight(symbol)
 
             if session_vwap is not None:
-                symbol_score += 1 if current.close >= session_vwap else -1
+                symbol_score += self._condition_score(
+                    current.close >= session_vwap,
+                    self.settings.market_regime_below_vwap_weight,
+                )
             if session_vwap is not None and prev_vwap is not None:
-                symbol_score += 1 if session_vwap > prev_vwap else -1
+                symbol_score += self._condition_score(
+                    session_vwap > prev_vwap,
+                    self.settings.market_regime_vwap_falling_weight,
+                )
             if ema20 is not None:
-                symbol_score += 1 if current.close >= ema20 else -1
+                symbol_score += self._condition_score(
+                    current.close >= ema20,
+                    self.settings.market_regime_below_ema_weight,
+                )
 
-            score += symbol_score
-            max_score += 3
-            details.append(f"{symbol}:{symbol_score}")
+            weighted_score = symbol_score * symbol_weight
+            score += weighted_score
+            max_score += self.settings.market_regime_positive_weight * 3 * symbol_weight
+            details.append(f"{symbol}:{self._fmt_score(weighted_score)}")
 
         if max_score <= 0:
             return MarketRegime("neutral", 0, 0, True, 1.0, "market regime warmup")
@@ -84,7 +95,7 @@ class MarketRegimeMonitor:
             allow = True
             size_mult = 1.0
 
-        reason = f"{name} score={score}/{max_score} {' '.join(details)}"
+        reason = f"{name} score={self._fmt_score(score)}/{self._fmt_score(max_score)} {' '.join(details)}"
         return MarketRegime(name, score, max_score, allow, max(0.0, size_mult), reason)
 
     def apply_to_signal(self, signal: Signal, regime: MarketRegime) -> tuple[Signal | None, str | None]:
@@ -148,6 +159,23 @@ class MarketRegimeMonitor:
             for name in self.settings.market_regime_bypass_strategies
             if str(name).strip()
         }
+
+    def _condition_score(self, positive: bool, negative_weight: float) -> float:
+        if positive:
+            return max(0.0, self.settings.market_regime_positive_weight)
+        return -max(0.0, negative_weight)
+
+    def _symbol_weight(self, symbol: str) -> float:
+        weights = {
+            "SPY": self.settings.market_regime_spy_weight,
+            "QQQ": self.settings.market_regime_qqq_weight,
+            "IWM": self.settings.market_regime_iwm_weight,
+        }
+        return max(0.0, weights.get(symbol.upper(), self.settings.market_regime_default_symbol_weight))
+
+    @staticmethod
+    def _fmt_score(value: float) -> str:
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
     def should_log_change(self, regime: MarketRegime) -> bool:
         if not self.settings.market_regime_log_changes:

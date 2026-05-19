@@ -821,6 +821,16 @@ async def main(args: argparse.Namespace | None = None) -> None:
         "risk_off_size_multiplier": settings.market_regime_risk_off_size_multiplier,
         "risk_on_size_multiplier": settings.market_regime_risk_on_size_multiplier,
         "bypass_strategies": list(settings.market_regime_bypass_strategies),
+        "weights": {
+            "positive": settings.market_regime_positive_weight,
+            "below_vwap": settings.market_regime_below_vwap_weight,
+            "vwap_falling": settings.market_regime_vwap_falling_weight,
+            "below_ema": settings.market_regime_below_ema_weight,
+            "SPY": settings.market_regime_spy_weight,
+            "QQQ": settings.market_regime_qqq_weight,
+            "IWM": settings.market_regime_iwm_weight,
+            "default": settings.market_regime_default_symbol_weight,
+        },
     }
     settings_snapshot["effective_symbols"] = {
         strategy: sorted(set(settings.symbols) | set(local_symbols))
