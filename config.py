@@ -371,6 +371,8 @@ class Settings:
     stoch_macd_reentry_high_buffer_pct: float = 0.0005
     stoch_macd_reentry_hist_rise_multiplier: float = 1.25
     stoch_macd_reentry_volume_add: float = 0.25
+    stoch_macd_reentry_max_k: float = 84.0
+    stoch_macd_reentry_max_support_extension_pct: float = 0.0045
     stoch_macd_respect_consecutive_loss_limits: bool = False
 
     ai_review: bool = False

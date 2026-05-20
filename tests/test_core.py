@@ -7902,6 +7902,36 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(first_signal)
         self.assertIsNone(repeat_signal)
 
+    def test_stoch_macd_reversal_repeat_entry_rejects_top_of_stair_chase(self):
+        settings = Settings(symbols=["AAPL"])
+        strategy = StochMACDReversalStrategy(settings)
+
+        overextended = strategy._reentry_chase_reject_reason(
+            ask=14.095,
+            k_now=76.6,
+            ema_fast=14.01,
+            supertrend_value=13.88,
+            session_vwap=13.70,
+        )
+        overbought = strategy._reentry_chase_reject_reason(
+            ask=14.16,
+            k_now=87.6,
+            ema_fast=14.10,
+            supertrend_value=13.99,
+            session_vwap=13.75,
+        )
+        near_support = strategy._reentry_chase_reject_reason(
+            ask=13.89,
+            k_now=83.4,
+            ema_fast=13.83,
+            supertrend_value=13.69,
+            session_vwap=13.65,
+        )
+
+        self.assertIn("too extended", overextended or "")
+        self.assertIn("overbought", overbought or "")
+        self.assertIsNone(near_support)
+
     def test_stoch_macd_reversal_rejects_weak_macd_histogram(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)

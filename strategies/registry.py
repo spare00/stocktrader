@@ -71,13 +71,13 @@ def selector_command_hint(strategy_name: str) -> str:
 
 
 def build_strategies(settings: "Settings"):
-    validate_strategy_order_prefixes(settings.strategy_names)
     strategies = []
     for name in settings.strategy_names:
         try:
             strategy_cls = STRATEGY_REGISTRY[name.strip().lower()]
         except KeyError as exc:
             raise ValueError(f"Unknown strategy: {name}") from exc
+        validate_strategy_order_prefixes([strategy_cls.name])
         strategies.append(strategy_cls(settings))
     return strategies
 

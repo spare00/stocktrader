@@ -119,6 +119,13 @@ class StochMACDReversalStrategy(Strategy):
             1.25,
         ),
         ("stoch_macd_reentry_volume_add", "STOCH_MACD_REENTRY_VOLUME_ADD", float_env, 0.25),
+        ("stoch_macd_reentry_max_k", "STOCH_MACD_REENTRY_MAX_K", float_env, 84.0),
+        (
+            "stoch_macd_reentry_max_support_extension_pct",
+            "STOCH_MACD_REENTRY_MAX_SUPPORT_EXTENSION_PCT",
+            float_env,
+            0.0045,
+        ),
         (
             "stoch_macd_respect_consecutive_loss_limits",
             "STOCH_MACD_RESPECT_CONSECUTIVE_LOSS_LIMITS",
@@ -200,6 +207,8 @@ class StochMACDReversalStrategy(Strategy):
                 "high_buffer_pct": settings.stoch_macd_reentry_high_buffer_pct,
                 "hist_rise_multiplier": settings.stoch_macd_reentry_hist_rise_multiplier,
                 "volume_add": settings.stoch_macd_reentry_volume_add,
+                "max_k": settings.stoch_macd_reentry_max_k,
+                "max_support_extension_pct": settings.stoch_macd_reentry_max_support_extension_pct,
             },
             "respect_consecutive_loss_limits": settings.stoch_macd_respect_consecutive_loss_limits,
         }
@@ -331,6 +340,7 @@ class StochMACDReversalStrategy(Strategy):
         ema_fast = self._fast_ema(indicator_bars, self.settings.stoch_macd_ema_period)
         supertrend_reason = "st=disabled"
         regular_supertrend_reason = ""
+        supertrend_value: float | None = None
         if self.settings.stoch_macd_supertrend_enabled:
             if supertrend is None or ema_fast is None:
                 return self._reject(state, "supertrend", "could not compute EMA/SuperTrend")
@@ -457,6 +467,7 @@ class StochMACDReversalStrategy(Strategy):
             if recent_range_pct < self.settings.stoch_macd_min_range_pct:
                 return self._reject(state, "range", f"recent range too compressed range={recent_range_pct:.2%}")
 
+        session_vwap: float | None = None
         if self.settings.stoch_macd_vwap_enabled:
             session_vwap = self._session_vwap(current_session_bars)
             if session_vwap is None:
@@ -485,6 +496,17 @@ class StochMACDReversalStrategy(Strategy):
                         "vwap",
                         f"VWAP not rising current={session_vwap:.2f} previous={prev_vwap or 0.0:.2f}",
                     )
+
+        if reentry_freshness:
+            reentry_chase_reason = self._reentry_chase_reject_reason(
+                last.ask,
+                k_now,
+                ema_fast,
+                supertrend_value,
+                session_vwap,
+            )
+            if reentry_chase_reason:
+                return self._reject(state, "reentry_chase", reentry_chase_reason)
 
         stop_price = self._entry_stop_price(current_session_bars, last.ask)
         r_pct = (last.ask - stop_price) / last.ask if last.ask > 0 else 0.0
@@ -651,6 +673,38 @@ class StochMACDReversalStrategy(Strategy):
         span = max(1, risk_on_score - risk_off_score)
         score = getattr(regime, "score", 0)
         return min(1.0, max(0.0, (risk_on_score - score) / span))
+
+    def _reentry_chase_reject_reason(
+        self,
+        ask: float,
+        k_now: float,
+        ema_fast: float | None,
+        supertrend_value: float | None,
+        session_vwap: float | None,
+    ) -> str | None:
+        max_k = self.settings.stoch_macd_reentry_max_k
+        if max_k > 0 and k_now > max_k:
+            return f"repeat entry overbought k={k_now:.1f} max={max_k:.1f}"
+
+        max_extension_pct = max(0.0, self.settings.stoch_macd_reentry_max_support_extension_pct)
+        if max_extension_pct <= 0:
+            return None
+        support_candidates = [
+            (f"EMA{self.settings.stoch_macd_ema_period}", ema_fast),
+            ("SuperTrend", supertrend_value),
+            ("VWAP", session_vwap),
+        ]
+        valid_supports = [(name, value) for name, value in support_candidates if value is not None and value > 0]
+        if not valid_supports:
+            return None
+        support_name, support_value = max(valid_supports, key=lambda item: item[1])
+        extension_pct = (ask - support_value) / support_value
+        if extension_pct > max_extension_pct:
+            return (
+                f"repeat entry too extended ask={ask:.2f} support={support_name}:{support_value:.2f} "
+                f"extension={extension_pct:.2%} max={max_extension_pct:.2%}"
+            )
+        return None
 
     def on_entry_fill(self, fill) -> None:
         if getattr(fill, "strategy", "") != self.name:
