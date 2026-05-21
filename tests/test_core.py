@@ -8177,11 +8177,10 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_stoch_macd_reversal_can_require_regular_supertrend_confirmation(self):
+    def test_stoch_macd_reversal_uses_session_supertrend_for_entry(self):
         settings = Settings(
             symbols=["F"],
             stoch_macd_vwap_enabled=False,
-            stoch_macd_require_regular_supertrend=True,
         )
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("F")
@@ -8282,11 +8281,10 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_stoch_macd_reversal_rejects_when_regular_supertrend_bars_missing(self):
+    def test_stoch_macd_reversal_rejects_when_session_supertrend_bars_missing(self):
         settings = Settings(
             symbols=["AAPL"],
             stoch_macd_vwap_enabled=False,
-            stoch_macd_require_regular_supertrend=True,
         )
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("AAPL")
@@ -8352,6 +8350,50 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_indicators_do_not_use_prior_day_hidden_bars(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=26)
+        strategy = StochMACDReversalStrategy(settings)
+        state = SymbolState("AAPL")
+        prior_start_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(120):
+            close = 100.0 + index * 0.01
+            ts = prior_start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=close - 0.01,
+                    high=close + 0.03,
+                    low=close - 0.03,
+                    close=close,
+                    volume=10_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        start_ms = market_ms(2026, 5, 11, 9, 30)
+        for index in range(10):
+            close = 102.0 + index * 0.02
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=close - 0.01,
+                    high=close + 0.03,
+                    low=close - 0.02,
+                    close=close,
+                    volume=20_000,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+
+        self.assertGreaterEqual(len(strategy._indicator_bars(state)), settings.stoch_macd_macd_warmup_bars)
+        self.assertLess(len(strategy._current_session_indicator_bars(state)), settings.stoch_macd_macd_warmup_bars)
+        self.assertIsNone(strategy._compute_macd(state))
+        self.assertIsNone(strategy._compute_stoch(state))
 
     def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False, stoch_macd_vwap_enabled=False)
