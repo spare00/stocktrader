@@ -20,6 +20,7 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 MARKET_CLOSE = time(16, 0)
+STOCH_REQUIRED_BARS = 20
 
 
 class StochMACDReversalStrategy(Strategy):
@@ -78,7 +79,7 @@ class StochMACDReversalStrategy(Strategy):
             2,
         ),
         ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
-        ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 120),
+        ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 35),
         (
             "stoch_macd_risk_off_stoch_cross_lookback_bars",
             "STOCH_MACD_RISK_OFF_STOCH_CROSS_LOOKBACK_BARS",
@@ -266,7 +267,16 @@ class StochMACDReversalStrategy(Strategy):
         stoch = self._compute_stoch(state, current_session_bars)
         macd = self._compute_macd(state, current_session_bars)
         if stoch is None or macd is None:
-            return self._reject(state, "indicators", "could not compute STOCH/MACD")
+            return self._reject(
+                state,
+                "indicators",
+                (
+                    "could not compute STOCH/MACD "
+                    f"session_bars={len(current_session_bars)} "
+                    f"macd_need={self.settings.stoch_macd_macd_warmup_bars} "
+                    f"stoch_need={STOCH_REQUIRED_BARS}"
+                ),
+            )
         k_values, d_values = stoch
         macd_line, signal_line, hist = macd
         if len(k_values) < 1 or len(hist) < 1 or len(macd_line) < 1 or len(signal_line) < 1:

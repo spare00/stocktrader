@@ -355,7 +355,7 @@ class Settings:
     stoch_macd_min_hold_seconds: int = 30
     stoch_macd_max_trades_per_symbol_per_session: int = 2
     stoch_macd_symbol_loss_lock_count: int = 1
-    stoch_macd_macd_warmup_bars: int = 120
+    stoch_macd_macd_warmup_bars: int = 35
     stoch_macd_risk_off_stoch_cross_lookback_bars: int = 3
     stoch_macd_risk_off_hist_multiplier: float = 1.5
     stoch_macd_risk_off_volume_add: float = 0.3
