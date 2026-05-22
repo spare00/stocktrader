@@ -6458,13 +6458,14 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
-    def test_steady_intraday_min_hold_blocks_immediate_vwap_exit(self):
+    def test_steady_intraday_vwap_hold_blocks_early_lost_vwap_exit(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["UBER"],
             strategy_names=["steady_intraday"],
             steady_intraday_min_hold_seconds=30,
+            steady_intraday_lost_vwap_min_hold_seconds=900,
         )
         strategy = SteadyIntradayStrategy(settings)
         state = SymbolState("UBER")
@@ -6480,10 +6481,45 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(strategy.should_exit(state, position))
 
         state.update_quote(Quote("UBER", 99.88, 99.90, 100, 100, entry_ms + 31_000))
+        self.assertIsNone(strategy.should_exit(state, position))
+
+        state.update_quote(Quote("UBER", 99.88, 99.90, 100, 100, entry_ms + 901_000))
         decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "lost VWAP")
+
+    def test_steady_intraday_breakdown_hold_blocks_early_ema_exit(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["UBER"],
+            strategy_names=["steady_intraday"],
+            steady_intraday_min_hold_seconds=30,
+            steady_intraday_breakdown_min_hold_seconds=900,
+            steady_intraday_lost_vwap_min_hold_seconds=900,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("UBER")
+        start_ms = market_ms(2026, 5, 11, 10, 0)
+        for index in range(12):
+            end_ms = start_ms + (index + 1) * 60_000
+            close = 100.0 if index < 10 else 99.7
+            state.add_bar(
+                Bar("UBER", close + 0.05, close + 0.10, close - 0.10, close, 100_000, close, end_ms - 60_000, end_ms)
+            )
+
+        entry_ms = state.bars[-1].end_ms
+        position = Position("UBER", "steady_intraday", 10, 100.0, entry_ms, 102.0, 99.0, 99.0, max_price=100.0)
+        state.update_quote(Quote("UBER", 99.68, 99.70, 100, 100, entry_ms + 31_000))
+
+        self.assertIsNone(strategy.should_exit(state, position))
+
+        state.update_quote(Quote("UBER", 99.68, 99.70, 100, 100, entry_ms + 901_000))
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "EMA fast breakdown")
 
     def test_macd_volume_runner_does_not_take_same_tick_full_target_after_partial(self):
         settings = Settings(

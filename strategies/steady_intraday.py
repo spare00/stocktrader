@@ -50,6 +50,18 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_runner_pullback_pct", "STEADY_INTRADAY_RUNNER_PULLBACK_PCT", float_env, 0.009),
         ("steady_intraday_min_hold_seconds", "STEADY_INTRADAY_MIN_HOLD_SECONDS", int_env, 30),
         ("steady_intraday_breakdown_bars", "STEADY_INTRADAY_BREAKDOWN_BARS", int_env, 2),
+        (
+            "steady_intraday_breakdown_min_hold_seconds",
+            "STEADY_INTRADAY_BREAKDOWN_MIN_HOLD_SECONDS",
+            int_env,
+            900,
+        ),
+        (
+            "steady_intraday_lost_vwap_min_hold_seconds",
+            "STEADY_INTRADAY_LOST_VWAP_MIN_HOLD_SECONDS",
+            int_env,
+            900,
+        ),
         ("steady_intraday_stall_minutes", "STEADY_INTRADAY_STALL_MINUTES", int_env, 25),
         ("steady_intraday_stall_min_r", "STEADY_INTRADAY_STALL_MIN_R", float_env, 0.35),
         ("steady_intraday_position_size_multiplier", "STEADY_INTRADAY_POSITION_SIZE_MULTIPLIER", float_env, 0.8),
@@ -96,6 +108,8 @@ class SteadyIntradayStrategy(Strategy):
             "target_r": settings.steady_intraday_target_r,
             "runner_pullback_pct": settings.steady_intraday_runner_pullback_pct,
             "min_hold_seconds": settings.steady_intraday_min_hold_seconds,
+            "breakdown_min_hold_seconds": settings.steady_intraday_breakdown_min_hold_seconds,
+            "lost_vwap_min_hold_seconds": settings.steady_intraday_lost_vwap_min_hold_seconds,
             "position_size_multiplier": settings.steady_intraday_position_size_multiplier,
             "max_trades_per_symbol_per_session": settings.steady_intraday_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.steady_intraday_symbol_loss_lock_count,
@@ -244,9 +258,17 @@ class SteadyIntradayStrategy(Strategy):
             ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
             session_vwap = self._session_vwap(bars)
             breakdown_bars = max(1, self.settings.steady_intraday_breakdown_bars)
-            if ema_fast and self._last_n_closes_below(bars, ema_fast, breakdown_bars):
+            if (
+                age_seconds >= self.settings.steady_intraday_breakdown_min_hold_seconds
+                and ema_fast
+                and self._last_n_closes_below(bars, ema_fast, breakdown_bars)
+            ):
                 return ExitDecision("EMA fast breakdown")
-            if session_vwap and price < session_vwap:
+            if (
+                age_seconds >= self.settings.steady_intraday_lost_vwap_min_hold_seconds
+                and session_vwap
+                and price < session_vwap
+            ):
                 return ExitDecision("lost VWAP")
 
         age_minutes = (event_ms - position.entry_ms) / 60_000

@@ -238,6 +238,8 @@ class Settings:
     steady_intraday_runner_pullback_pct: float = 0.009
     steady_intraday_min_hold_seconds: int = 30
     steady_intraday_breakdown_bars: int = 2
+    steady_intraday_breakdown_min_hold_seconds: int = 900
+    steady_intraday_lost_vwap_min_hold_seconds: int = 900
     steady_intraday_stall_minutes: int = 25
     steady_intraday_stall_min_r: float = 0.35
     steady_intraday_position_size_multiplier: float = 0.8
