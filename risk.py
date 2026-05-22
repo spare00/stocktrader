@@ -23,6 +23,7 @@ class RiskManager:
     stopped_day_keys: set[str] = field(default_factory=set)
     daily_realized_pnl: dict[str, float] = field(default_factory=dict)
     session_trade_counts: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    strategy_trade_timestamps: dict[tuple[str, str], list[int]] = field(default_factory=dict)
     session_symbol_loss_streaks: dict[tuple[str, str, str], int] = field(default_factory=dict)
     session_symbol_locks: set[tuple[str, str, str]] = field(default_factory=set)
 
@@ -66,6 +67,9 @@ class RiskManager:
             strategy_open = (open_strategy_counts or {}).get(signal.strategy, 0)
             if strategy_open >= strategy_max_open:
                 return RiskDecision(False, "max open positions for strategy reached")
+
+        if self._strategy_burst_limit_reached(signal.strategy, day_key, signal.timestamp_ms):
+            return RiskDecision(False, "strategy burst limit reached")
 
         opening_impulse_ms = self.last_trade_by_strategy_ms.get((signal.symbol, "opening_impulse"))
         if signal.strategy == "maha7" and opening_impulse_ms is not None:
@@ -115,6 +119,27 @@ class RiskManager:
         cooldown = int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_trade_cooldown_seconds", 0) or 0)
         return cooldown if cooldown > 0 else self.settings.trade_cooldown_seconds
 
+    def _strategy_burst_limit_reached(self, strategy: str, day_key: str, timestamp_ms: int) -> bool:
+        max_entries = self._burst_max_entries_for_strategy(strategy)
+        window_seconds = self._burst_window_seconds_for_strategy(strategy)
+        if max_entries <= 0 or window_seconds <= 0:
+            return False
+        cutoff_ms = timestamp_ms - window_seconds * 1000
+        day_strategy_key = (day_key, strategy)
+        recent = [
+            trade_ms
+            for trade_ms in self.strategy_trade_timestamps.get(day_strategy_key, [])
+            if trade_ms >= cutoff_ms
+        ]
+        self.strategy_trade_timestamps[day_strategy_key] = recent
+        return len(recent) >= max_entries
+
+    def _burst_max_entries_for_strategy(self, strategy: str) -> int:
+        return int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_burst_max_entries", 0) or 0)
+
+    def _burst_window_seconds_for_strategy(self, strategy: str) -> int:
+        return int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_burst_window_seconds", 0) or 0)
+
     def _respects_consecutive_loss_limits(self, strategy: str) -> bool:
         return bool(getattr(self.settings, f"{self._settings_prefix(strategy)}_respect_consecutive_loss_limits", True))
 
@@ -125,6 +150,16 @@ class RiskManager:
             self.last_trade_by_strategy_ms[(symbol, strategy)] = timestamp_ms
             session_key = (self._day_key(timestamp_ms), strategy, symbol)
             self.session_trade_counts[session_key] = self.session_trade_counts.get(session_key, 0) + 1
+            day_strategy_key = (self._day_key(timestamp_ms), strategy)
+            window_seconds = self._burst_window_seconds_for_strategy(strategy)
+            cutoff_ms = timestamp_ms - max(0, window_seconds) * 1000
+            timestamps = [
+                trade_ms
+                for trade_ms in self.strategy_trade_timestamps.get(day_strategy_key, [])
+                if window_seconds <= 0 or trade_ms >= cutoff_ms
+            ]
+            timestamps.append(timestamp_ms)
+            self.strategy_trade_timestamps[day_strategy_key] = timestamps
 
     def record_failed_entry(self, symbol: str, timestamp_ms: int) -> None:
         self.last_failed_entry_ms[symbol] = timestamp_ms

@@ -241,6 +241,8 @@ class CoreTradingTests(unittest.TestCase):
                 "ALPACA_MARKET_DATA_POLL_SECONDS": "7.5",
                 "STOCH_MACD_MAX_OPEN_POSITIONS": "12",
                 "STOCH_MACD_TRADE_COOLDOWN_SECONDS": "45",
+                "MACD_BURST_MAX_ENTRIES": "2",
+                "MACD_BURST_WINDOW_SECONDS": "300",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
             clear=True,
@@ -253,6 +255,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.alpaca_market_data_poll_seconds, 7.5)
         self.assertEqual(settings.stoch_macd_max_open_positions, 12)
         self.assertEqual(settings.stoch_macd_trade_cooldown_seconds, 45)
+        self.assertEqual(settings.macd_burst_max_entries, 2)
+        self.assertEqual(settings.macd_burst_window_seconds, 300)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
@@ -6708,6 +6712,65 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max open positions for strategy reached")
+
+    def test_risk_rejects_macd_strategy_burst(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            macd_burst_max_entries=2,
+            macd_burst_window_seconds=300,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_trade("AAPL", base_ms, "macd_early_impulse")
+        risk.record_trade("MSFT", base_ms + 60_000, "macd_early_impulse")
+        signal = Signal(
+            strategy="macd_early_impulse",
+            symbol="GDX",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 120_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "strategy burst limit reached")
+
+    def test_risk_allows_macd_entry_after_burst_window_expires(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            macd_burst_max_entries=2,
+            macd_burst_window_seconds=300,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_trade("AAPL", base_ms, "macd_early_impulse")
+        risk.record_trade("MSFT", base_ms + 60_000, "macd_early_impulse")
+        signal = Signal(
+            strategy="macd_early_impulse",
+            symbol="GDX",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 361_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertTrue(decision.allowed)
 
     def test_risk_keeps_global_open_position_cap(self):
         settings = Settings(

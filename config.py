@@ -71,6 +71,8 @@ class Settings:
     stoch_macd_trade_cooldown_seconds: int = 0
     macd_max_open_positions: int = 0
     macd_trade_cooldown_seconds: int = 0
+    macd_burst_max_entries: int = 0
+    macd_burst_window_seconds: int = 0
     steady_intraday_max_open_positions: int = 0
     steady_intraday_trade_cooldown_seconds: int = 0
     failed_entry_cooldown_seconds: int = 30
@@ -411,6 +413,8 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("stoch_macd_trade_cooldown_seconds", "STOCH_MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("macd_max_open_positions", "MACD_MAX_OPEN_POSITIONS", _int_env, 0),
     ("macd_trade_cooldown_seconds", "MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    ("macd_burst_max_entries", "MACD_BURST_MAX_ENTRIES", _int_env, 0),
+    ("macd_burst_window_seconds", "MACD_BURST_WINDOW_SECONDS", _int_env, 0),
     ("steady_intraday_max_open_positions", "STEADY_INTRADAY_MAX_OPEN_POSITIONS", _int_env, 0),
     ("steady_intraday_trade_cooldown_seconds", "STEADY_INTRADAY_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
