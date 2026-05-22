@@ -8055,6 +8055,83 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_ao_filter_rejects_fading_momentum(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_ao_filter_enabled=True,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ), patch.object(
+            strategy,
+            "_compute_ao",
+            return_value=[0.04, 0.03, 0.02],
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_ao_filter_allows_improving_momentum(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_ao_filter_enabled=True,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ), patch.object(
+            strategy,
+            "_compute_ao",
+            return_value=[0.01, 0.02, 0.04],
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNotNone(signal)
+        self.assertIn("ao=0.0400", signal.reason)
+
     def test_stoch_macd_reversal_does_not_synthesize_indicators_from_sparse_opening_bars(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=120, stoch_macd_min_bars=35)
         strategy = StochMACDReversalStrategy(settings)

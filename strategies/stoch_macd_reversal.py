@@ -48,7 +48,13 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_macd_rise_bars", "STOCH_MACD_MACD_RISE_BARS", int_env, 2),
         ("stoch_macd_stoch_cross_lookback_bars", "STOCH_MACD_STOCH_CROSS_LOOKBACK_BARS", int_env, 3),
         ("stoch_macd_max_k", "STOCH_MACD_MAX_K", float_env, 88.0),
+        ("stoch_macd_allow_overbought_expansion", "STOCH_MACD_ALLOW_OVERBOUGHT_EXPANSION", bool_env, False),
         ("stoch_macd_overbought_min_hist_rise_norm", "STOCH_MACD_OVERBOUGHT_MIN_HIST_RISE_NORM", float_env, 0.00005),
+        ("stoch_macd_ao_filter_enabled", "STOCH_MACD_AO_FILTER_ENABLED", bool_env, False),
+        ("stoch_macd_ao_fast_period", "STOCH_MACD_AO_FAST_PERIOD", int_env, 5),
+        ("stoch_macd_ao_slow_period", "STOCH_MACD_AO_SLOW_PERIOD", int_env, 34),
+        ("stoch_macd_ao_rise_bars", "STOCH_MACD_AO_RISE_BARS", int_env, 2),
+        ("stoch_macd_ao_min_value", "STOCH_MACD_AO_MIN_VALUE", float_env, 0.0),
         ("stoch_macd_atr_period", "STOCH_MACD_ATR_PERIOD", int_env, 14),
         ("stoch_macd_min_atr_pct", "STOCH_MACD_MIN_ATR_PCT", float_env, 0.0015),
         ("stoch_macd_max_atr_pct", "STOCH_MACD_MAX_ATR_PCT", float_env, 0.0300),
@@ -161,7 +167,15 @@ class StochMACDReversalStrategy(Strategy):
             "macd_rise_bars": settings.stoch_macd_macd_rise_bars,
             "stoch_cross_lookback_bars": settings.stoch_macd_stoch_cross_lookback_bars,
             "max_k": settings.stoch_macd_max_k,
+            "allow_overbought_expansion": settings.stoch_macd_allow_overbought_expansion,
             "overbought_min_hist_rise_norm": settings.stoch_macd_overbought_min_hist_rise_norm,
+            "ao_filter": {
+                "enabled": settings.stoch_macd_ao_filter_enabled,
+                "fast_period": settings.stoch_macd_ao_fast_period,
+                "slow_period": settings.stoch_macd_ao_slow_period,
+                "rise_bars": settings.stoch_macd_ao_rise_bars,
+                "min_value": settings.stoch_macd_ao_min_value,
+            },
             "atr_period": settings.stoch_macd_atr_period,
             "min_atr_pct": settings.stoch_macd_min_atr_pct,
             "max_atr_pct": settings.stoch_macd_max_atr_pct,
@@ -332,6 +346,12 @@ class StochMACDReversalStrategy(Strategy):
         if not self._last_n_rising(macd_line, self.settings.stoch_macd_macd_rise_bars):
             return self._reject(state, "macd_strength", "MACD line not rising")
         if k_now > self.settings.stoch_macd_max_k:
+            if not self.settings.stoch_macd_allow_overbought_expansion:
+                return self._reject(
+                    state,
+                    "stoch_timing",
+                    f"STOCH overbought k={k_now:.1f} max={self.settings.stoch_macd_max_k:.1f}",
+                )
             hist_rise_norm = self._rise_over_bars(hist, self.settings.stoch_macd_hist_rise_bars) / price_ref
             if hist_rise_norm < self.settings.stoch_macd_overbought_min_hist_rise_norm:
                 return self._reject(
@@ -364,6 +384,15 @@ class StochMACDReversalStrategy(Strategy):
                 )
             if not supertrend_bullish:
                 return self._reject(state, "supertrend_bearish", f"SuperTrend bearish line={supertrend_value:.2f}")
+
+        ao_values = self._compute_ao(current_session_bars)
+        ao_reason = ""
+        if self.settings.stoch_macd_ao_filter_enabled:
+            ao_reject_reason = self._ao_reject_reason(ao_values)
+            if ao_reject_reason:
+                return self._reject(state, "ao", ao_reject_reason)
+        if ao_values:
+            ao_reason = f" ao={ao_values[-1]:.4f}"
 
         vol_r = self._volume_ratio(state)
         min_volume_ratio = self.settings.stoch_macd_min_volume_ratio
@@ -507,7 +536,7 @@ class StochMACDReversalStrategy(Strategy):
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
                 f"{supertrend_reason} "
                 f"ccc={ccc:.4f} signal={macd_signal:.4f} hist_norm={hist_norm:.5f} r={r_pct:.2%} "
-                f"k={k_now:.1f} d={d_now:.1f} vol={vol_r:.2f}x{regime_reason}{reentry_reason}"
+                f"k={k_now:.1f} d={d_now:.1f}{ao_reason} vol={vol_r:.2f}x{regime_reason}{reentry_reason}"
             ),
             stop_price=stop_price,
             position_size_multiplier=0.8,
@@ -818,6 +847,36 @@ class StochMACDReversalStrategy(Strategy):
         if count <= 0 or len(values) < count + 1:
             return 0.0
         return values[-1] - values[-(count + 1)]
+
+    def _ao_reject_reason(self, ao_values: list[float] | None) -> str:
+        if not ao_values:
+            return "could not compute AO"
+        min_value = self.settings.stoch_macd_ao_min_value
+        ao_now = ao_values[-1]
+        if ao_now < min_value:
+            return f"AO too weak ao={ao_now:.4f} min={min_value:.4f}"
+        rise_bars = max(0, self.settings.stoch_macd_ao_rise_bars)
+        if rise_bars <= 0:
+            return ""
+        if len(ao_values) < rise_bars + 1:
+            return f"AO needs {rise_bars + 1} values, have {len(ao_values)}"
+        ao_then = ao_values[-(rise_bars + 1)]
+        if ao_now <= ao_then:
+            return f"AO not improving ao={ao_now:.4f} previous={ao_then:.4f}"
+        return ""
+
+    def _compute_ao(self, bars: list) -> list[float] | None:
+        fast = self.settings.stoch_macd_ao_fast_period
+        slow = self.settings.stoch_macd_ao_slow_period
+        if fast <= 0 or slow <= 0 or fast >= slow or len(bars) < slow:
+            return None
+        medians = [(float(bar.high) + float(bar.low)) / 2.0 for bar in bars]
+        ao_values: list[float] = []
+        for index in range(slow - 1, len(medians)):
+            fast_window = medians[index - fast + 1 : index + 1]
+            slow_window = medians[index - slow + 1 : index + 1]
+            ao_values.append((sum(fast_window) / fast) - (sum(slow_window) / slow))
+        return ao_values
 
     @staticmethod
     def _stoch_cross_recent(k_values: list[float], d_values: list[float], lookback: int) -> bool:

@@ -331,7 +331,13 @@ class Settings:
     stoch_macd_macd_rise_bars: int = 2
     stoch_macd_stoch_cross_lookback_bars: int = 3
     stoch_macd_max_k: float = 88.0
+    stoch_macd_allow_overbought_expansion: bool = False
     stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
+    stoch_macd_ao_filter_enabled: bool = False
+    stoch_macd_ao_fast_period: int = 5
+    stoch_macd_ao_slow_period: int = 34
+    stoch_macd_ao_rise_bars: int = 2
+    stoch_macd_ao_min_value: float = 0.0
     stoch_macd_atr_period: int = 14
     stoch_macd_min_atr_pct: float = 0.0015
     stoch_macd_max_atr_pct: float = 0.0300
