@@ -38,6 +38,8 @@ class Position:
     session_open_price: float | None = None
     entry_open_pct: float | None = None
     runner_mode: bool = False
+    stop_confirmation_count: int = 0
+    quote_stop_confirmed: bool = True
 
 
 @dataclass
@@ -369,17 +371,29 @@ class LocalPaperExecutor:
         exit_price = current_price
         self.tracker.update_position_price(position, current_price, event_ms)
 
+        stop_check_price = self._stop_check_price(state, position, current_price)
         max_loss_price = self._max_loss_price(position)
-        if max_loss_price is not None and current_price <= max_loss_price:
+        if stop_check_price > position.stop_price:
+            position.stop_confirmation_count = 0
+        quote_stop_confirmed = True
+        if stop_check_price <= position.stop_price:
+            quote_stop_confirmed = self._confirm_quote_stop(state, position, age_seconds, stop_check_price)
+        position.quote_stop_confirmed = quote_stop_confirmed
+        if max_loss_price is not None and stop_check_price <= max_loss_price and quote_stop_confirmed:
             reason = "max trade loss"
+            exit_price = stop_check_price
         elif should_flatten_before_close(event_ms, self.tracker.settings.flatten_before_close_minutes):
             reason = "end-of-day flatten"
-        elif current_price <= position.stop_price and (
-            age_seconds >= exit_activation_delay
-            or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
+        elif (
+            stop_check_price <= position.stop_price
+            and quote_stop_confirmed
+            and (
+                age_seconds >= exit_activation_delay
+                or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
+            )
         ):
             reason = "stop loss"
-            exit_price = position.stop_price
+            exit_price = min(position.stop_price, stop_check_price)
         elif age_seconds >= self.tracker.settings.max_hold_seconds and current_price < position.entry_price:
             pnl_pct = (current_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
             if strategy and not strategy.allow_max_hold_exit(state, position, age_seconds, pnl_pct):
@@ -434,6 +448,30 @@ class LocalPaperExecutor:
         if risk_per_share <= 0:
             return None
         return position.entry_price - self.tracker.settings.max_trade_loss_r * risk_per_share
+
+    @staticmethod
+    def _stop_check_price(state, position: Position, fallback_price: float) -> float:
+        quote = getattr(state, "quote", None)
+        if position.strategy == "stoch_macd_reversal" and quote is not None and quote.bid > 0:
+            return quote.bid
+        return fallback_price
+
+    def _confirm_quote_stop(self, state, position: Position, age_seconds: float, stop_price: float) -> bool:
+        if position.strategy != "stoch_macd_reversal":
+            return True
+        catastrophic_price = position.entry_price * (1.0 - max(0.0, self.tracker.settings.stoch_macd_catastrophic_stop_loss_pct))
+        if stop_price <= catastrophic_price:
+            position.stop_confirmation_count = 0
+            return True
+        if age_seconds < max(0, self.tracker.settings.stoch_macd_stop_grace_seconds):
+            position.stop_confirmation_count = 0
+            return False
+        quote = getattr(state, "quote", None)
+        if quote is not None and quote.spread_bps > self.tracker.settings.stoch_macd_stop_max_spread_bps:
+            position.stop_confirmation_count = 0
+            return False
+        position.stop_confirmation_count += 1
+        return position.stop_confirmation_count >= max(1, self.tracker.settings.stoch_macd_stop_confirmations)
 
 
 @dataclass
@@ -590,14 +628,31 @@ class AlpacaPaperExecutor:
         if current_price is not None:
             self.tracker.update_position_price(position, current_price, event_ms)
 
+        stop_check_price = self._stop_check_price(state, position, current_price) if current_price is not None else None
         max_loss_price = self._max_loss_price(position)
-        if current_price is not None and max_loss_price is not None and current_price <= max_loss_price:
+        if stop_check_price is not None and stop_check_price > position.stop_price:
+            position.stop_confirmation_count = 0
+        quote_stop_confirmed = True
+        if stop_check_price is not None and stop_check_price <= position.stop_price:
+            quote_stop_confirmed = self._confirm_quote_stop(state, position, age_seconds, stop_check_price)
+        position.quote_stop_confirmed = quote_stop_confirmed
+        if (
+            stop_check_price is not None
+            and max_loss_price is not None
+            and stop_check_price <= max_loss_price
+            and quote_stop_confirmed
+        ):
             reason = "max trade loss"
         elif flatten:
             reason = "end-of-day flatten"
-        elif current_price <= position.stop_price and (
-            age_seconds >= exit_activation_delay
-            or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
+        elif (
+            stop_check_price is not None
+            and stop_check_price <= position.stop_price
+            and quote_stop_confirmed
+            and (
+                age_seconds >= exit_activation_delay
+                or not (strategy and strategy.delay_stop_loss_until_exit_activation(position))
+            )
         ):
             reason = "stop loss"
         elif age_seconds >= self.settings.max_hold_seconds and current_price < position.entry_price:
@@ -837,6 +892,30 @@ class AlpacaPaperExecutor:
         if risk_per_share <= 0:
             return None
         return position.entry_price - self.settings.max_trade_loss_r * risk_per_share
+
+    @staticmethod
+    def _stop_check_price(state, position: Position, fallback_price: float) -> float:
+        quote = getattr(state, "quote", None)
+        if position.strategy == "stoch_macd_reversal" and quote is not None and quote.bid > 0:
+            return quote.bid
+        return fallback_price
+
+    def _confirm_quote_stop(self, state, position: Position, age_seconds: float, stop_price: float) -> bool:
+        if position.strategy != "stoch_macd_reversal":
+            return True
+        catastrophic_price = position.entry_price * (1.0 - max(0.0, self.settings.stoch_macd_catastrophic_stop_loss_pct))
+        if stop_price <= catastrophic_price:
+            position.stop_confirmation_count = 0
+            return True
+        if age_seconds < max(0, self.settings.stoch_macd_stop_grace_seconds):
+            position.stop_confirmation_count = 0
+            return False
+        quote = getattr(state, "quote", None)
+        if quote is not None and quote.spread_bps > self.settings.stoch_macd_stop_max_spread_bps:
+            position.stop_confirmation_count = 0
+            return False
+        position.stop_confirmation_count += 1
+        return position.stop_confirmation_count >= max(1, self.settings.stoch_macd_stop_confirmations)
 
     def _cancel_unfilled_order(self, order) -> None:
         from alpaca.common.exceptions import APIError

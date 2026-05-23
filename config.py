@@ -363,6 +363,10 @@ class Settings:
     stoch_macd_trailing_activation_pct: float = 0.004
     stoch_macd_trailing_stop_pct: float = 0.005
     stoch_macd_min_hold_seconds: int = 30
+    stoch_macd_stop_grace_seconds: int = 20
+    stoch_macd_stop_confirmations: int = 2
+    stoch_macd_stop_max_spread_bps: float = 30.0
+    stoch_macd_catastrophic_stop_loss_pct: float = 0.01
     stoch_macd_max_trades_per_symbol_per_session: int = 2
     stoch_macd_symbol_loss_lock_count: int = 1
     stoch_macd_macd_warmup_bars: int = 35
@@ -402,7 +406,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_trading_base_url", "ALPACA_TRADING_BASE_URL", _str_env, None),
     ("alpaca_data_base_url", "ALPACA_DATA_BASE_URL", _str_env, None),
     ("alpaca_market_data_mode", "ALPACA_MARKET_DATA_MODE", _lower_env, "stream"),
-    ("alpaca_market_data_poll_seconds", "ALPACA_MARKET_DATA_POLL_SECONDS", _float_env, 5.0),
+    ("alpaca_market_data_poll_seconds", "ALPACA_MARKET_DATA_POLL_SECONDS", _float_env, 1.0),
     ("execution_mode", "EXECUTION_MODE", _lower_env, "local"),
     ("openai_api_key", "OPENAI_API_KEY", _str_env, None),
     ("openai_model", "OPENAI_MODEL", _str_env, "gpt-5.4-mini"),

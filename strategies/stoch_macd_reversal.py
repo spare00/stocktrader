@@ -78,6 +78,10 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_trailing_activation_pct", "STOCH_MACD_TRAILING_ACTIVATION_PCT", float_env, 0.004),
         ("stoch_macd_trailing_stop_pct", "STOCH_MACD_TRAILING_STOP_PCT", float_env, 0.005),
         ("stoch_macd_min_hold_seconds", "STOCH_MACD_MIN_HOLD_SECONDS", int_env, 30),
+        ("stoch_macd_stop_grace_seconds", "STOCH_MACD_STOP_GRACE_SECONDS", int_env, 20),
+        ("stoch_macd_stop_confirmations", "STOCH_MACD_STOP_CONFIRMATIONS", int_env, 2),
+        ("stoch_macd_stop_max_spread_bps", "STOCH_MACD_STOP_MAX_SPREAD_BPS", float_env, 30.0),
+        ("stoch_macd_catastrophic_stop_loss_pct", "STOCH_MACD_CATASTROPHIC_STOP_LOSS_PCT", float_env, 0.01),
         (
             "stoch_macd_max_trades_per_symbol_per_session",
             "STOCH_MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
@@ -199,6 +203,10 @@ class StochMACDReversalStrategy(Strategy):
             "trailing_activation_pct": settings.stoch_macd_trailing_activation_pct,
             "trailing_stop_pct": settings.stoch_macd_trailing_stop_pct,
             "min_hold_seconds": settings.stoch_macd_min_hold_seconds,
+            "stop_grace_seconds": settings.stoch_macd_stop_grace_seconds,
+            "stop_confirmations": settings.stoch_macd_stop_confirmations,
+            "stop_max_spread_bps": settings.stoch_macd_stop_max_spread_bps,
+            "catastrophic_stop_loss_pct": settings.stoch_macd_catastrophic_stop_loss_pct,
             "max_trades_per_symbol_per_session": settings.stoch_macd_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.stoch_macd_symbol_loss_lock_count,
             "macd_warmup_bars": settings.stoch_macd_macd_warmup_bars,
@@ -548,7 +556,8 @@ class StochMACDReversalStrategy(Strategy):
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
         if position.strategy != self.name:
             return None
-        price = state.last_price
+        quote = getattr(state, "quote", None)
+        price = quote.bid if quote is not None and quote.bid > 0 else state.last_price
         if price is None or position.entry_price <= 0:
             return None
 
@@ -559,7 +568,7 @@ class StochMACDReversalStrategy(Strategy):
         if age_seconds < self.settings.stoch_macd_min_hold_seconds:
             return None
 
-        if pnl_pct <= -self.settings.stoch_macd_stop_loss_pct:
+        if pnl_pct <= -self.settings.stoch_macd_stop_loss_pct and getattr(position, "quote_stop_confirmed", True):
             return ExitDecision("stop loss")
 
         initial_stop = position.initial_stop_price or position.stop_price

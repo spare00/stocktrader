@@ -2199,6 +2199,8 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             regular_market_only=False,
             stoch_macd_min_hold_seconds=30,
+            stoch_macd_stop_grace_seconds=0,
+            stoch_macd_stop_confirmations=1,
         )
         broker = LocalPaperExecutor(PositionTracker(settings))
         entry_ms = market_ms(2026, 4, 24, 10, 0)
@@ -2225,6 +2227,119 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "stop loss")
+
+    def test_stoch_macd_reversal_max_loss_ignores_quote_stop_during_grace(self):
+        settings = Settings(
+            symbols=["INTC"],
+            regular_market_only=False,
+            stoch_macd_stop_grace_seconds=45,
+            stoch_macd_stop_confirmations=1,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        entry_ms = market_ms(2026, 5, 22, 10, 11)
+        broker.tracker.positions["INTC"] = Position(
+            symbol="INTC",
+            strategy="stoch_macd_reversal",
+            shares=16,
+            entry_price=120.0,
+            entry_ms=entry_ms,
+            target_price=121.2,
+            stop_price=119.46,
+            initial_stop_price=119.46,
+        )
+        state = SymbolState("INTC")
+        state.update_quote(Quote("INTC", 118.98, 119.02, 100, 100, entry_ms + 28_000))
+
+        fill = broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)})
+
+        self.assertIsNone(fill)
+        self.assertIn("INTC", broker.tracker.positions)
+
+    def test_stoch_macd_reversal_quote_stop_requires_confirmations(self):
+        settings = Settings(
+            symbols=["INTC"],
+            regular_market_only=False,
+            stoch_macd_stop_grace_seconds=45,
+            stoch_macd_stop_confirmations=2,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        entry_ms = market_ms(2026, 5, 22, 10, 11)
+        broker.tracker.positions["INTC"] = Position(
+            symbol="INTC",
+            strategy="stoch_macd_reversal",
+            shares=16,
+            entry_price=120.0,
+            entry_ms=entry_ms,
+            target_price=121.2,
+            stop_price=119.46,
+            initial_stop_price=119.46,
+        )
+        state = SymbolState("INTC")
+        state.update_quote(Quote("INTC", 118.98, 119.02, 100, 100, entry_ms + 46_000))
+
+        self.assertIsNone(broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)}))
+
+        state.update_quote(Quote("INTC", 118.97, 119.01, 100, 100, entry_ms + 47_000))
+        fill = broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max trade loss")
+
+    def test_stoch_macd_reversal_wide_spread_blocks_quote_stop(self):
+        settings = Settings(
+            symbols=["INTC"],
+            regular_market_only=False,
+            stoch_macd_stop_grace_seconds=0,
+            stoch_macd_stop_confirmations=1,
+            stoch_macd_stop_max_spread_bps=30,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        entry_ms = market_ms(2026, 5, 22, 10, 11)
+        broker.tracker.positions["INTC"] = Position(
+            symbol="INTC",
+            strategy="stoch_macd_reversal",
+            shares=16,
+            entry_price=120.0,
+            entry_ms=entry_ms,
+            target_price=121.2,
+            stop_price=119.46,
+            initial_stop_price=119.46,
+        )
+        state = SymbolState("INTC")
+        state.update_quote(Quote("INTC", 118.98, 120.50, 100, 100, entry_ms + 60_000))
+
+        fill = broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)})
+
+        self.assertIsNone(fill)
+        self.assertIn("INTC", broker.tracker.positions)
+
+    def test_stoch_macd_reversal_catastrophic_stop_bypasses_grace(self):
+        settings = Settings(
+            symbols=["INTC"],
+            regular_market_only=False,
+            stoch_macd_stop_grace_seconds=45,
+            stoch_macd_stop_confirmations=3,
+            stoch_macd_catastrophic_stop_loss_pct=0.02,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        entry_ms = market_ms(2026, 5, 22, 10, 11)
+        broker.tracker.positions["INTC"] = Position(
+            symbol="INTC",
+            strategy="stoch_macd_reversal",
+            shares=16,
+            entry_price=120.0,
+            entry_ms=entry_ms,
+            target_price=121.2,
+            stop_price=119.46,
+            initial_stop_price=119.46,
+        )
+        state = SymbolState("INTC")
+        state.update_quote(Quote("INTC", 117.50, 117.55, 100, 100, entry_ms + 10_000))
+
+        fill = broker.manage_exit(state, {"stoch_macd_reversal": StochMACDReversalStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max trade loss")
 
     def test_stoch_macd_reversal_defers_max_hold_while_supertrend_bullish(self):
         settings = Settings(
