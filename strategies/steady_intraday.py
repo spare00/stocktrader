@@ -133,20 +133,37 @@ class SteadyIntradayStrategy(Strategy):
         bars = self._regular_bars(state)
         session_bars = self._current_regular_session_bars(state)
         if len(session_bars) < 2:
-            return self._reject(state, "history", "insufficient current-session bars")
+            return self._reject(
+                state,
+                "history",
+                "insufficient current-session bars",
+                session_bars=len(session_bars),
+            )
 
         min_bars = max(self.settings.steady_intraday_min_bars, self.settings.steady_intraday_ema_slow + 5)
         if len(bars) < min_bars:
-            return self._reject(state, "history", "insufficient regular-session bars")
+            return self._reject(
+                state,
+                "history",
+                "insufficient regular-session bars",
+                regular_bars=len(bars),
+                required_bars=min_bars,
+            )
 
         latest = session_bars[-1]
         entry = latest.close
         if entry < self.settings.steady_intraday_min_price:
-            return self._reject(state, "price", "price below minimum")
+            return self._reject(state, "price", "price below minimum", price=entry, min_price=self.settings.steady_intraday_min_price)
 
         spread_bps = state.quote.spread_bps if state.quote else None
         if spread_bps is not None and spread_bps > self.settings.steady_intraday_max_spread_bps:
-            return self._reject(state, "spread", f"spread {spread_bps:.2f}bps too wide")
+            return self._reject(
+                state,
+                "spread",
+                "spread too wide",
+                spread_bps=spread_bps,
+                max_spread_bps=self.settings.steady_intraday_max_spread_bps,
+            )
 
         closes = [bar.close for bar in bars]
         ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
@@ -154,53 +171,146 @@ class SteadyIntradayStrategy(Strategy):
         ema_slow = self._ema(closes, self.settings.steady_intraday_ema_slow)
         prev_ema_mid = self._ema(closes[:-3], self.settings.steady_intraday_ema_mid)
         if None in {ema_fast, ema_mid, ema_slow, prev_ema_mid}:
-            return self._reject(state, "history", "insufficient EMA history")
+            return self._reject(
+                state,
+                "history",
+                "insufficient EMA history",
+                regular_bars=len(bars),
+                ema_fast_period=self.settings.steady_intraday_ema_fast,
+                ema_mid_period=self.settings.steady_intraday_ema_mid,
+                ema_slow_period=self.settings.steady_intraday_ema_slow,
+            )
 
         session_vwap = self._session_vwap(session_bars)
         prev_vwap = self._session_vwap(session_bars[:-5])
         if session_vwap is None or prev_vwap is None:
-            return self._reject(state, "vwap", "missing session VWAP")
+            return self._reject(
+                state,
+                "vwap",
+                "missing session VWAP",
+                session_bars=len(session_bars),
+                prior_vwap_bars=len(session_bars[:-5]),
+            )
 
         atr = self._atr(bars, self.settings.steady_intraday_atr_period)
         if atr is None or atr <= 0:
-            return self._reject(state, "atr", "missing ATR")
+            return self._reject(state, "atr", "missing ATR", regular_bars=len(bars), atr_period=self.settings.steady_intraday_atr_period)
         atr_pct = atr / entry
         if atr_pct < self.settings.steady_intraday_min_atr_pct:
-            return self._reject(state, "atr", "ATR too low")
+            return self._reject(
+                state,
+                "atr",
+                "ATR too low",
+                atr_pct=atr_pct,
+                min_atr_pct=self.settings.steady_intraday_min_atr_pct,
+            )
         if atr_pct > self.settings.steady_intraday_max_atr_pct:
-            return self._reject(state, "atr", "ATR too high")
+            return self._reject(
+                state,
+                "atr",
+                "ATR too high",
+                atr_pct=atr_pct,
+                max_atr_pct=self.settings.steady_intraday_max_atr_pct,
+            )
 
         recent_range_pct = self._range_pct(session_bars[-20:])
         if recent_range_pct < self.settings.steady_intraday_min_range_pct:
-            return self._reject(state, "range", "recent range too compressed")
+            return self._reject(
+                state,
+                "range",
+                "recent range too compressed",
+                range_pct=recent_range_pct,
+                min_range_pct=self.settings.steady_intraday_min_range_pct,
+                session_bars=len(session_bars),
+            )
 
         if not (ema_fast > ema_mid > ema_slow):
-            return self._reject(state, "trend", "EMA stack not bullish")
+            return self._reject(
+                state,
+                "trend",
+                "EMA stack not bullish",
+                ema_fast=ema_fast,
+                ema_mid=ema_mid,
+                ema_slow=ema_slow,
+            )
         if ema_mid <= prev_ema_mid:
-            return self._reject(state, "trend", "EMA20 not rising")
+            return self._reject(
+                state,
+                "trend",
+                "EMA20 not rising",
+                ema_mid=ema_mid,
+                prev_ema_mid=prev_ema_mid,
+            )
         if entry <= session_vwap * (1 + self.settings.steady_intraday_vwap_buffer_pct):
-            return self._reject(state, "vwap", "price not above VWAP")
+            return self._reject(
+                state,
+                "vwap",
+                "price not above VWAP",
+                price=entry,
+                session_vwap=session_vwap,
+                vwap_buffer_pct=self.settings.steady_intraday_vwap_buffer_pct,
+                vwap_distance_pct=(entry - session_vwap) / session_vwap if session_vwap else None,
+            )
         if session_vwap <= prev_vwap:
-            return self._reject(state, "vwap", "VWAP not rising")
+            return self._reject(
+                state,
+                "vwap",
+                "VWAP not rising",
+                session_vwap=session_vwap,
+                prev_vwap=prev_vwap,
+            )
 
         vwap_extension_pct = (entry - session_vwap) / session_vwap
         ema_extension_pct = (entry - ema_mid) / ema_mid
         if vwap_extension_pct > self.settings.steady_intraday_max_vwap_extension_pct:
-            return self._reject(state, "extension", "too extended from VWAP")
+            return self._reject(
+                state,
+                "extension",
+                "too extended from VWAP",
+                vwap_extension_pct=vwap_extension_pct,
+                max_vwap_extension_pct=self.settings.steady_intraday_max_vwap_extension_pct,
+            )
         if ema_extension_pct > self.settings.steady_intraday_max_ema_extension_pct:
-            return self._reject(state, "extension", "too extended from EMA20")
+            return self._reject(
+                state,
+                "extension",
+                "too extended from EMA20",
+                ema_extension_pct=ema_extension_pct,
+                max_ema_extension_pct=self.settings.steady_intraday_max_ema_extension_pct,
+            )
 
         volume_ratio = self._volume_ratio(session_bars)
         trigger = self._entry_trigger(session_bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
         if trigger is None:
-            return self._reject(state, "trigger", "no pullback reclaim or ORB continuation")
+            return self._reject(
+                state,
+                "trigger",
+                "no pullback reclaim or ORB continuation",
+                **self._entry_trigger_state(session_bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio),
+            )
 
         stop_price = self._stop_price(session_bars, entry, ema_mid, session_vwap, atr)
         r_pct = (entry - stop_price) / entry if entry > 0 else 0.0
         if r_pct < self.settings.steady_intraday_min_r_pct:
-            return self._reject(state, "risk", "R too small")
+            return self._reject(
+                state,
+                "risk",
+                "R too small",
+                r_pct=r_pct,
+                min_r_pct=self.settings.steady_intraday_min_r_pct,
+                entry=entry,
+                stop_price=stop_price,
+            )
         if r_pct > self.settings.steady_intraday_max_r_pct:
-            return self._reject(state, "risk", "R too wide")
+            return self._reject(
+                state,
+                "risk",
+                "R too wide",
+                r_pct=r_pct,
+                max_r_pct=self.settings.steady_intraday_max_r_pct,
+                entry=entry,
+                stop_price=stop_price,
+            )
 
         reason = (
             f"steady_intraday {trigger}: EMA stack {ema_fast:.2f}>{ema_mid:.2f}>{ema_slow:.2f}, "
@@ -307,32 +417,61 @@ class SteadyIntradayStrategy(Strategy):
         session_vwap: float,
         volume_ratio: float,
     ) -> str | None:
-        latest = bars[-1]
-        previous = bars[-2]
-        reclaimed_fast = previous.close <= ema_fast * 1.002 and latest.close > max(previous.high, ema_fast)
-        held_mid = latest.low >= min(ema_mid, session_vwap) * 0.997
-        bullish_close = latest.close > latest.open and self._close_near_high(latest)
+        state = self._entry_trigger_state(bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
         if (
             self.settings.steady_intraday_allow_pullback_reclaim
-            and reclaimed_fast
-            and held_mid
-            and bullish_close
-            and volume_ratio >= self.settings.steady_intraday_min_volume_ratio
+            and state["reclaimed_fast"]
+            and state["held_mid"]
+            and state["bullish_close"]
+            and state["volume_ratio"] >= self.settings.steady_intraday_min_volume_ratio
         ):
             return "pullback_reclaim"
 
         if self.settings.steady_intraday_allow_orb_breakout:
-            opening_high = self._opening_range_high(bars)
             if (
-                opening_high is not None
-                and latest.close > opening_high
-                and previous.close <= opening_high * 1.002
-                and bullish_close
-                and volume_ratio >= self.settings.steady_intraday_breakout_volume_ratio
+                state["opening_high"] is not None
+                and state["latest_close"] > state["opening_high"]
+                and state["previous_close"] <= state["opening_high"] * 1.002
+                and state["bullish_close"]
+                and state["volume_ratio"] >= self.settings.steady_intraday_breakout_volume_ratio
             ):
                 return "orb_continuation"
 
         return None
+
+    def _entry_trigger_state(
+        self,
+        bars,
+        entry: float,
+        ema_fast: float,
+        ema_mid: float,
+        session_vwap: float,
+        volume_ratio: float,
+    ) -> dict[str, Any]:
+        latest = bars[-1]
+        previous = bars[-2]
+        opening_high = self._opening_range_high(bars)
+        reclaimed_fast = previous.close <= ema_fast * 1.002 and latest.close > max(previous.high, ema_fast)
+        held_mid = latest.low >= min(ema_mid, session_vwap) * 0.997
+        bullish_close = latest.close > latest.open and self._close_near_high(latest)
+        return {
+            "entry": entry,
+            "latest_open": latest.open,
+            "latest_close": latest.close,
+            "latest_low": latest.low,
+            "previous_close": previous.close,
+            "previous_high": previous.high,
+            "ema_fast": ema_fast,
+            "ema_mid": ema_mid,
+            "session_vwap": session_vwap,
+            "volume_ratio": volume_ratio,
+            "min_volume_ratio": self.settings.steady_intraday_min_volume_ratio,
+            "breakout_volume_ratio": self.settings.steady_intraday_breakout_volume_ratio,
+            "opening_high": opening_high,
+            "reclaimed_fast": reclaimed_fast,
+            "held_mid": held_mid,
+            "bullish_close": bullish_close,
+        }
 
     def _stop_price(self, bars, entry: float, ema_mid: float, session_vwap: float, atr: float) -> float:
         swing_low = min(bar.low for bar in bars[-6:])
@@ -443,11 +582,31 @@ class SteadyIntradayStrategy(Strategy):
             return False
         return all(bar.close < level for bar in bars[-n:])
 
-    def _reject(self, state: SymbolState, code: str, detail: str) -> None:
+    def _reject(self, state: SymbolState, code: str, detail: str, **context: Any) -> None:
         timestamp_ms = state.last_event_ms or 0
         key = (state.symbol, code)
         last_log_ms = self._last_reject_log_ms.get(key, -30_000)
         if timestamp_ms - last_log_ms >= 30_000:
             self._last_reject_log_ms[key] = timestamp_ms
-            LOG.debug("No steady_intraday entry %s [%s]: %s", state.symbol, code, detail)
+            suffix = self._format_reject_context(context)
+            LOG.debug("No steady_intraday entry %s [%s]: %s%s", state.symbol, code, detail, suffix)
         return None
+
+    @staticmethod
+    def _format_reject_context(context: dict[str, Any]) -> str:
+        if not context:
+            return ""
+        parts = []
+        for key, value in context.items():
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            elif isinstance(value, int):
+                rendered = str(value)
+            elif isinstance(value, float):
+                rendered = f"{value:.5g}"
+            else:
+                rendered = str(value)
+            parts.append(f"{key}={rendered}")
+        return f" ({', '.join(parts)})" if parts else ""

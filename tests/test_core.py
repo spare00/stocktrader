@@ -6986,6 +6986,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "EMA fast breakdown")
 
+    def test_steady_intraday_reject_log_includes_context(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["F"],
+            strategy_names=["steady_intraday"],
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("F")
+        state.last_event_ms = market_ms(2026, 5, 22, 10, 0)
+
+        with self.assertLogs("strategies.steady_intraday", level="DEBUG") as captured:
+            strategy._reject(
+                state,
+                "trigger",
+                "no pullback reclaim or ORB continuation",
+                volume_ratio=1.1,
+                min_volume_ratio=1.15,
+                reclaimed_fast=False,
+            )
+
+        message = captured.output[0]
+        self.assertIn("No steady_intraday entry F [trigger]", message)
+        self.assertIn("volume_ratio=1.1", message)
+        self.assertIn("min_volume_ratio=1.15", message)
+        self.assertIn("reclaimed_fast=false", message)
+
     def test_macd_volume_runner_does_not_take_same_tick_full_target_after_partial(self):
         settings = Settings(
             alpaca_api_key="test",
