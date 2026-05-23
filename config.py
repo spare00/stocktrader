@@ -282,6 +282,8 @@ class Settings:
     macd_early_max_vwap_extension_pct: float = 0.015
     macd_volume_impulse_runner_volume_ratio: float = 3.0
     macd_volume_impulse_runner_hist_norm: float = 0.0015
+    macd_volume_impulse_max_spread_bps: float = 30.0
+    macd_volume_impulse_size_multiplier: float = 0.5
     macd_skip_midday: bool = False
     macd_min_hold_seconds: int = 60
     macd_hist_rise_bars: int = 2

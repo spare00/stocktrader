@@ -5495,6 +5495,135 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(signal.runner_mode)
         self.assertIn("runner=volume", signal.reason)
 
+    def test_macd_volume_impulse_allows_wider_spread_with_smaller_size(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.35,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+            macd_early_max_spread_bps=12.0,
+            macd_early_min_volume_ratio=1.5,
+            macd_early_min_hist_norm=0.00001,
+            macd_volume_impulse_runner_volume_ratio=3.0,
+            macd_volume_impulse_runner_hist_norm=0.0015,
+            macd_volume_impulse_max_spread_bps=30.0,
+            macd_volume_impulse_size_multiplier=0.5,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 11, 9, 30)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.10,
+                low=101.80,
+                close=102.04,
+                volume=5_000,
+                vwap=101.86,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(Quote("SMR", bid=101.78, ask=102.05, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms))
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.10, 0.16, 0.22, 0.30],
+                [0.08, 0.12, 0.16, 0.20],
+                [0.010, 0.040, 0.070, 0.180],
+            ),
+        ), patch.object(strategy, "_runner_mode", return_value=False):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertGreater(signal.spread_bps, settings.macd_early_max_spread_bps)
+        self.assertTrue(signal.runner_mode)
+        self.assertEqual(signal.position_size_multiplier, 0.5)
+        self.assertIn("spread=impulse_exception", signal.reason)
+
+    def test_macd_volume_impulse_still_rejects_extreme_spread(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["SMR"],
+            macd_hist_threshold=0.00001,
+            macd_volume_ratio=1.35,
+            macd_chop_range_pct=0.0001,
+            macd_macd_warmup_bars=25,
+            macd_early_max_spread_bps=12.0,
+            macd_early_min_volume_ratio=1.5,
+            macd_early_min_hist_norm=0.00001,
+            macd_volume_impulse_runner_volume_ratio=3.0,
+            macd_volume_impulse_runner_hist_norm=0.0015,
+            macd_volume_impulse_max_spread_bps=30.0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 11, 9, 30)
+        for index in range(24):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=1_000,
+                    vwap=close - 0.15,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+        state.add_bar(
+            Bar(
+                "SMR",
+                open=101.84,
+                high=102.10,
+                low=101.80,
+                close=102.04,
+                volume=5_000,
+                vwap=101.86,
+                start_ms=base_ms + 24 * 60_000,
+                end_ms=base_ms + 25 * 60_000,
+            )
+        )
+        state.update_quote(Quote("SMR", bid=101.30, ask=102.05, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms))
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [0.10, 0.16, 0.22, 0.30],
+                [0.08, 0.12, 0.16, 0.20],
+                [0.010, 0.040, 0.070, 0.180],
+            ),
+        ), patch.object(strategy, "_runner_mode", return_value=False):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_macd_runner_mode_holds_through_small_early_pullback(self):
         settings = Settings(
             alpaca_api_key="test",

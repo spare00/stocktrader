@@ -106,6 +106,8 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_early_max_vwap_extension_pct", "MACD_EARLY_MAX_VWAP_EXTENSION_PCT", float_env, 0.015),
         ("macd_volume_impulse_runner_volume_ratio", "MACD_VOLUME_IMPULSE_RUNNER_VOLUME_RATIO", float_env, 3.0),
         ("macd_volume_impulse_runner_hist_norm", "MACD_VOLUME_IMPULSE_RUNNER_HIST_NORM", float_env, 0.0015),
+        ("macd_volume_impulse_max_spread_bps", "MACD_VOLUME_IMPULSE_MAX_SPREAD_BPS", float_env, 30.0),
+        ("macd_volume_impulse_size_multiplier", "MACD_VOLUME_IMPULSE_SIZE_MULTIPLIER", float_env, 0.5),
         ("macd_skip_midday", "MACD_SKIP_MIDDAY", bool_env, False),
         ("macd_min_hold_seconds", "MACD_MIN_HOLD_SECONDS", int_env, 60),
         ("macd_hist_rise_bars", "MACD_HIST_RISE_BARS", int_env, 2),
@@ -206,6 +208,8 @@ class MACDEarlyImpulseStrategy(Strategy):
             "early_max_vwap_extension_pct": s.macd_early_max_vwap_extension_pct,
             "volume_impulse_runner_volume_ratio": s.macd_volume_impulse_runner_volume_ratio,
             "volume_impulse_runner_hist_norm": s.macd_volume_impulse_runner_hist_norm,
+            "volume_impulse_max_spread_bps": s.macd_volume_impulse_max_spread_bps,
+            "volume_impulse_size_multiplier": s.macd_volume_impulse_size_multiplier,
             "skip_midday": s.macd_skip_midday,
             "min_hold_seconds": s.macd_min_hold_seconds,
             "hist_rise_bars": s.macd_hist_rise_bars,
@@ -307,8 +311,6 @@ class MACDEarlyImpulseStrategy(Strategy):
         max_spread_bps = self.settings.macd_max_spread_bps
         if early_window:
             max_spread_bps = min(max_spread_bps, self.settings.macd_early_max_spread_bps)
-        if last.spread_bps > max_spread_bps:
-            return self._reject(state, "spread", f"spread {last.spread_bps:.2f}bps too wide")
 
         rb = self._regular_bars(state)
         if len(rb) < _MIN_REGULAR_BARS:
@@ -429,6 +431,20 @@ class MACDEarlyImpulseStrategy(Strategy):
             and vwap is not None
             and last.ask >= vwap
         )
+        spread_exception = False
+        if last.spread_bps > max_spread_bps:
+            impulse_max_spread_bps = max(max_spread_bps, self.settings.macd_volume_impulse_max_spread_bps)
+            if volume_impulse_runner and last.spread_bps <= impulse_max_spread_bps:
+                spread_exception = True
+            else:
+                return self._reject(
+                    state,
+                    "spread",
+                    (
+                        f"spread {last.spread_bps:.2f}bps too wide "
+                        f"max={max_spread_bps:.2f} impulse_max={impulse_max_spread_bps:.2f}"
+                    ),
+                )
 
         min_volume_ratio = self.settings.macd_volume_ratio
         if runner_mode:
@@ -538,6 +554,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         if not regime_reason and neutral_hardening > 0:
             regime_reason = f" regime=neutral_hardened:{neutral_hardening:.2f}"
         runner_reason = " runner=volume" if volume_impulse_runner else ""
+        spread_reason = " spread=impulse_exception" if spread_exception else ""
+        size_multiplier = 1.0
+        if spread_exception:
+            size_multiplier = min(1.0, max(0.0, self.settings.macd_volume_impulse_size_multiplier))
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -547,8 +567,9 @@ class MACDEarlyImpulseStrategy(Strategy):
             change_pct=change_pct,
             volume_ratio=vol_r,
             spread_bps=spread_bps,
-            reason=f"macd early impulse entry | R {r_pct:.2%}{regime_reason}{runner_reason}",
+            reason=f"macd early impulse entry | R {r_pct:.2%}{regime_reason}{runner_reason}{spread_reason}",
             stop_price=stop_price,
+            position_size_multiplier=size_multiplier,
             runner_mode=runner_mode or volume_impulse_runner,
         )
 
