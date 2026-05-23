@@ -6169,6 +6169,38 @@ class CoreTradingTests(unittest.TestCase):
         get_between.assert_called_once()
         get_recent.assert_called_once()
 
+    def test_indicator_preload_uses_replay_event_time_for_session_backfill(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_data_base_url="http://127.0.0.1:19902",
+            replay_market_data=True,
+            indicator_preload_bars=1000,
+        )
+        states = {"F": SymbolState("F")}
+        event_bar = bar("F", close=13.72, volume=100_000, end_ms=market_ms(2026, 5, 22, 9, 35))
+        premarket_bar = bar("F", close=13.66, volume=90_000, end_ms=market_ms(2026, 5, 22, 9, 20))
+        states["F"].add_bar(event_bar)
+
+        with (
+            patch("main.datetime") as main_datetime,
+            patch("main.make_clients", return_value=object()),
+            patch("main.get_bars_between", return_value={"F": [premarket_bar]}) as get_between,
+            patch("main.get_recent_bars", return_value={"F": []}),
+        ):
+            main_datetime.fromtimestamp.side_effect = datetime.fromtimestamp
+            main_datetime.combine.side_effect = datetime.combine
+            main_datetime.now.return_value = datetime(2026, 5, 23, 15, 30, tzinfo=MARKET_TZ)
+            counts = trading_main.preload_indicator_bars_for_states(settings, states)
+
+        self.assertEqual(counts, {"F": 1})
+        self.assertEqual(list(states["F"].bars), [premarket_bar, event_bar])
+        start = get_between.call_args.args[3]
+        end = get_between.call_args.args[4]
+        self.assertEqual(start.date().isoformat(), "2026-05-22")
+        self.assertEqual(start.hour, 4)
+        self.assertEqual(end, datetime.fromtimestamp(event_bar.end_ms / 1000, tz=MARKET_TZ))
+
     def test_news_dynamic_symbols_only_expand_during_regular_market(self):
         open_event = NewsEvent(
             symbols=("MCHP",),

@@ -381,6 +381,14 @@ def _required_preload_bars_for_settings(settings: Settings, limit: int) -> int:
     return min(limit, required) if required > 0 else 0
 
 
+def _indicator_preload_end_time(settings: Settings, states: dict[str, SymbolState]) -> datetime:
+    if settings.replay_market_data:
+        latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
+        if latest_event_ms > 0:
+            return datetime.fromtimestamp(latest_event_ms / 1000, tz=MARKET_TZ)
+    return datetime.now(tz=MARKET_TZ)
+
+
 def preload_indicator_bars_for_states(settings: Settings, states: dict[str, SymbolState]) -> dict[str, int]:
     """Append recent minute bars into each symbol state for continuous indicator warmup."""
     counts: dict[str, int] = {symbol: 0 for symbol in states}
@@ -401,7 +409,7 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
     bars_map: dict[str, list[Bar]] = {symbol: [] for symbol in symbols}
     try:
         clients = make_clients(settings)
-        now = datetime.now(tz=MARKET_TZ)
+        now = _indicator_preload_end_time(settings, states)
         max_calendar_days = 1 if settings.replay_market_data and replay_data_base_url else 10
         bars_map = _fetch_indicator_backfill_sessions(
             clients,
@@ -428,6 +436,8 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
 
     for symbol in symbols:
         state = states[symbol]
+        original_event_kind = state.last_event_kind
+        original_event_ms = state.last_event_ms
         seen = {bar.start_ms for bar in state.bars}
         for bar in bars_map.get(symbol, []):
             if bar.start_ms in seen:
@@ -435,6 +445,13 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
             state.add_bar(bar)
             seen.add(bar.start_ms)
             counts[symbol] += 1
+        if counts[symbol]:
+            ordered_bars = sorted(state.bars, key=lambda item: item.start_ms)
+            state.bars.clear()
+            state.bars.extend(ordered_bars)
+            if original_event_ms is not None:
+                state.last_event_kind = original_event_kind
+                state.last_event_ms = original_event_ms
         if counts[symbol]:
             logging.info("Loaded %s historical bars for %s", counts[symbol], symbol)
         loaded_unique_bars = len({bar.start_ms for bar in state.bars})
