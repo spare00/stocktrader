@@ -131,11 +131,15 @@ class SteadyIntradayStrategy(Strategy):
             return self._reject(state, "eod", "entry disabled near close")
 
         bars = self._regular_bars(state)
+        session_bars = self._current_regular_session_bars(state)
+        if len(session_bars) < 2:
+            return self._reject(state, "history", "insufficient current-session bars")
+
         min_bars = max(self.settings.steady_intraday_min_bars, self.settings.steady_intraday_ema_slow + 5)
         if len(bars) < min_bars:
             return self._reject(state, "history", "insufficient regular-session bars")
 
-        latest = bars[-1]
+        latest = session_bars[-1]
         entry = latest.close
         if entry < self.settings.steady_intraday_min_price:
             return self._reject(state, "price", "price below minimum")
@@ -152,8 +156,8 @@ class SteadyIntradayStrategy(Strategy):
         if None in {ema_fast, ema_mid, ema_slow, prev_ema_mid}:
             return self._reject(state, "history", "insufficient EMA history")
 
-        session_vwap = self._session_vwap(bars)
-        prev_vwap = self._session_vwap(bars[:-5])
+        session_vwap = self._session_vwap(session_bars)
+        prev_vwap = self._session_vwap(session_bars[:-5])
         if session_vwap is None or prev_vwap is None:
             return self._reject(state, "vwap", "missing session VWAP")
 
@@ -166,7 +170,7 @@ class SteadyIntradayStrategy(Strategy):
         if atr_pct > self.settings.steady_intraday_max_atr_pct:
             return self._reject(state, "atr", "ATR too high")
 
-        recent_range_pct = self._range_pct(bars[-20:])
+        recent_range_pct = self._range_pct(session_bars[-20:])
         if recent_range_pct < self.settings.steady_intraday_min_range_pct:
             return self._reject(state, "range", "recent range too compressed")
 
@@ -187,11 +191,11 @@ class SteadyIntradayStrategy(Strategy):
             return self._reject(state, "extension", "too extended from EMA20")
 
         volume_ratio = self._volume_ratio(bars)
-        trigger = self._entry_trigger(bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
+        trigger = self._entry_trigger(session_bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
         if trigger is None:
             return self._reject(state, "trigger", "no pullback reclaim or ORB continuation")
 
-        stop_price = self._stop_price(bars, entry, ema_mid, session_vwap, atr)
+        stop_price = self._stop_price(session_bars, entry, ema_mid, session_vwap, atr)
         r_pct = (entry - stop_price) / entry if entry > 0 else 0.0
         if r_pct < self.settings.steady_intraday_min_r_pct:
             return self._reject(state, "risk", "R too small")
@@ -208,13 +212,13 @@ class SteadyIntradayStrategy(Strategy):
             side="BUY",
             price=entry,
             timestamp_ms=latest.end_ms,
-            change_pct=(entry - bars[0].open) / bars[0].open if bars[0].open else 0.0,
+            change_pct=(entry - session_bars[0].open) / session_bars[0].open if session_bars[0].open else 0.0,
             volume_ratio=volume_ratio,
             spread_bps=spread_bps,
             reason=reason,
             stop_price=stop_price,
-            session_open_price=bars[0].open,
-            entry_open_pct=(entry - bars[0].open) / bars[0].open if bars[0].open else None,
+            session_open_price=session_bars[0].open,
+            entry_open_pct=(entry - session_bars[0].open) / session_bars[0].open if session_bars[0].open else None,
             position_size_multiplier=self.settings.steady_intraday_position_size_multiplier,
         )
 
@@ -253,15 +257,16 @@ class SteadyIntradayStrategy(Strategy):
                 return ExitDecision("runner pullback")
 
         bars = self._regular_bars(state)
-        if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2):
+        session_bars = self._current_regular_session_bars(state)
+        if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2) and len(session_bars) >= 1:
             closes = [bar.close for bar in bars]
             ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
-            session_vwap = self._session_vwap(bars)
+            session_vwap = self._session_vwap(session_bars)
             breakdown_bars = max(1, self.settings.steady_intraday_breakdown_bars)
             if (
                 age_seconds >= self.settings.steady_intraday_breakdown_min_hold_seconds
                 and ema_fast
-                and self._last_n_closes_below(bars, ema_fast, breakdown_bars)
+                and self._last_n_closes_below(session_bars, ema_fast, breakdown_bars)
             ):
                 return ExitDecision("EMA fast breakdown")
             if (
@@ -338,6 +343,24 @@ class SteadyIntradayStrategy(Strategy):
 
     def _regular_bars(self, state: SymbolState):
         return [bar for bar in state.bars if self._is_regular_bar(bar)]
+
+    def _current_regular_session_bars(self, state: SymbolState):
+        session_date = self._session_date(state)
+        if session_date is None:
+            return []
+        return [
+            bar
+            for bar in state.bars
+            if self._is_regular_bar(bar)
+            and datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz).date() == session_date
+        ]
+
+    def _session_date(self, state: SymbolState):
+        if state.last_event_ms is not None:
+            return datetime.fromtimestamp(state.last_event_ms / 1000, tz=self.market_tz).date()
+        if state.bars:
+            return datetime.fromtimestamp(state.bars[-1].start_ms / 1000, tz=self.market_tz).date()
+        return None
 
     def _is_regular_bar(self, bar) -> bool:
         current = datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz)

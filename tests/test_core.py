@@ -6734,6 +6734,72 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
+    def test_steady_intraday_uses_current_session_for_session_fields(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["F"],
+            strategy_names=["steady_intraday"],
+            steady_intraday_max_r_pct=0.05,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("F")
+        previous_start_ms = market_ms(2026, 5, 20, 9, 30)
+        for index in range(60):
+            close = 11.0 + index * 0.01
+            state.add_bar(
+                Bar(
+                    "F",
+                    open=close - 0.02,
+                    high=close + 0.04,
+                    low=close - 0.05,
+                    close=close,
+                    volume=90_000,
+                    vwap=close,
+                    start_ms=previous_start_ms + index * 60_000,
+                    end_ms=previous_start_ms + (index + 1) * 60_000,
+                )
+            )
+
+        current_start_ms = market_ms(2026, 5, 21, 9, 30)
+        for index in range(60):
+            if index < 15:
+                close = 13.00 + index * 0.02
+            elif index < 56:
+                close = 13.30 + (index - 15) * 0.01
+            elif index == 56:
+                close = 13.72
+            elif index == 57:
+                close = 13.66
+            elif index == 58:
+                close = 13.62
+            else:
+                close = 13.76
+            open_price = close - 0.04
+            state.add_bar(
+                Bar(
+                    "F",
+                    open=open_price,
+                    high=close + 0.04,
+                    low=open_price - 0.04,
+                    close=close,
+                    volume=100_000 if index < 59 else 180_000,
+                    vwap=close,
+                    start_ms=current_start_ms + index * 60_000,
+                    end_ms=current_start_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(Quote("F", 13.755, 13.765, 100, 100, current_start_ms + 60 * 60_000))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.session_open_price, state.bars[60].open)
+        self.assertAlmostEqual(signal.entry_open_pct, (signal.price - state.bars[60].open) / state.bars[60].open)
+        self.assertLess(signal.entry_open_pct, 0.08)
+
     def test_steady_intraday_vwap_hold_blocks_early_lost_vwap_exit(self):
         settings = Settings(
             alpaca_api_key="test",
