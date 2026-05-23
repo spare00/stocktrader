@@ -342,6 +342,7 @@ class Settings:
     stoch_macd_ao_slow_period: int = 34
     stoch_macd_ao_rise_bars: int = 2
     stoch_macd_ao_min_value: float = 0.0
+    stoch_macd_ao_near_zero_min_value: float = -0.01
     stoch_macd_atr_period: int = 14
     stoch_macd_min_atr_pct: float = 0.0015
     stoch_macd_max_atr_pct: float = 0.0300

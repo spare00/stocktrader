@@ -55,6 +55,7 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_ao_slow_period", "STOCH_MACD_AO_SLOW_PERIOD", int_env, 34),
         ("stoch_macd_ao_rise_bars", "STOCH_MACD_AO_RISE_BARS", int_env, 2),
         ("stoch_macd_ao_min_value", "STOCH_MACD_AO_MIN_VALUE", float_env, 0.0),
+        ("stoch_macd_ao_near_zero_min_value", "STOCH_MACD_AO_NEAR_ZERO_MIN_VALUE", float_env, -0.01),
         ("stoch_macd_atr_period", "STOCH_MACD_ATR_PERIOD", int_env, 14),
         ("stoch_macd_min_atr_pct", "STOCH_MACD_MIN_ATR_PCT", float_env, 0.0015),
         ("stoch_macd_max_atr_pct", "STOCH_MACD_MAX_ATR_PCT", float_env, 0.0300),
@@ -179,6 +180,7 @@ class StochMACDReversalStrategy(Strategy):
                 "slow_period": settings.stoch_macd_ao_slow_period,
                 "rise_bars": settings.stoch_macd_ao_rise_bars,
                 "min_value": settings.stoch_macd_ao_min_value,
+                "near_zero_min_value": settings.stoch_macd_ao_near_zero_min_value,
             },
             "atr_period": settings.stoch_macd_atr_period,
             "min_atr_pct": settings.stoch_macd_min_atr_pct,
@@ -862,14 +864,21 @@ class StochMACDReversalStrategy(Strategy):
             return "could not compute AO"
         min_value = self.settings.stoch_macd_ao_min_value
         ao_now = ao_values[-1]
-        if ao_now < min_value:
-            return f"AO too weak ao={ao_now:.4f} min={min_value:.4f}"
         rise_bars = max(0, self.settings.stoch_macd_ao_rise_bars)
         if rise_bars <= 0:
+            if ao_now < min_value:
+                return f"AO too weak ao={ao_now:.4f} min={min_value:.4f}"
             return ""
         if len(ao_values) < rise_bars + 1:
             return f"AO needs {rise_bars + 1} values, have {len(ao_values)}"
         ao_then = ao_values[-(rise_bars + 1)]
+        if ao_now < min_value:
+            near_zero_min = min(min_value, self.settings.stoch_macd_ao_near_zero_min_value)
+            if ao_now < near_zero_min or ao_now <= ao_then:
+                return (
+                    f"AO too weak ao={ao_now:.4f} min={min_value:.4f} "
+                    f"near_zero_min={near_zero_min:.4f} previous={ao_then:.4f}"
+                )
         if ao_now <= ao_then:
             return f"AO not improving ao={ao_now:.4f} previous={ao_then:.4f}"
         return ""
