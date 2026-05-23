@@ -190,7 +190,7 @@ class SteadyIntradayStrategy(Strategy):
         if ema_extension_pct > self.settings.steady_intraday_max_ema_extension_pct:
             return self._reject(state, "extension", "too extended from EMA20")
 
-        volume_ratio = self._volume_ratio(bars)
+        volume_ratio = self._volume_ratio(session_bars)
         trigger = self._entry_trigger(session_bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
         if trigger is None:
             return self._reject(state, "trigger", "no pullback reclaim or ORB continuation")

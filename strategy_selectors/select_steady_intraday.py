@@ -271,7 +271,7 @@ def score_steady_intraday_candidate(
     raw_atr = atr(ordered, settings.steady_intraday_atr_period) or 0.0
     atr_pct = raw_atr / price if price > 0 else 0.0
     recent_range_pct = range_pct(analysis_bars[-20:])
-    vol_ratio = volume_ratio(ordered)
+    vol_ratio = volume_ratio(analysis_bars)
     vwap = session_vwap(analysis_bars)
     vwap_distance_pct = (price - vwap) / vwap if vwap else None
     dollar_volume = sum(bar.close * bar.volume for bar in analysis_bars[-20:] if bar.close > 0 and bar.volume > 0)
