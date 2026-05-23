@@ -222,6 +222,18 @@ def regular_session_bars(bars: list[Bar]) -> list[Bar]:
     return regular
 
 
+def current_regular_session_bars(bars: list[Bar]) -> list[Bar]:
+    regular = regular_session_bars(bars)
+    if not regular:
+        return []
+    session_date = datetime.fromtimestamp(regular[-1].start_ms / 1000, tz=MARKET_TZ).date()
+    return [
+        bar
+        for bar in regular
+        if datetime.fromtimestamp(bar.start_ms / 1000, tz=MARKET_TZ).date() == session_date
+    ]
+
+
 def score_steady_intraday_candidate(
     symbol: str,
     bars: list[Bar],
@@ -235,12 +247,14 @@ def score_steady_intraday_candidate(
     min_dollar_volume: float,
 ) -> SteadyIntradayCandidate | None:
     ordered = sorted(bars, key=lambda item: item.start_ms)
+    analysis_bars = ordered
     if stage == "intraday":
         ordered = regular_session_bars(ordered)
-    if not ordered:
+        analysis_bars = current_regular_session_bars(ordered)
+    if not ordered or not analysis_bars:
         return None
 
-    price = latest_price(ordered, quote)
+    price = latest_price(analysis_bars, quote)
     if price <= 0:
         return None
 
@@ -255,20 +269,22 @@ def score_steady_intraday_candidate(
     spread_bps = valid_quote.spread_bps if valid_quote else None
     raw_atr = atr(ordered, settings.steady_intraday_atr_period) or 0.0
     atr_pct = raw_atr / price if price > 0 else 0.0
-    recent_range_pct = range_pct(ordered[-20:])
+    recent_range_pct = range_pct(analysis_bars[-20:])
     vol_ratio = volume_ratio(ordered)
-    vwap = session_vwap(ordered)
+    vwap = session_vwap(analysis_bars)
     vwap_distance_pct = (price - vwap) / vwap if vwap else None
-    dollar_volume = sum(bar.close * bar.volume for bar in ordered[-20:] if bar.close > 0 and bar.volume > 0)
-    last_close = ordered[-1].close
-    previous_close = ordered[-2].close if len(ordered) >= 2 else last_close
+    dollar_volume = sum(bar.close * bar.volume for bar in analysis_bars[-20:] if bar.close > 0 and bar.volume > 0)
+    last_close = analysis_bars[-1].close
+    previous_close = analysis_bars[-2].close if len(analysis_bars) >= 2 else last_close
     quote_gap_pct = (price - last_close) / last_close if stage == "daily" and last_close > 0 else 0.0
     daily_change_pct = (last_close - previous_close) / previous_close if previous_close > 0 else 0.0
-    daily_close_position = close_position_in_range(ordered[-1]) if stage == "daily" else 1.0
+    daily_close_position = close_position_in_range(analysis_bars[-1]) if stage == "daily" else 1.0
 
     quality_flags: list[str] = []
     if len(ordered) < required_intraday_bar_count(settings):
         quality_flags.append(f"bar_history {len(ordered)} < steady minimum")
+    if stage == "intraday" and len(analysis_bars) < 2:
+        quality_flags.append(f"current_session {len(analysis_bars)} < 2")
     if price < min_price or price > max_price:
         quality_flags.append(f"price {price:.2f} outside {min_price:.2f}-{max_price:.2f}")
     if spread_bps is None:
@@ -305,9 +321,9 @@ def score_steady_intraday_candidate(
 
     pullback_reclaim_ready = False
     orb_continuation_ready = False
-    if len(ordered) >= 2:
-        latest = ordered[-1]
-        previous = ordered[-2]
+    if len(analysis_bars) >= 2:
+        latest = analysis_bars[-1]
+        previous = analysis_bars[-2]
         bullish_close = latest.close > latest.open and close_near_high(latest)
         held_mid = latest.low >= min(mid, vwap or mid) * 0.997
         reclaimed_fast = previous.close <= fast * 1.002 and latest.close > max(previous.high, fast)
@@ -317,7 +333,7 @@ def score_steady_intraday_candidate(
             and bullish_close
             and vol_ratio >= settings.steady_intraday_min_volume_ratio
         )
-        opening_high = opening_range_high(ordered, settings.steady_intraday_orb_minutes)
+        opening_high = opening_range_high(analysis_bars, settings.steady_intraday_orb_minutes)
         orb_continuation_ready = (
             opening_high is not None
             and latest.close > opening_high
@@ -588,6 +604,24 @@ def get_today_minute_bars(
     return get_bars_between(clients, symbols, TimeFrame.Minute, start, now)
 
 
+def get_intraday_minute_bars(
+    settings: Settings,
+    symbols: list[str],
+    now: datetime | None = None,
+    warmup_days: int = 7,
+) -> dict[str, list[Bar]]:
+    from alpaca.data.timeframe import TimeFrame
+    from alpaca_client import get_bars_between, make_clients
+
+    now = now.astimezone(MARKET_TZ) if now else datetime.now(tz=MARKET_TZ)
+    market_open = datetime.combine(now.date(), MARKET_OPEN, tzinfo=MARKET_TZ)
+    if now < market_open:
+        return {symbol: [] for symbol in symbols}
+    start = now - timedelta(days=max(1, warmup_days))
+    clients = make_clients(settings)
+    return get_bars_between(clients, symbols, TimeFrame.Minute, start, now)
+
+
 def get_recent_daily_bars(settings: Settings, symbols: list[str], lookback_days: int) -> dict[str, list[Bar]]:
     from alpaca.data.timeframe import TimeFrame
     from alpaca_client import get_bars_between, make_clients
@@ -641,11 +675,12 @@ def main(argv: list[str] | None = None) -> dict:
     bars_by_symbol: dict[str, list[Bar]] = {}
 
     if not args.force_daily:
-        intraday = get_today_minute_bars(settings, symbols)
+        intraday = get_intraday_minute_bars(settings, symbols)
         intraday_ready = {
             symbol: bars
             for symbol, bars in intraday.items()
             if len(regular_session_bars(bars)) >= required_intraday_bar_count(settings)
+            and len(current_regular_session_bars(bars)) >= 2
         }
         if intraday_ready:
             stage = "intraday"

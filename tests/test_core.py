@@ -1523,6 +1523,68 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(select_steady_intraday.required_intraday_bar_count(settings), 55)
 
+    def test_steady_intraday_selector_uses_warmup_bars_with_current_session_fields(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            steady_intraday_min_bars=55,
+            steady_intraday_ema_slow=50,
+        )
+        bars = []
+        previous_start_ms = market_ms(2026, 5, 20, 9, 30)
+        for index in range(55):
+            close = 20.0 + index * 0.02
+            bars.append(
+                Bar(
+                    "F",
+                    open=close - 0.02,
+                    high=close + 0.04,
+                    low=close - 0.04,
+                    close=close,
+                    volume=90_000,
+                    vwap=close,
+                    start_ms=previous_start_ms + index * 60_000,
+                    end_ms=previous_start_ms + (index + 1) * 60_000,
+                )
+            )
+        current_start_ms = market_ms(2026, 5, 21, 9, 30)
+        for index, close in enumerate([30.0, 30.30, 30.70]):
+            bars.append(
+                Bar(
+                    "F",
+                    open=close - 0.05,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=150_000,
+                    vwap=close,
+                    start_ms=current_start_ms + index * 60_000,
+                    end_ms=current_start_ms + (index + 1) * 60_000,
+                )
+            )
+
+        candidate = select_steady_intraday.score_steady_intraday_candidate(
+            "F",
+            bars,
+            Quote("F", 30.69, 30.71, 100, 100, current_start_ms + 3 * 60_000),
+            settings,
+            stage="intraday",
+            min_price=5.0,
+            max_price=100.0,
+            max_spread_bps=20.0,
+            min_dollar_volume=1.0,
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertFalse(any(flag.startswith("bar_history") for flag in candidate.quality_flags))
+        self.assertEqual(candidate.price, 30.7)
+        self.assertGreater(candidate.vwap_distance_pct, 0)
+        self.assertAlmostEqual(
+            candidate.dollar_volume,
+            sum(bar.close * bar.volume for bar in bars[-3:]),
+            places=2,
+        )
+
     def test_steady_intraday_ai_selection_is_bounded_to_ranked_candidates(self):
         ranked = [
             {"symbol": "NVDA", "score": 5.0, "selection_stage": "intraday"},
