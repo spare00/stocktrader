@@ -1519,9 +1519,11 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             steady_intraday_min_bars=55,
             steady_intraday_ema_slow=50,
+            steady_intraday_start_minute=30,
         )
 
         self.assertEqual(select_steady_intraday.required_intraday_bar_count(settings), 55)
+        self.assertEqual(select_steady_intraday.required_current_session_bar_count(settings), 30)
 
     def test_steady_intraday_selector_uses_warmup_bars_with_current_session_fields(self):
         settings = Settings(
@@ -1529,6 +1531,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             steady_intraday_min_bars=55,
             steady_intraday_ema_slow=50,
+            steady_intraday_start_minute=30,
         )
         bars = []
         previous_start_ms = market_ms(2026, 5, 20, 9, 30)
@@ -1548,7 +1551,8 @@ class CoreTradingTests(unittest.TestCase):
                 )
             )
         current_start_ms = market_ms(2026, 5, 21, 9, 30)
-        for index, close in enumerate([30.0, 30.30, 30.70]):
+        current_closes = [30.0 + index * 0.02 for index in range(27)] + [30.70, 30.60, 30.90]
+        for index, close in enumerate(current_closes):
             bars.append(
                 Bar(
                     "F",
@@ -1577,11 +1581,12 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(candidate)
         self.assertFalse(any(flag.startswith("bar_history") for flag in candidate.quality_flags))
+        self.assertFalse(any(flag.startswith("current_session") for flag in candidate.quality_flags))
         self.assertEqual(candidate.price, 30.7)
         self.assertGreater(candidate.vwap_distance_pct, 0)
         self.assertAlmostEqual(
             candidate.dollar_volume,
-            sum(bar.close * bar.volume for bar in bars[-3:]),
+            sum(bar.close * bar.volume for bar in bars[-20:]),
             places=2,
         )
 

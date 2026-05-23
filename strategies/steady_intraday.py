@@ -22,7 +22,7 @@ class SteadyIntradayStrategy(Strategy):
 
     name = "steady_intraday"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
-        ("steady_intraday_start_minute", "STEADY_INTRADAY_START_MINUTE", int_env, 15),
+        ("steady_intraday_start_minute", "STEADY_INTRADAY_START_MINUTE", int_env, 30),
         ("steady_intraday_end_minute", "STEADY_INTRADAY_END_MINUTE", int_env, 330),
         ("steady_intraday_min_bars", "STEADY_INTRADAY_MIN_BARS", int_env, 55),
         ("steady_intraday_orb_minutes", "STEADY_INTRADAY_ORB_MINUTES", int_env, 15),

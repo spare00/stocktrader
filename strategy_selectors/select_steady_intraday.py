@@ -171,6 +171,7 @@ def steady_min_range_pct(settings: Settings, stage: str) -> float:
 def is_selectable_candidate(candidate: SteadyIntradayCandidate) -> bool:
     blocking_prefixes = (
         "bar_history",
+        "current_session",
         "price ",
         "spread ",
         "dollar_volume ",
@@ -283,8 +284,10 @@ def score_steady_intraday_candidate(
     quality_flags: list[str] = []
     if len(ordered) < required_intraday_bar_count(settings):
         quality_flags.append(f"bar_history {len(ordered)} < steady minimum")
-    if stage == "intraday" and len(analysis_bars) < 2:
-        quality_flags.append(f"current_session {len(analysis_bars)} < 2")
+    if stage == "intraday" and len(analysis_bars) < required_current_session_bar_count(settings):
+        quality_flags.append(
+            f"current_session {len(analysis_bars)} < {required_current_session_bar_count(settings)}"
+        )
     if price < min_price or price > max_price:
         quality_flags.append(f"price {price:.2f} outside {min_price:.2f}-{max_price:.2f}")
     if spread_bps is None:
@@ -452,6 +455,10 @@ def rank_candidates(
 
 def required_intraday_bar_count(settings: Settings) -> int:
     return max(settings.steady_intraday_min_bars, settings.steady_intraday_ema_slow + 5)
+
+
+def required_current_session_bar_count(settings: Settings) -> int:
+    return max(2, settings.steady_intraday_start_minute)
 
 
 def deterministic_plan(candidates: list[SteadyIntradayCandidate], top: int) -> dict:
@@ -680,7 +687,7 @@ def main(argv: list[str] | None = None) -> dict:
             symbol: bars
             for symbol, bars in intraday.items()
             if len(regular_session_bars(bars)) >= required_intraday_bar_count(settings)
-            and len(current_regular_session_bars(bars)) >= 2
+            and len(current_regular_session_bars(bars)) >= required_current_session_bar_count(settings)
         }
         if intraday_ready:
             stage = "intraday"

@@ -210,7 +210,7 @@ class Settings:
     maha7_momentum_green_bars: int = 2
     maha7_disable_ma7_exit: bool = False
 
-    steady_intraday_start_minute: int = 15
+    steady_intraday_start_minute: int = 30
     steady_intraday_end_minute: int = 330
     steady_intraday_min_bars: int = 55
     steady_intraday_orb_minutes: int = 15
