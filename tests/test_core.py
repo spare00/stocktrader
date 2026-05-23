@@ -6986,6 +6986,71 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "EMA fast breakdown")
 
+    def test_steady_intraday_runner_atr_multiple_can_widen_pullback_exit(self):
+        state = SymbolState("QBTS")
+        start_ms = market_ms(2026, 5, 22, 10, 0)
+        for index in range(20):
+            close = 100.0 + index * 0.02
+            state.add_bar(
+                Bar(
+                    "QBTS",
+                    open=close - 0.10,
+                    high=close + 1.00,
+                    low=close - 1.00,
+                    close=close,
+                    volume=100_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        event_ms = state.bars[-1].end_ms + 60_000
+        state.update_quote(Quote("QBTS", 99.99, 100.01, 100, 100, event_ms))
+        position = Position(
+            "QBTS",
+            "steady_intraday",
+            10,
+            100.0,
+            start_ms,
+            102.0,
+            99.0,
+            99.0,
+            max_price=101.0,
+            partial_exit_taken=True,
+        )
+
+        fixed_strategy = SteadyIntradayStrategy(
+            Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["QBTS"],
+                strategy_names=["steady_intraday"],
+                steady_intraday_min_hold_seconds=0,
+                steady_intraday_lost_vwap_min_hold_seconds=999_999,
+                steady_intraday_runner_pullback_pct=0.009,
+                steady_intraday_runner_atr_multiple=0.0,
+            )
+        )
+        atr_strategy = SteadyIntradayStrategy(
+            Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["QBTS"],
+                strategy_names=["steady_intraday"],
+                steady_intraday_min_hold_seconds=0,
+                steady_intraday_lost_vwap_min_hold_seconds=999_999,
+                steady_intraday_runner_pullback_pct=0.009,
+                steady_intraday_runner_atr_multiple=1.0,
+            )
+        )
+
+        fixed_decision = fixed_strategy.should_exit(state, position)
+        atr_decision = atr_strategy.should_exit(state, position)
+
+        self.assertIsNotNone(fixed_decision)
+        self.assertEqual(fixed_decision.reason, "runner pullback")
+        self.assertIsNone(atr_decision)
+
     def test_steady_intraday_reject_log_includes_context(self):
         settings = Settings(
             alpaca_api_key="test",

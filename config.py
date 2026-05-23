@@ -236,6 +236,7 @@ class Settings:
     steady_intraday_partial_size: float = 0.5
     steady_intraday_target_r: float = 2.0
     steady_intraday_runner_pullback_pct: float = 0.009
+    steady_intraday_runner_atr_multiple: float = 0.0
     steady_intraday_min_hold_seconds: int = 30
     steady_intraday_breakdown_bars: int = 2
     steady_intraday_breakdown_min_hold_seconds: int = 900

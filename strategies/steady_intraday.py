@@ -48,6 +48,7 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_partial_size", "STEADY_INTRADAY_PARTIAL_SIZE", float_env, 0.5),
         ("steady_intraday_target_r", "STEADY_INTRADAY_TARGET_R", float_env, 2.0),
         ("steady_intraday_runner_pullback_pct", "STEADY_INTRADAY_RUNNER_PULLBACK_PCT", float_env, 0.009),
+        ("steady_intraday_runner_atr_multiple", "STEADY_INTRADAY_RUNNER_ATR_MULTIPLE", float_env, 0.0),
         ("steady_intraday_min_hold_seconds", "STEADY_INTRADAY_MIN_HOLD_SECONDS", int_env, 30),
         ("steady_intraday_breakdown_bars", "STEADY_INTRADAY_BREAKDOWN_BARS", int_env, 2),
         (
@@ -107,6 +108,7 @@ class SteadyIntradayStrategy(Strategy):
             "partial_r": settings.steady_intraday_partial_r,
             "target_r": settings.steady_intraday_target_r,
             "runner_pullback_pct": settings.steady_intraday_runner_pullback_pct,
+            "runner_atr_multiple": settings.steady_intraday_runner_atr_multiple,
             "min_hold_seconds": settings.steady_intraday_min_hold_seconds,
             "breakdown_min_hold_seconds": settings.steady_intraday_breakdown_min_hold_seconds,
             "lost_vwap_min_hold_seconds": settings.steady_intraday_lost_vwap_min_hold_seconds,
@@ -361,13 +363,14 @@ class SteadyIntradayStrategy(Strategy):
         if age_seconds < self.settings.steady_intraday_min_hold_seconds:
             return None
 
-        if position.partial_exit_taken:
-            peak = position.max_price if position.max_price > 0 else position.entry_price
-            if peak > 0 and price <= peak * (1 - self.settings.steady_intraday_runner_pullback_pct):
-                return ExitDecision("runner pullback")
-
         bars = self._regular_bars(state)
         session_bars = self._current_regular_session_bars(state)
+        if position.partial_exit_taken:
+            peak = position.max_price if position.max_price > 0 else position.entry_price
+            runner_pullback_pct = self._runner_pullback_pct(bars, peak)
+            if peak > 0 and price <= peak * (1 - runner_pullback_pct):
+                return ExitDecision("runner pullback")
+
         if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2) and len(session_bars) >= 1:
             closes = [bar.close for bar in bars]
             ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
@@ -479,6 +482,16 @@ class SteadyIntradayStrategy(Strategy):
         atr_stop = entry - atr * self.settings.steady_intraday_stop_atr_multiple
         raw_stop = min(structure_stop, atr_stop)
         return raw_stop * (1 - self.settings.steady_intraday_stop_buffer_pct)
+
+    def _runner_pullback_pct(self, bars, peak: float) -> float:
+        fixed = self.settings.steady_intraday_runner_pullback_pct
+        atr_multiple = self.settings.steady_intraday_runner_atr_multiple
+        if atr_multiple <= 0 or peak <= 0:
+            return fixed
+        atr = self._atr(bars, self.settings.steady_intraday_atr_period)
+        if atr is None or atr <= 0:
+            return fixed
+        return max(fixed, (atr / peak) * atr_multiple)
 
     def _regular_bars(self, state: SymbolState):
         return [bar for bar in state.bars if self._is_regular_bar(bar)]
