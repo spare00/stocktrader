@@ -582,7 +582,7 @@ class StochMACDReversalStrategy(Strategy):
                 shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
                 return ExitDecision(f"partial {self.settings.stoch_macd_partial_r:.1f}R", shares=shares, mark_partial=True)
 
-        if pnl_pct >= self.settings.stoch_macd_target_profit_pct:
+        if not position.partial_exit_taken and pnl_pct >= self.settings.stoch_macd_target_profit_pct:
             return ExitDecision("target profit")
         if position.partial_exit_taken:
             peak = position.max_price if position.max_price > 0 else position.entry_price

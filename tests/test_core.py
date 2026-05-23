@@ -8869,6 +8869,28 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "runner pullback")
 
+    def test_stoch_macd_reversal_runner_ignores_fixed_profit_target(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_target_profit_pct=0.012)
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state([100.0 + index * 0.2 for index in range(40)])
+        state.update_quote(Quote("AAPL", 102.00, 102.02, 100, 100, state.last_event_ms or 0))
+        position = Position(
+            symbol="AAPL",
+            strategy="stoch_macd_reversal",
+            shares=5,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.2,
+            stop_price=99.55,
+            initial_stop_price=99.55,
+            max_price=102.02,
+            partial_exit_taken=True,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
     @staticmethod
     def _maha7_selector_bars(symbol: str, base: float, start_ms: int, final_pullback: bool, volume: float) -> list[Bar]:
         closes = [base + index * 0.35 for index in range(24)]
