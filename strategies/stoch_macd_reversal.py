@@ -137,12 +137,6 @@ class StochMACDReversalStrategy(Strategy):
             float_env,
             0.0045,
         ),
-        (
-            "stoch_macd_respect_consecutive_loss_limits",
-            "STOCH_MACD_RESPECT_CONSECUTIVE_LOSS_LIMITS",
-            bool_env,
-            False,
-        ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.stoch_macd_reversal",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12"
@@ -234,7 +228,6 @@ class StochMACDReversalStrategy(Strategy):
                 "max_k": settings.stoch_macd_reentry_max_k,
                 "max_support_extension_pct": settings.stoch_macd_reentry_max_support_extension_pct,
             },
-            "respect_consecutive_loss_limits": settings.stoch_macd_respect_consecutive_loss_limits,
         }
 
     def __init__(self, settings: Settings):

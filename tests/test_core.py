@@ -7522,23 +7522,24 @@ class CoreTradingTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "consecutive loss day stop active")
 
-    def test_stoch_macd_can_ignore_consecutive_loss_day_stop(self):
+    def test_stoch_macd_uses_strategy_consecutive_loss_stop_count(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
             symbols=["AAPL"],
             regular_market_only=False,
             daily_max_loss=10_000.0,
+            consecutive_loss_pause_count=99,
             consecutive_loss_stop_count=5,
-            stoch_macd_respect_consecutive_loss_limits=False,
+            stoch_macd_consecutive_loss_stop_count=6,
         )
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
         for index in range(5):
-            risk.record_exit(-1.0, base_ms + index * 60_000, "AAPL", "opening_impulse")
+            risk.record_exit(-1.0, base_ms + index * 60_000, "AAPL", "stoch_macd_reversal")
         signal = Signal(
             strategy="stoch_macd_reversal",
-            symbol="AAPL",
+            symbol="MSFT",
             side="BUY",
             price=100.0,
             timestamp_ms=base_ms + 6 * 60_000,
@@ -7551,6 +7552,12 @@ class CoreTradingTests(unittest.TestCase):
         decision = risk.check_entry(signal, set(), 0)
 
         self.assertTrue(decision.allowed)
+
+        risk.record_exit(-1.0, base_ms + 6 * 60_000, "AAPL", "stoch_macd_reversal")
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "consecutive loss day stop active")
 
     def test_consecutive_loss_day_stop_is_strategy_scoped(self):
         settings = Settings(
