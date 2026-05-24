@@ -529,17 +529,36 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
             "max_open_positions": settings.max_open_positions,
             "trade_cooldown_seconds": settings.trade_cooldown_seconds,
             "strategy_overrides": {
+                "opening_impulse": {
+                    "max_open_positions": settings.opening_impulse_max_open_positions,
+                    "max_position_value": settings.opening_impulse_max_position_value,
+                },
+                "gap_and_go": {
+                    "max_open_positions": settings.gap_and_go_max_open_positions,
+                    "max_position_value": settings.gap_and_go_max_position_value,
+                },
+                "spike": {
+                    "max_open_positions": settings.spike_max_open_positions,
+                    "max_position_value": settings.spike_max_position_value,
+                },
                 "stoch_macd_reversal": {
                     "max_open_positions": settings.stoch_macd_max_open_positions,
+                    "max_position_value": settings.stoch_macd_max_position_value,
                     "trade_cooldown_seconds": settings.stoch_macd_trade_cooldown_seconds,
                 },
                 "macd_early_impulse": {
                     "max_open_positions": settings.macd_max_open_positions,
+                    "max_position_value": settings.macd_max_position_value,
                     "trade_cooldown_seconds": settings.macd_trade_cooldown_seconds,
                 },
                 "steady_intraday": {
                     "max_open_positions": settings.steady_intraday_max_open_positions,
+                    "max_position_value": settings.steady_intraday_max_position_value,
                     "trade_cooldown_seconds": settings.steady_intraday_trade_cooldown_seconds,
+                },
+                "maha7": {
+                    "max_open_positions": settings.maha7_max_open_positions,
+                    "max_position_value": settings.maha7_max_position_value,
                 },
             },
             "daily_max_loss": settings.daily_max_loss,

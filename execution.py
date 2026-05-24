@@ -89,8 +89,15 @@ class PositionTracker:
             counts[strategy] = counts.get(strategy, 0) + 1
         return counts
 
-    def planned_shares(self, price: float, stop_price: float | None = None, size_multiplier: float = 1.0) -> int:
-        budget = min(self.settings.max_position_value, self.cash)
+    def planned_shares(
+        self,
+        price: float,
+        stop_price: float | None = None,
+        size_multiplier: float = 1.0,
+        strategy: str = "",
+    ) -> int:
+        max_position_value = self._max_position_value_for_strategy(strategy)
+        budget = min(max_position_value, self.cash)
         budget *= max(0.0, size_multiplier)
         if self.settings.position_sizing_mode == "risk":
             stop_distance = price - stop_price if stop_price is not None else price * self.settings.stop_loss_pct
@@ -98,6 +105,18 @@ class PositionTracker:
                 risk_budget = max(0.0, self.cash * self.settings.risk_per_trade_pct)
                 budget = min(budget, risk_budget / stop_distance * price)
         return int(budget // price)
+
+    def _max_position_value_for_strategy(self, strategy: str) -> float:
+        value = float(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_max_position_value", 0.0) or 0.0)
+        return value if value > 0 else self.settings.max_position_value
+
+    @staticmethod
+    def _compact_settings_prefix(strategy: str) -> str:
+        if strategy == "stoch_macd_reversal":
+            return "stoch_macd"
+        if strategy == "macd_early_impulse":
+            return "macd"
+        return strategy
 
     def total_pnl(self, mark_prices: dict[str, float]) -> float:
         unrealized = 0.0
@@ -332,7 +351,12 @@ class LocalPaperExecutor:
         if signal.symbol in self.tracker.positions:
             return None
 
-        shares = self.tracker.planned_shares(signal.price, signal.stop_price, signal.position_size_multiplier)
+        shares = self.tracker.planned_shares(
+            signal.price,
+            signal.stop_price,
+            signal.position_size_multiplier,
+            signal.strategy,
+        )
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None
@@ -542,7 +566,12 @@ class AlpacaPaperExecutor:
         if signal.symbol in self.tracker.positions:
             return None
 
-        shares = self.tracker.planned_shares(signal.price, signal.stop_price, signal.position_size_multiplier)
+        shares = self.tracker.planned_shares(
+            signal.price,
+            signal.stop_price,
+            signal.position_size_multiplier,
+            signal.strategy,
+        )
         if shares <= 0:
             LOG.info("Skipping %s: not enough cash for one share at %.2f", signal.symbol, signal.price)
             return None

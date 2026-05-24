@@ -240,9 +240,12 @@ class CoreTradingTests(unittest.TestCase):
                 "ALPACA_MARKET_DATA_MODE": "rest",
                 "ALPACA_MARKET_DATA_POLL_SECONDS": "7.5",
                 "STOCH_MACD_MAX_OPEN_POSITIONS": "12",
+                "STOCH_MACD_MAX_POSITION_VALUE": "1500",
                 "STOCH_MACD_TRADE_COOLDOWN_SECONDS": "45",
+                "MACD_MAX_POSITION_VALUE": "3000",
                 "MACD_BURST_MAX_ENTRIES": "2",
                 "MACD_BURST_WINDOW_SECONDS": "300",
+                "STEADY_INTRADAY_MAX_POSITION_VALUE": "1000",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
             clear=True,
@@ -254,9 +257,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.alpaca_market_data_mode, "rest")
         self.assertEqual(settings.alpaca_market_data_poll_seconds, 7.5)
         self.assertEqual(settings.stoch_macd_max_open_positions, 12)
+        self.assertEqual(settings.stoch_macd_max_position_value, 1500)
         self.assertEqual(settings.stoch_macd_trade_cooldown_seconds, 45)
+        self.assertEqual(settings.macd_max_position_value, 3000)
         self.assertEqual(settings.macd_burst_max_entries, 2)
         self.assertEqual(settings.macd_burst_window_seconds, 300)
+        self.assertEqual(settings.steady_intraday_max_position_value, 1000)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
@@ -2769,6 +2775,26 @@ class CoreTradingTests(unittest.TestCase):
         shares = tracker.planned_shares(100.0, 99.0)
 
         self.assertEqual(shares, 125)
+
+    def test_position_tracker_uses_strategy_max_position_value(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            starting_cash=25_000.0,
+            max_position_value=2_500.0,
+            stoch_macd_max_position_value=1_000.0,
+            macd_max_position_value=3_000.0,
+        )
+        tracker = PositionTracker(settings)
+
+        stoch_shares = tracker.planned_shares(100.0, strategy="stoch_macd_reversal")
+        macd_shares = tracker.planned_shares(100.0, strategy="macd_early_impulse")
+        default_shares = tracker.planned_shares(100.0, strategy="steady_intraday")
+
+        self.assertEqual(stoch_shares, 10)
+        self.assertEqual(macd_shares, 30)
+        self.assertEqual(default_shares, 25)
 
     def test_position_tracker_total_pnl_includes_unrealized_loss(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], daily_max_loss=250.0)
