@@ -547,6 +547,10 @@ def runtime_settings_snapshot(settings) -> dict:
             "consecutive_loss_pause_count": settings.consecutive_loss_pause_count,
             "consecutive_loss_pause_minutes": settings.consecutive_loss_pause_minutes,
             "consecutive_loss_stop_count": settings.consecutive_loss_stop_count,
+            "consecutive_loss_effective_limits": {
+                strategy: RiskManager(settings).consecutive_loss_limits_snapshot(strategy)
+                for strategy in settings.strategy_names
+            },
             "flatten_before_close_minutes": settings.flatten_before_close_minutes,
         },
         "stream": {

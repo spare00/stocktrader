@@ -6563,7 +6563,11 @@ class CoreTradingTests(unittest.TestCase):
         self.assertNotIn("alpaca_secret_key", snapshot)
         self.assertEqual(snapshot["risk"]["target_profit_pct"], 0.01)
         self.assertEqual(snapshot["risk"]["max_trade_loss_r"], 1.2)
-        self.assertEqual(snapshot["risk"]["consecutive_loss_stop_count"], 5)
+        self.assertIsNone(snapshot["risk"]["consecutive_loss_stop_count"])
+        self.assertEqual(
+            snapshot["risk"]["consecutive_loss_effective_limits"]["opening_impulse"]["stop_count"],
+            8,
+        )
         self.assertEqual(snapshot["gap_and_go"]["min_gap_pct"], 0.02)
         self.assertEqual(snapshot["opening_impulse"]["min_hold_seconds"], 15)
         self.assertEqual(snapshot["opening_impulse"]["exit_negative_steps"], 4)
@@ -7645,6 +7649,61 @@ class CoreTradingTests(unittest.TestCase):
         self.assertFalse(steady_decision.allowed)
         self.assertEqual(steady_decision.reason, "consecutive loss day stop active")
         self.assertTrue(macd_decision.allowed)
+
+    def test_consecutive_loss_counts_auto_scale_from_symbol_count(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[f"SYM{index}" for index in range(45)],
+            regular_market_only=False,
+            daily_max_loss=10_000.0,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(11):
+            risk.record_exit(-1.0, base_ms + index * 60_000, f"SYM{index}", "stoch_macd_reversal")
+        signal = Signal(
+            strategy="stoch_macd_reversal",
+            symbol="NEXT",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 12 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), 0)
+
+        self.assertTrue(decision.allowed)
+        risk.record_exit(-1.0, base_ms + 12 * 60_000, "SYM12", "stoch_macd_reversal")
+        decision = risk.check_entry(signal, set(), 0)
+        snapshot = risk.consecutive_loss_limits_snapshot("stoch_macd_reversal")
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "consecutive loss pause active")
+        self.assertEqual(snapshot["pause_count"], 12)
+        self.assertEqual(snapshot["pause_count_source"], "auto_symbols")
+        self.assertEqual(snapshot["stop_count"], 23)
+        self.assertEqual(snapshot["stop_count_source"], "auto_symbols")
+
+    def test_consecutive_loss_global_count_overrides_auto_symbol_count(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[f"SYM{index}" for index in range(45)],
+            regular_market_only=False,
+            daily_max_loss=10_000.0,
+            consecutive_loss_pause_count=4,
+        )
+        risk = RiskManager(settings)
+        snapshot = risk.consecutive_loss_limits_snapshot("stoch_macd_reversal")
+
+        self.assertEqual(snapshot["pause_count"], 4)
+        self.assertEqual(snapshot["pause_count_source"], "global")
+        self.assertEqual(snapshot["stop_count"], 23)
+        self.assertEqual(snapshot["stop_count_source"], "auto_symbols")
 
     def test_strategy_consecutive_loss_env_overrides_global_defaults(self):
         env = {

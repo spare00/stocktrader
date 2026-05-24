@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import ceil
 
 from config import Settings
 from market_hours import is_regular_market_time, should_flatten_before_close
@@ -212,7 +213,8 @@ class RiskManager:
         self.session_symbol_loss_streaks.pop(key, None)
 
     def _consecutive_loss_pause_count_for_strategy(self, strategy: str) -> int:
-        return self._strategy_int_override(strategy, "consecutive_loss_pause_count", self.settings.consecutive_loss_pause_count)
+        value = self._strategy_or_global_int(strategy, "consecutive_loss_pause_count")
+        return value if value is not None else self._auto_consecutive_loss_pause_count()
 
     def _consecutive_loss_pause_minutes_for_strategy(self, strategy: str) -> int:
         return self._strategy_int_override(
@@ -222,11 +224,47 @@ class RiskManager:
         )
 
     def _consecutive_loss_stop_count_for_strategy(self, strategy: str) -> int:
-        return self._strategy_int_override(strategy, "consecutive_loss_stop_count", self.settings.consecutive_loss_stop_count)
+        value = self._strategy_or_global_int(strategy, "consecutive_loss_stop_count")
+        return value if value is not None else self._auto_consecutive_loss_stop_count()
 
     def _strategy_int_override(self, strategy: str, suffix: str, default: int) -> int:
         value = getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_{suffix}", None)
         return default if value is None else int(value)
+
+    def _strategy_or_global_int(self, strategy: str, suffix: str) -> int | None:
+        value = getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_{suffix}", None)
+        if value is not None:
+            return int(value)
+        value = getattr(self.settings, suffix, None)
+        return None if value is None else int(value)
+
+    def consecutive_loss_limits_snapshot(self, strategy: str) -> dict[str, int | str]:
+        pause_source = self._consecutive_loss_count_source(strategy, "consecutive_loss_pause_count")
+        stop_source = self._consecutive_loss_count_source(strategy, "consecutive_loss_stop_count")
+        return {
+            "pause_count": self._consecutive_loss_pause_count_for_strategy(strategy),
+            "pause_count_source": pause_source,
+            "pause_minutes": self._consecutive_loss_pause_minutes_for_strategy(strategy),
+            "stop_count": self._consecutive_loss_stop_count_for_strategy(strategy),
+            "stop_count_source": stop_source,
+            "symbol_count": self._symbol_count_for_auto_limits(),
+        }
+
+    def _consecutive_loss_count_source(self, strategy: str, suffix: str) -> str:
+        if getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_{suffix}", None) is not None:
+            return "strategy"
+        if getattr(self.settings, suffix, None) is not None:
+            return "global"
+        return "auto_symbols"
+
+    def _auto_consecutive_loss_pause_count(self) -> int:
+        return max(4, ceil(self._symbol_count_for_auto_limits() * 0.25))
+
+    def _auto_consecutive_loss_stop_count(self) -> int:
+        return max(8, ceil(self._symbol_count_for_auto_limits() * 0.50))
+
+    def _symbol_count_for_auto_limits(self) -> int:
+        return max(1, len(self.settings.symbols))
 
     def _daily_loss_limit(self) -> float:
         percent_limit = self.settings.starting_cash * self.settings.daily_max_loss_pct

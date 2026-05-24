@@ -99,9 +99,9 @@ class Settings:
     failed_entry_cooldown_seconds: int = 30
     daily_max_loss: float = 250.0
     daily_max_loss_pct: float = 0.02
-    consecutive_loss_pause_count: int = 3
+    consecutive_loss_pause_count: int | None = None
     consecutive_loss_pause_minutes: int = 30
-    consecutive_loss_stop_count: int = 5
+    consecutive_loss_stop_count: int | None = None
     regular_market_only: bool = True
     flatten_before_close_minutes: int = 15
     heartbeat_seconds: int = 5
@@ -517,9 +517,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
     ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
     ("daily_max_loss_pct", "DAILY_MAX_LOSS_PCT", _float_env, 0.02),
-    ("consecutive_loss_pause_count", "CONSECUTIVE_LOSS_PAUSE_COUNT", _int_env, 3),
+    ("consecutive_loss_pause_count", "CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
     ("consecutive_loss_pause_minutes", "CONSECUTIVE_LOSS_PAUSE_MINUTES", _int_env, 30),
-    ("consecutive_loss_stop_count", "CONSECUTIVE_LOSS_STOP_COUNT", _int_env, 5),
+    ("consecutive_loss_stop_count", "CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
     ("regular_market_only", "REGULAR_MARKET_ONLY", _bool_env, True),
     ("flatten_before_close_minutes", "FLATTEN_BEFORE_CLOSE_MINUTES", _int_env, 15),
     ("heartbeat_seconds", "HEARTBEAT_SECONDS", _int_env, 5),
