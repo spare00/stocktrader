@@ -28,6 +28,7 @@ class RiskManager:
     strategy_trade_timestamps: dict[tuple[str, str], list[int]] = field(default_factory=dict)
     session_symbol_loss_streaks: dict[tuple[str, str, str], int] = field(default_factory=dict)
     session_symbol_locks: set[tuple[str, str, str]] = field(default_factory=set)
+    strategy_symbol_counts: dict[str, int] = field(default_factory=dict)
 
     def check_entry(
         self,
@@ -214,7 +215,7 @@ class RiskManager:
 
     def _consecutive_loss_pause_count_for_strategy(self, strategy: str) -> int:
         value = self._strategy_or_global_int(strategy, "consecutive_loss_pause_count")
-        return value if value is not None else self._auto_consecutive_loss_pause_count()
+        return value if value is not None else self._auto_consecutive_loss_pause_count(strategy)
 
     def _consecutive_loss_pause_minutes_for_strategy(self, strategy: str) -> int:
         return self._strategy_int_override(
@@ -225,7 +226,7 @@ class RiskManager:
 
     def _consecutive_loss_stop_count_for_strategy(self, strategy: str) -> int:
         value = self._strategy_or_global_int(strategy, "consecutive_loss_stop_count")
-        return value if value is not None else self._auto_consecutive_loss_stop_count()
+        return value if value is not None else self._auto_consecutive_loss_stop_count(strategy)
 
     def _strategy_int_override(self, strategy: str, suffix: str, default: int) -> int:
         value = getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_{suffix}", None)
@@ -247,7 +248,7 @@ class RiskManager:
             "pause_minutes": self._consecutive_loss_pause_minutes_for_strategy(strategy),
             "stop_count": self._consecutive_loss_stop_count_for_strategy(strategy),
             "stop_count_source": stop_source,
-            "symbol_count": self._symbol_count_for_auto_limits(),
+            "symbol_count": self._symbol_count_for_auto_limits(strategy),
         }
 
     def _consecutive_loss_count_source(self, strategy: str, suffix: str) -> str:
@@ -257,13 +258,18 @@ class RiskManager:
             return "global"
         return "auto_symbols"
 
-    def _auto_consecutive_loss_pause_count(self) -> int:
-        return max(4, ceil(self._symbol_count_for_auto_limits() * 0.25))
+    def _auto_consecutive_loss_pause_count(self, strategy: str) -> int:
+        return max(4, ceil(self._symbol_count_for_auto_limits(strategy) * 0.25))
 
-    def _auto_consecutive_loss_stop_count(self) -> int:
-        return max(8, ceil(self._symbol_count_for_auto_limits() * 0.50))
+    def _auto_consecutive_loss_stop_count(self, strategy: str) -> int:
+        return max(8, ceil(self._symbol_count_for_auto_limits(strategy) * 0.50))
 
-    def _symbol_count_for_auto_limits(self) -> int:
+    def _symbol_count_for_auto_limits(self, strategy: str) -> int:
+        strategy_count = self.strategy_symbol_counts.get(strategy)
+        if strategy_count is None:
+            strategy_count = self.strategy_symbol_counts.get(self._settings_prefix(strategy))
+        if strategy_count is not None:
+            return max(1, int(strategy_count))
         return max(1, len(self.settings.symbols))
 
     def _daily_loss_limit(self) -> float:

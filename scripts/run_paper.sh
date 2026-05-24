@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Watch list, strategies, and other tunables come only from `.env` and `profiles/*.env` (sourced below).
-# Never inherit SYMBOLS or STRATEGIES from a parent shell or tmux — stale exports can override
-# strategy plan files or select the wrong strategy. To set them, add them to a profile or `.env`.
-unset SYMBOLS
-unset STRATEGIES
+# Start from a clean process environment by default so stale shell/tmux exports
+# cannot override `.env` or `profiles/*.env`. Preserve only runner controls that
+# are intentionally passed on the command line.
+if [[ "${RUN_PAPER_CLEAN_ENV_DONE:-}" != "1" && "${RUN_PAPER_CLEAN_ENV:-true}" != "false" ]]; then
+  _clean_env=(
+    "RUN_PAPER_CLEAN_ENV_DONE=1"
+    "HOME=${HOME:-}"
+    "PATH=${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+    "SHELL=${SHELL:-/bin/bash}"
+    "PWD=$ROOT"
+    "TMPDIR=${TMPDIR:-/tmp}"
+  )
+  [[ -n "${PROFILE:-}" ]] && _clean_env+=("PROFILE=$PROFILE")
+  [[ -n "${TUNING_PROFILE:-}" ]] && _clean_env+=("TUNING_PROFILE=$TUNING_PROFILE")
+  [[ -n "${PYTHON_BIN:-}" ]] && _clean_env+=("PYTHON_BIN=$PYTHON_BIN")
+  exec env -i "${_clean_env[@]}" "$SCRIPT_PATH" "$@"
+fi
 
 load_env_file() {
   local file="$1"

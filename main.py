@@ -496,7 +496,7 @@ def credential_fingerprint(value: str | None) -> str | None:
     return f"{digest}:{suffix}"
 
 
-def runtime_settings_snapshot(settings) -> dict:
+def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] | None = None) -> dict:
     snapshot = {
         "execution_mode": settings.execution_mode,
         "strategies": settings.strategy_names,
@@ -548,7 +548,10 @@ def runtime_settings_snapshot(settings) -> dict:
             "consecutive_loss_pause_minutes": settings.consecutive_loss_pause_minutes,
             "consecutive_loss_stop_count": settings.consecutive_loss_stop_count,
             "consecutive_loss_effective_limits": {
-                strategy: RiskManager(settings).consecutive_loss_limits_snapshot(strategy)
+                strategy: RiskManager(
+                    settings,
+                    strategy_symbol_counts=strategy_symbol_counts or {},
+                ).consecutive_loss_limits_snapshot(strategy)
                 for strategy in settings.strategy_names
             },
             "flatten_before_close_minutes": settings.flatten_before_close_minutes,
@@ -829,7 +832,11 @@ async def main(args: argparse.Namespace | None = None) -> None:
             os.getenv("SYMBOLS", "").strip(),
         )
 
-    settings_snapshot = runtime_settings_snapshot(settings)
+    effective_symbol_counts = {
+        strategy: len(set(settings.symbols) | set(local_symbols))
+        for strategy, local_symbols in strategy_local_symbols.items()
+    }
+    settings_snapshot = runtime_settings_snapshot(settings, effective_symbol_counts)
     settings_snapshot["global_symbols"] = list(settings.symbols)
     settings_snapshot["strategy_symbols"] = strategy_local_symbols
     settings_snapshot["market_regime"] = {
@@ -879,7 +886,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         positive_only=settings.news_listener_positive_only,
     )
     executor = build_executor(stream_settings)
-    risk = RiskManager(settings)
+    risk = RiskManager(settings, strategy_symbol_counts=effective_symbol_counts)
     reviewer = SignalReviewer(settings)
     market_regime = MarketRegimeMonitor(settings)
     rejection_logs = RejectionLogThrottler()

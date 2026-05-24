@@ -7688,6 +7688,37 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["stop_count"], 23)
         self.assertEqual(snapshot["stop_count_source"], "auto_symbols")
 
+    def test_consecutive_loss_counts_auto_scale_from_strategy_symbol_count(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[],
+            regular_market_only=False,
+            daily_max_loss=10_000.0,
+        )
+        risk = RiskManager(settings, strategy_symbol_counts={"stoch_macd_reversal": 45})
+        snapshot = risk.consecutive_loss_limits_snapshot("stoch_macd_reversal")
+
+        self.assertEqual(snapshot["pause_count"], 12)
+        self.assertEqual(snapshot["stop_count"], 23)
+        self.assertEqual(snapshot["symbol_count"], 45)
+        self.assertEqual(snapshot["pause_count_source"], "auto_symbols")
+
+    def test_runtime_snapshot_uses_strategy_symbol_counts_for_auto_limits(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[],
+            strategy_names=["stoch_macd_reversal"],
+        )
+
+        snapshot = trading_main.runtime_settings_snapshot(settings, {"stoch_macd_reversal": 45})
+
+        limits = snapshot["risk"]["consecutive_loss_effective_limits"]["stoch_macd_reversal"]
+        self.assertEqual(limits["pause_count"], 12)
+        self.assertEqual(limits["stop_count"], 23)
+        self.assertEqual(limits["symbol_count"], 45)
+
     def test_consecutive_loss_global_count_overrides_auto_symbol_count(self):
         settings = Settings(
             alpaca_api_key="test",
