@@ -7472,9 +7472,9 @@ class CoreTradingTests(unittest.TestCase):
         )
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
-        risk.record_exit(-1.0, base_ms)
-        risk.record_exit(-2.0, base_ms + 60_000)
-        risk.record_exit(-3.0, base_ms + 120_000)
+        risk.record_exit(-1.0, base_ms, "AAPL", "opening_impulse")
+        risk.record_exit(-2.0, base_ms + 60_000, "AAPL", "opening_impulse")
+        risk.record_exit(-3.0, base_ms + 120_000, "AAPL", "opening_impulse")
         signal = Signal(
             strategy="opening_impulse",
             symbol="AAPL",
@@ -7504,7 +7504,7 @@ class CoreTradingTests(unittest.TestCase):
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
         for index in range(5):
-            risk.record_exit(-1.0, base_ms + index * 60_000)
+            risk.record_exit(-1.0, base_ms + index * 60_000, "AAPL", "opening_impulse")
         signal = Signal(
             strategy="opening_impulse",
             symbol="AAPL",
@@ -7535,7 +7535,7 @@ class CoreTradingTests(unittest.TestCase):
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
         for index in range(5):
-            risk.record_exit(-1.0, base_ms + index * 60_000)
+            risk.record_exit(-1.0, base_ms + index * 60_000, "AAPL", "opening_impulse")
         signal = Signal(
             strategy="stoch_macd_reversal",
             symbol="AAPL",
@@ -7551,6 +7551,115 @@ class CoreTradingTests(unittest.TestCase):
         decision = risk.check_entry(signal, set(), 0)
 
         self.assertTrue(decision.allowed)
+
+    def test_consecutive_loss_day_stop_is_strategy_scoped(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            daily_max_loss=10_000.0,
+            consecutive_loss_stop_count=5,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(5):
+            risk.record_exit(-1.0, base_ms + index * 60_000, "AAPL", "macd_early_impulse")
+        macd_signal = Signal(
+            strategy="macd_early_impulse",
+            symbol="MSFT",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 6 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+        steady_signal = Signal(
+            strategy="steady_intraday",
+            symbol="TSLL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 6 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        macd_decision = risk.check_entry(macd_signal, set(), 0)
+        steady_decision = risk.check_entry(steady_signal, set(), 0)
+
+        self.assertFalse(macd_decision.allowed)
+        self.assertEqual(macd_decision.reason, "consecutive loss day stop active")
+        self.assertTrue(steady_decision.allowed)
+
+    def test_strategy_consecutive_loss_stop_count_overrides_global(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            daily_max_loss=10_000.0,
+            consecutive_loss_stop_count=5,
+            steady_intraday_consecutive_loss_stop_count=2,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_exit(-1.0, base_ms, "AAPL", "steady_intraday")
+        risk.record_exit(-1.0, base_ms + 60_000, "AAPL", "steady_intraday")
+        steady_signal = Signal(
+            strategy="steady_intraday",
+            symbol="TSLL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 2 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+        macd_signal = Signal(
+            strategy="macd_early_impulse",
+            symbol="MSFT",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=base_ms + 2 * 60_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        steady_decision = risk.check_entry(steady_signal, set(), 0)
+        macd_decision = risk.check_entry(macd_signal, set(), 0)
+
+        self.assertFalse(steady_decision.allowed)
+        self.assertEqual(steady_decision.reason, "consecutive loss day stop active")
+        self.assertTrue(macd_decision.allowed)
+
+    def test_strategy_consecutive_loss_env_overrides_global_defaults(self):
+        env = {
+            "ALPACA_API_KEY": "test",
+            "ALPACA_SECRET_KEY": "test",
+            "STRATEGIES": "steady_intraday",
+            "CONSECUTIVE_LOSS_STOP_COUNT": "5",
+            "STEADY_INTRADAY_CONSECUTIVE_LOSS_STOP_COUNT": "2",
+            "MACD_CONSECUTIVE_LOSS_PAUSE_COUNT": "4",
+            "STOCH_MACD_CONSECUTIVE_LOSS_PAUSE_MINUTES": "7",
+            "OPENING_IMPULSE_CONSECUTIVE_LOSS_STOP_COUNT": "6",
+            "GAP_AND_GO_CONSECUTIVE_LOSS_PAUSE_COUNT": "8",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            settings = load_settings(validate=False)
+
+        self.assertEqual(settings.consecutive_loss_stop_count, 5)
+        self.assertEqual(settings.steady_intraday_consecutive_loss_stop_count, 2)
+        self.assertEqual(settings.macd_consecutive_loss_pause_count, 4)
+        self.assertEqual(settings.stoch_macd_consecutive_loss_pause_minutes, 7)
+        self.assertEqual(settings.opening_impulse_consecutive_loss_stop_count, 6)
+        self.assertEqual(settings.gap_and_go_consecutive_loss_pause_count, 8)
 
     def test_risk_rejects_daily_loss_percent_limit(self):
         settings = Settings(

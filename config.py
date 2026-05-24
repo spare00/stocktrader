@@ -48,11 +48,17 @@ class Settings:
     gap_and_go_bar_window: int = 5
     gap_and_go_max_trades_per_symbol_per_session: int = 2
     gap_and_go_symbol_loss_lock_count: int = 2
+    gap_and_go_consecutive_loss_pause_count: int | None = None
+    gap_and_go_consecutive_loss_pause_minutes: int | None = None
+    gap_and_go_consecutive_loss_stop_count: int | None = None
 
     spike_lookback_seconds: int = 5
     spike_change_pct: float = 0.0025
     spike_start_minute: int | None = None
     spike_end_minute: int | None = None
+    spike_consecutive_loss_pause_count: int | None = None
+    spike_consecutive_loss_pause_minutes: int | None = None
+    spike_consecutive_loss_stop_count: int | None = None
     volume_ratio: float = 2.0
     max_spread_bps: float = 12.0
 
@@ -67,14 +73,29 @@ class Settings:
     max_trade_loss_r: float = 1.2
     max_open_positions: int = 8
     trade_cooldown_seconds: int = 60
+    opening_impulse_consecutive_loss_pause_count: int | None = None
+    opening_impulse_consecutive_loss_pause_minutes: int | None = None
+    opening_impulse_consecutive_loss_stop_count: int | None = None
     stoch_macd_max_open_positions: int = 0
     stoch_macd_trade_cooldown_seconds: int = 0
+    stoch_macd_consecutive_loss_pause_count: int | None = None
+    stoch_macd_consecutive_loss_pause_minutes: int | None = None
+    stoch_macd_consecutive_loss_stop_count: int | None = None
     macd_max_open_positions: int = 0
     macd_trade_cooldown_seconds: int = 0
     macd_burst_max_entries: int = 0
     macd_burst_window_seconds: int = 0
+    macd_consecutive_loss_pause_count: int | None = None
+    macd_consecutive_loss_pause_minutes: int | None = None
+    macd_consecutive_loss_stop_count: int | None = None
     steady_intraday_max_open_positions: int = 0
     steady_intraday_trade_cooldown_seconds: int = 0
+    steady_intraday_consecutive_loss_pause_count: int | None = None
+    steady_intraday_consecutive_loss_pause_minutes: int | None = None
+    steady_intraday_consecutive_loss_stop_count: int | None = None
+    maha7_consecutive_loss_pause_count: int | None = None
+    maha7_consecutive_loss_pause_minutes: int | None = None
+    maha7_consecutive_loss_stop_count: int | None = None
     failed_entry_cooldown_seconds: int = 30
     daily_max_loss: float = 250.0
     daily_max_loss_pct: float = 0.02
@@ -425,14 +446,75 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("max_trade_loss_r", "MAX_TRADE_LOSS_R", _float_env, 1.2),
     ("max_open_positions", "MAX_OPEN_POSITIONS", _int_env, 8),
     ("trade_cooldown_seconds", "TRADE_COOLDOWN_SECONDS", _int_env, 60),
+    (
+        "opening_impulse_consecutive_loss_pause_count",
+        "OPENING_IMPULSE_CONSECUTIVE_LOSS_PAUSE_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "opening_impulse_consecutive_loss_pause_minutes",
+        "OPENING_IMPULSE_CONSECUTIVE_LOSS_PAUSE_MINUTES",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "opening_impulse_consecutive_loss_stop_count",
+        "OPENING_IMPULSE_CONSECUTIVE_LOSS_STOP_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    ("gap_and_go_consecutive_loss_pause_count", "GAP_AND_GO_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
+    (
+        "gap_and_go_consecutive_loss_pause_minutes",
+        "GAP_AND_GO_CONSECUTIVE_LOSS_PAUSE_MINUTES",
+        _optional_int_env,
+        None,
+    ),
+    ("gap_and_go_consecutive_loss_stop_count", "GAP_AND_GO_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
+    ("spike_consecutive_loss_pause_count", "SPIKE_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
+    ("spike_consecutive_loss_pause_minutes", "SPIKE_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
+    ("spike_consecutive_loss_stop_count", "SPIKE_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
     ("stoch_macd_max_open_positions", "STOCH_MACD_MAX_OPEN_POSITIONS", _int_env, 0),
     ("stoch_macd_trade_cooldown_seconds", "STOCH_MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    ("stoch_macd_consecutive_loss_pause_count", "STOCH_MACD_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
+    (
+        "stoch_macd_consecutive_loss_pause_minutes",
+        "STOCH_MACD_CONSECUTIVE_LOSS_PAUSE_MINUTES",
+        _optional_int_env,
+        None,
+    ),
+    ("stoch_macd_consecutive_loss_stop_count", "STOCH_MACD_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
     ("macd_max_open_positions", "MACD_MAX_OPEN_POSITIONS", _int_env, 0),
     ("macd_trade_cooldown_seconds", "MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("macd_burst_max_entries", "MACD_BURST_MAX_ENTRIES", _int_env, 0),
     ("macd_burst_window_seconds", "MACD_BURST_WINDOW_SECONDS", _int_env, 0),
+    ("macd_consecutive_loss_pause_count", "MACD_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
+    ("macd_consecutive_loss_pause_minutes", "MACD_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
+    ("macd_consecutive_loss_stop_count", "MACD_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
     ("steady_intraday_max_open_positions", "STEADY_INTRADAY_MAX_OPEN_POSITIONS", _int_env, 0),
     ("steady_intraday_trade_cooldown_seconds", "STEADY_INTRADAY_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    (
+        "steady_intraday_consecutive_loss_pause_count",
+        "STEADY_INTRADAY_CONSECUTIVE_LOSS_PAUSE_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "steady_intraday_consecutive_loss_pause_minutes",
+        "STEADY_INTRADAY_CONSECUTIVE_LOSS_PAUSE_MINUTES",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "steady_intraday_consecutive_loss_stop_count",
+        "STEADY_INTRADAY_CONSECUTIVE_LOSS_STOP_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    ("maha7_consecutive_loss_pause_count", "MAHA7_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
+    ("maha7_consecutive_loss_pause_minutes", "MAHA7_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
+    ("maha7_consecutive_loss_stop_count", "MAHA7_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
     ("failed_entry_cooldown_seconds", "FAILED_ENTRY_COOLDOWN_SECONDS", _int_env, 30),
     ("daily_max_loss", "DAILY_MAX_LOSS", _float_env, 250.0),
     ("daily_max_loss_pct", "DAILY_MAX_LOSS_PCT", _float_env, 0.02),

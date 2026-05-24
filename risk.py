@@ -19,8 +19,9 @@ class RiskManager:
     last_trade_by_strategy_ms: dict[tuple[str, str], int] = field(default_factory=dict)
     last_failed_entry_ms: dict[str, int] = field(default_factory=dict)
     consecutive_losses: int = 0
-    pause_until_ms: int = 0
-    stopped_day_keys: set[str] = field(default_factory=set)
+    consecutive_losses_by_strategy: dict[str, int] = field(default_factory=dict)
+    pause_until_by_strategy_ms: dict[str, int] = field(default_factory=dict)
+    stopped_strategy_day_keys: set[tuple[str, str]] = field(default_factory=set)
     daily_realized_pnl: dict[str, float] = field(default_factory=dict)
     session_trade_counts: dict[tuple[str, str, str], int] = field(default_factory=dict)
     strategy_trade_timestamps: dict[tuple[str, str], list[int]] = field(default_factory=dict)
@@ -42,10 +43,12 @@ class RiskManager:
 
         day_key = self._day_key(signal.timestamp_ms)
         if self._respects_consecutive_loss_limits(signal.strategy):
-            if day_key in self.stopped_day_keys:
+            strategy_key = self._strategy_key(signal.strategy)
+            if (day_key, strategy_key) in self.stopped_strategy_day_keys:
                 return RiskDecision(False, "consecutive loss day stop active")
 
-            if signal.timestamp_ms < self.pause_until_ms:
+            pause_until_ms = self.pause_until_by_strategy_ms.get(strategy_key, 0)
+            if signal.timestamp_ms < pause_until_ms:
                 return RiskDecision(False, "consecutive loss pause active")
 
         daily_limit = self._daily_loss_limit()
@@ -143,6 +146,10 @@ class RiskManager:
     def _respects_consecutive_loss_limits(self, strategy: str) -> bool:
         return bool(getattr(self.settings, f"{self._settings_prefix(strategy)}_respect_consecutive_loss_limits", True))
 
+    @staticmethod
+    def _strategy_key(strategy: str | None) -> str:
+        return strategy or "default"
+
     def record_trade(self, symbol: str, timestamp_ms: int, strategy: str = "") -> None:
         self.last_trade_ms[symbol] = timestamp_ms
         self.last_failed_entry_ms.pop(symbol, None)
@@ -166,16 +173,23 @@ class RiskManager:
 
     def record_exit(self, pnl: float, timestamp_ms: int, symbol: str | None = None, strategy: str | None = None) -> None:
         day_key = self._day_key(timestamp_ms)
+        strategy_key = self._strategy_key(strategy)
         self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
         if pnl < 0:
             self.consecutive_losses += 1
-            if self.consecutive_losses >= self.settings.consecutive_loss_stop_count:
-                self.stopped_day_keys.add(day_key)
-            if self.consecutive_losses >= self.settings.consecutive_loss_pause_count:
-                self.pause_until_ms = timestamp_ms + self.settings.consecutive_loss_pause_minutes * 60_000
+            strategy_losses = self.consecutive_losses_by_strategy.get(strategy_key, 0) + 1
+            self.consecutive_losses_by_strategy[strategy_key] = strategy_losses
+            if strategy_losses >= self._consecutive_loss_stop_count_for_strategy(strategy_key):
+                self.stopped_strategy_day_keys.add((day_key, strategy_key))
+            if strategy_losses >= self._consecutive_loss_pause_count_for_strategy(strategy_key):
+                self.pause_until_by_strategy_ms[strategy_key] = (
+                    timestamp_ms + self._consecutive_loss_pause_minutes_for_strategy(strategy_key) * 60_000
+                )
             self._record_symbol_loss(day_key, symbol, strategy)
         elif pnl > 0:
             self.consecutive_losses = 0
+            self.consecutive_losses_by_strategy[strategy_key] = 0
+            self.pause_until_by_strategy_ms.pop(strategy_key, None)
             self._reset_symbol_loss(day_key, symbol, strategy)
 
     def _max_trades_per_symbol_for_strategy(self, strategy: str) -> int:
@@ -196,6 +210,23 @@ class RiskManager:
             return
         key = (day_key, strategy, symbol)
         self.session_symbol_loss_streaks.pop(key, None)
+
+    def _consecutive_loss_pause_count_for_strategy(self, strategy: str) -> int:
+        return self._strategy_int_override(strategy, "consecutive_loss_pause_count", self.settings.consecutive_loss_pause_count)
+
+    def _consecutive_loss_pause_minutes_for_strategy(self, strategy: str) -> int:
+        return self._strategy_int_override(
+            strategy,
+            "consecutive_loss_pause_minutes",
+            self.settings.consecutive_loss_pause_minutes,
+        )
+
+    def _consecutive_loss_stop_count_for_strategy(self, strategy: str) -> int:
+        return self._strategy_int_override(strategy, "consecutive_loss_stop_count", self.settings.consecutive_loss_stop_count)
+
+    def _strategy_int_override(self, strategy: str, suffix: str, default: int) -> int:
+        value = getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_{suffix}", None)
+        return default if value is None else int(value)
 
     def _daily_loss_limit(self) -> float:
         percent_limit = self.settings.starting_cash * self.settings.daily_max_loss_pct
