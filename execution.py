@@ -110,6 +110,10 @@ class PositionTracker:
         value = float(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_max_position_value", 0.0) or 0.0)
         return value if value > 0 else self.settings.max_position_value
 
+    def max_hold_seconds_for_strategy(self, strategy: str) -> int:
+        value = int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_max_hold_seconds", 0) or 0)
+        return value if value > 0 else self.settings.max_hold_seconds
+
     @staticmethod
     def _compact_settings_prefix(strategy: str) -> str:
         if strategy == "stoch_macd_reversal":
@@ -418,15 +422,16 @@ class LocalPaperExecutor:
         ):
             reason = "stop loss"
             exit_price = min(position.stop_price, stop_check_price)
-        elif age_seconds >= self.tracker.settings.max_hold_seconds and current_price < position.entry_price:
+        max_hold_seconds = self.tracker.max_hold_seconds_for_strategy(position.strategy)
+        if not reason and age_seconds >= max_hold_seconds and current_price < position.entry_price:
             pnl_pct = (current_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
             if strategy and not strategy.allow_max_hold_exit(state, position, age_seconds, pnl_pct):
                 LOG.debug("Max hold deferred %s by %s strategy exit policy", state.symbol, position.strategy)
                 return None
             reason = "max hold"
-        elif age_seconds < exit_activation_delay:
+        elif not reason and age_seconds < exit_activation_delay:
             return None
-        elif use_fixed_target and current_price >= position.target_price:
+        elif not reason and use_fixed_target and current_price >= position.target_price:
             reason = "target profit"
             exit_price = position.target_price
 
@@ -684,15 +689,16 @@ class AlpacaPaperExecutor:
             )
         ):
             reason = "stop loss"
-        elif age_seconds >= self.settings.max_hold_seconds and current_price < position.entry_price:
+        max_hold_seconds = self.tracker.max_hold_seconds_for_strategy(position.strategy)
+        if not reason and age_seconds >= max_hold_seconds and current_price < position.entry_price:
             pnl_pct = (current_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
             if strategy and not strategy.allow_max_hold_exit(state, position, age_seconds, pnl_pct):
                 LOG.debug("Max hold deferred %s by %s strategy exit policy", state.symbol, position.strategy)
                 return None
             reason = "max hold"
-        elif age_seconds < exit_activation_delay:
+        elif not reason and age_seconds < exit_activation_delay:
             return None
-        elif use_fixed_target and current_price >= position.target_price:
+        elif not reason and use_fixed_target and current_price >= position.target_price:
             reason = "target profit"
 
         if not reason:

@@ -241,11 +241,14 @@ class CoreTradingTests(unittest.TestCase):
                 "ALPACA_MARKET_DATA_POLL_SECONDS": "7.5",
                 "STOCH_MACD_MAX_OPEN_POSITIONS": "12",
                 "STOCH_MACD_MAX_POSITION_VALUE": "1500",
+                "STOCH_MACD_MAX_HOLD_SECONDS": "420",
                 "STOCH_MACD_TRADE_COOLDOWN_SECONDS": "45",
                 "MACD_MAX_POSITION_VALUE": "3000",
+                "MACD_MAX_HOLD_SECONDS": "300",
                 "MACD_BURST_MAX_ENTRIES": "2",
                 "MACD_BURST_WINDOW_SECONDS": "300",
                 "STEADY_INTRADAY_MAX_POSITION_VALUE": "1000",
+                "STEADY_INTRADAY_MAX_HOLD_SECONDS": "1200",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
             clear=True,
@@ -258,11 +261,14 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.alpaca_market_data_poll_seconds, 7.5)
         self.assertEqual(settings.stoch_macd_max_open_positions, 12)
         self.assertEqual(settings.stoch_macd_max_position_value, 1500)
+        self.assertEqual(settings.stoch_macd_max_hold_seconds, 420)
         self.assertEqual(settings.stoch_macd_trade_cooldown_seconds, 45)
         self.assertEqual(settings.macd_max_position_value, 3000)
+        self.assertEqual(settings.macd_max_hold_seconds, 300)
         self.assertEqual(settings.macd_burst_max_entries, 2)
         self.assertEqual(settings.macd_burst_window_seconds, 300)
         self.assertEqual(settings.steady_intraday_max_position_value, 1000)
+        self.assertEqual(settings.steady_intraday_max_hold_seconds, 1200)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
@@ -1840,6 +1846,39 @@ class CoreTradingTests(unittest.TestCase):
         state.update_quote(Quote("AAPL", bid=99.78, ask=99.82, bid_size=20, ask_size=20, timestamp_ms=70_000))
 
         fill = broker.manage_exit(state, {"opening_impulse": OpeningImpulseStrategy(settings)})
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.reason, "max hold")
+
+    def test_strategy_max_hold_overrides_global_max_hold(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=60,
+            opening_impulse_max_hold_seconds=120,
+            opening_impulse_min_hold_seconds=15,
+        )
+        broker = LocalPaperExecutor(PositionTracker(settings))
+        broker.tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="opening_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=1_000,
+            target_price=110.0,
+            stop_price=99.5,
+        )
+        state = SymbolState("AAPL")
+        state.update_quote(Quote("AAPL", bid=99.78, ask=99.82, bid_size=20, ask_size=20, timestamp_ms=70_000))
+
+        fill = broker.manage_exit(state, {})
+
+        self.assertIsNone(fill)
+        state.update_quote(Quote("AAPL", bid=99.78, ask=99.82, bid_size=20, ask_size=20, timestamp_ms=130_000))
+
+        fill = broker.manage_exit(state, {})
 
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "max hold")
