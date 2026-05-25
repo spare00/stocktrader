@@ -599,11 +599,7 @@ def should_manage_exits_on_heartbeat(settings) -> bool:
 
 
 def strategy_log_file(settings) -> Path:
-    strategies = [name.strip().lower().replace(" ", "_") for name in settings.strategy_names if name.strip()]
-    if not strategies:
-        return LOG_FILE
-    suffix = "__".join(strategies)
-    return LOG_DIR / f"trader_{suffix}.log"
+    return LOG_FILE
 
 
 def setup_logging(log_file: Path | None = None, strategy_names: list[str] | None = None) -> None:

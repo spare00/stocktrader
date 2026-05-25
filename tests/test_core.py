@@ -6139,7 +6139,7 @@ class CoreTradingTests(unittest.TestCase):
             trading_main.LOG_DIR = old_log_dir
             trading_main.LOG_FILE = old_log_file
 
-    def test_strategy_log_file_includes_strategy_names(self):
+    def test_strategy_log_file_uses_stable_file_name(self):
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
@@ -6148,7 +6148,7 @@ class CoreTradingTests(unittest.TestCase):
 
         log_file = trading_main.strategy_log_file(settings)
 
-        self.assertEqual(log_file, trading_main.LOG_DIR / "trader_opening_impulse__gap_and_go.log")
+        self.assertEqual(log_file, trading_main.LOG_FILE)
 
     def test_heartbeat_reporter_emits_strategy_summary(self):
         reporter = trading_main.HeartbeatReporter(min_interval_seconds=0.0)
