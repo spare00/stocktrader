@@ -333,6 +333,9 @@ class Settings:
     macd_early_max_spread_bps: float = 12.0
     macd_early_min_hist_norm: float = 0.00135
     macd_early_max_vwap_extension_pct: float = 0.015
+    macd_require_vwap_rising: bool = True
+    macd_vwap_rising_lookback_bars: int = 3
+    macd_min_vwap_rise_bps: float = 1.0
     macd_volume_impulse_runner_volume_ratio: float = 3.0
     macd_volume_impulse_runner_hist_norm: float = 0.0015
     macd_volume_impulse_max_spread_bps: float = 30.0

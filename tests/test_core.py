@@ -5629,6 +5629,57 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
         self.assertIn("spread", "\n".join(captured.output))
 
+    def test_macd_rejects_flat_vwap_slope(self):
+        settings = Settings(symbols=["SMR"], macd_min_vwap_rise_bps=1.0)
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(25):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=2_000 if index == 24 else 1_000,
+                    vwap=99.501 if index >= 22 else 99.50,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+
+        reason = strategy._vwap_slope_reject_reason(state.bars, strategy._session_vwap(state.bars))
+
+        self.assertIsNotNone(reason)
+        self.assertIn("VWAP not rising enough", reason)
+
+    def test_macd_allows_clear_vwap_slope(self):
+        settings = Settings(symbols=["SMR"], macd_min_vwap_rise_bps=1.0)
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("SMR")
+        base_ms = market_ms(2026, 5, 8, 13, 0)
+        for index in range(25):
+            close = 100.0 + index * 0.08
+            state.add_bar(
+                Bar(
+                    "SMR",
+                    open=close - 0.04,
+                    high=close + 0.08,
+                    low=close - 0.08,
+                    close=close,
+                    volume=2_000 if index == 24 else 1_000,
+                    vwap=99.70 if index >= 22 else 99.50,
+                    start_ms=base_ms + index * 60_000,
+                    end_ms=base_ms + (index + 1) * 60_000,
+                )
+            )
+
+        reason = strategy._vwap_slope_reject_reason(state.bars, strategy._session_vwap(state.bars))
+
+        self.assertIsNone(reason)
+
     def test_macd_runner_mode_allows_strong_reclaim_without_perfect_histogram(self):
         settings = Settings(
             alpaca_api_key="test",

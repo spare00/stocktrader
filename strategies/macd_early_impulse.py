@@ -104,6 +104,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_early_max_spread_bps", "MACD_EARLY_MAX_SPREAD_BPS", float_env, 12.0),
         ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.00135),
         ("macd_early_max_vwap_extension_pct", "MACD_EARLY_MAX_VWAP_EXTENSION_PCT", float_env, 0.015),
+        ("macd_require_vwap_rising", "MACD_REQUIRE_VWAP_RISING", bool_env, True),
+        ("macd_vwap_rising_lookback_bars", "MACD_VWAP_RISING_LOOKBACK_BARS", int_env, 3),
+        ("macd_min_vwap_rise_bps", "MACD_MIN_VWAP_RISE_BPS", float_env, 1.0),
         ("macd_volume_impulse_runner_volume_ratio", "MACD_VOLUME_IMPULSE_RUNNER_VOLUME_RATIO", float_env, 3.0),
         ("macd_volume_impulse_runner_hist_norm", "MACD_VOLUME_IMPULSE_RUNNER_HIST_NORM", float_env, 0.0015),
         ("macd_volume_impulse_max_spread_bps", "MACD_VOLUME_IMPULSE_MAX_SPREAD_BPS", float_env, 30.0),
@@ -209,6 +212,9 @@ class MACDEarlyImpulseStrategy(Strategy):
             "early_max_spread_bps": s.macd_early_max_spread_bps,
             "early_min_hist_norm": s.macd_early_min_hist_norm,
             "early_max_vwap_extension_pct": s.macd_early_max_vwap_extension_pct,
+            "require_vwap_rising": s.macd_require_vwap_rising,
+            "vwap_rising_lookback_bars": s.macd_vwap_rising_lookback_bars,
+            "min_vwap_rise_bps": s.macd_min_vwap_rise_bps,
             "volume_impulse_runner_volume_ratio": s.macd_volume_impulse_runner_volume_ratio,
             "volume_impulse_runner_hist_norm": s.macd_volume_impulse_runner_hist_norm,
             "volume_impulse_max_spread_bps": s.macd_volume_impulse_max_spread_bps,
@@ -348,6 +354,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         vwap = self._session_vwap(rb)
         if vwap is not None and last.ask < vwap:
             return self._reject(state, "below_vwap", "price below vwap")
+        vwap_slope_reject = self._vwap_slope_reject_reason(rb, vwap)
+        if vwap_slope_reject:
+            return self._reject(state, "vwap", vwap_slope_reject)
         runner_mode = self._runner_mode(state.symbol, rb, last.ask, ema_trend[-1], vwap, vol_r)
 
         chop_range_pct = self.settings.macd_chop_range_pct
@@ -893,6 +902,27 @@ class MACDEarlyImpulseStrategy(Strategy):
             return None
         total_value = sum(bar.vwap * bar.volume for bar in session_bars if bar.volume > 0)
         return total_value / total_volume if total_value > 0 else None
+
+    def _vwap_slope_reject_reason(self, session_bars, session_vwap: float | None) -> str | None:
+        if not self.settings.macd_require_vwap_rising:
+            return None
+        bars = list(session_bars)
+        lookback = max(1, self.settings.macd_vwap_rising_lookback_bars)
+        min_bars = lookback * 2
+        if len(bars) < min_bars:
+            return f"not enough bars for VWAP slope bars={len(bars)} need={min_bars}"
+        if session_vwap is None:
+            return "missing current-session VWAP"
+        prev_vwap = self._session_vwap(bars[:-lookback])
+        min_rise = max(0.0, self.settings.macd_min_vwap_rise_bps) / 10_000.0
+        required_vwap = (prev_vwap or 0.0) * (1.0 + min_rise)
+        if prev_vwap is None or session_vwap <= required_vwap:
+            return (
+                "VWAP not rising enough "
+                f"current={session_vwap:.4f} required={required_vwap:.4f} "
+                f"previous={prev_vwap or 0.0:.4f} min_bps={self.settings.macd_min_vwap_rise_bps:.2f}"
+            )
+        return None
 
     def _volume_ratio(self, state: SymbolState) -> float:
         session_bars = self._regular_bars(state)
