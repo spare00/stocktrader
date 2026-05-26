@@ -4931,6 +4931,20 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(end_time.hour, 10)
         self.assertEqual(end_time.minute, 15)
 
+    def test_macd_bootstrap_skips_transient_data_failure_without_traceback(self):
+        strategy = MACDEarlyImpulseStrategy(Settings(symbols=["SMR"], alpaca_api_key="test", alpaca_secret_key="test"))
+        state = SymbolState("SMR")
+        ts = market_ms(2026, 5, 11, 10, 15)
+        state.add_bar(Bar("SMR", 100.0, 100.2, 99.8, 100.1, 1_000, 100.0, ts - 60_000, ts))
+
+        with patch("alpaca_client.make_clients", return_value=object()), patch(
+            "alpaca_client.get_bars_between", side_effect=TimeoutError("timed out")
+        ), self.assertLogs("strategies.macd_early_impulse", level="WARNING") as captured:
+            strategy.bootstrap_states({"SMR": state})
+
+        self.assertIn("bootstrap skipped", "\n".join(captured.output))
+        self.assertEqual(len(state.bars), 1)
+
     def test_macd_volume_ratio_prefers_current_regular_session(self):
         strategy = MACDEarlyImpulseStrategy(Settings(symbols=["SMR"]))
         state = SymbolState("SMR")

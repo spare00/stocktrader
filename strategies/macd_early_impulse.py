@@ -281,8 +281,13 @@ class MACDEarlyImpulseStrategy(Strategy):
         try:
             clients = make_clients(self.settings)
             intraday_bars = get_bars_between(clients, symbols, TimeFrame.Minute, start_of_day, now)
-        except Exception:
-            LOG.exception("MACD early impulse bootstrap failed to load bars")
+        except Exception as exc:
+            LOG.warning(
+                "MACD early impulse bootstrap skipped: failed to load bars for %s symbols (%s: %s)",
+                len(symbols),
+                type(exc).__name__,
+                exc,
+            )
             return
 
         seeded = 0
