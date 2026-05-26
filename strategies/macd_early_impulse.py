@@ -69,8 +69,8 @@ class MACDEarlyImpulseStrategy(Strategy):
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("macd_start_minute", "MACD_START_MINUTE", int_env, 0),
         ("macd_end_minute", "MACD_END_MINUTE", int_env, 360),
-        ("macd_hist_threshold", "MACD_HIST_THRESHOLD", float_env, 0.001),
-        ("macd_volume_ratio", "MACD_VOLUME_RATIO", float_env, 1.35),
+        ("macd_hist_threshold", "MACD_HIST_THRESHOLD", float_env, 0.0012),
+        ("macd_volume_ratio", "MACD_VOLUME_RATIO", float_env, 1.45),
         ("macd_target_profit_pct", "MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("macd_stop_loss_pct", "MACD_STOP_LOSS_PCT", float_env, 0.0035),
         ("macd_trailing_stop_pct", "MACD_TRAILING_STOP_PCT", float_env, 0.0045),
@@ -91,7 +91,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_target_r", "MACD_TARGET_R", float_env, 2.0),
         ("macd_runner_pullback_pct", "MACD_RUNNER_PULLBACK_PCT", float_env, 0.0090),
         ("macd_early_window_minutes", "MACD_EARLY_WINDOW_MINUTES", int_env, 60),
-        ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.50),
+        ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.65),
         (
             "macd_early_volume_average_fallback_enabled",
             "MACD_EARLY_VOLUME_AVERAGE_FALLBACK_ENABLED",
@@ -99,10 +99,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             False,
         ),
         ("macd_early_volume_lookback_bars", "MACD_EARLY_VOLUME_LOOKBACK_BARS", int_env, 3),
-        ("macd_early_min_avg_volume_ratio", "MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 1.40),
+        ("macd_early_min_avg_volume_ratio", "MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 1.50),
         ("macd_early_min_latest_volume_ratio", "MACD_EARLY_MIN_LATEST_VOLUME_RATIO", float_env, 0.70),
         ("macd_early_max_spread_bps", "MACD_EARLY_MAX_SPREAD_BPS", float_env, 12.0),
-        ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.0012),
+        ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.00135),
         ("macd_early_max_vwap_extension_pct", "MACD_EARLY_MAX_VWAP_EXTENSION_PCT", float_env, 0.015),
         ("macd_volume_impulse_runner_volume_ratio", "MACD_VOLUME_IMPULSE_RUNNER_VOLUME_RATIO", float_env, 3.0),
         ("macd_volume_impulse_runner_hist_norm", "MACD_VOLUME_IMPULSE_RUNNER_HIST_NORM", float_env, 0.0015),
@@ -115,6 +115,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_momentum_exit_min_profit_pct", "MACD_MOMENTUM_EXIT_MIN_PROFIT_PCT", float_env, 0.0015),
         ("macd_early_loss_cut_seconds", "MACD_EARLY_LOSS_CUT_SECONDS", int_env, 75),
         ("macd_early_loss_cut_pct", "MACD_EARLY_LOSS_CUT_PCT", float_env, 0.0022),
+        ("macd_stall_exit_seconds", "MACD_STALL_EXIT_SECONDS", int_env, 180),
+        ("macd_stall_exit_min_r", "MACD_STALL_EXIT_MIN_R", float_env, 0.15),
+        ("macd_weak_fade_exit_seconds", "MACD_WEAK_FADE_EXIT_SECONDS", int_env, 120),
         (
             "macd_early_impulse_max_trades_per_symbol_per_session",
             "MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
@@ -217,6 +220,9 @@ class MACDEarlyImpulseStrategy(Strategy):
             "momentum_exit_min_profit_pct": s.macd_momentum_exit_min_profit_pct,
             "early_loss_cut_seconds": s.macd_early_loss_cut_seconds,
             "early_loss_cut_pct": s.macd_early_loss_cut_pct,
+            "stall_exit_seconds": s.macd_stall_exit_seconds,
+            "stall_exit_min_r": s.macd_stall_exit_min_r,
+            "weak_fade_exit_seconds": s.macd_weak_fade_exit_seconds,
             "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": s.macd_early_impulse_symbol_loss_lock_count,
             "macd_warmup_bars": s.macd_macd_warmup_bars,
@@ -617,6 +623,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             if age_seconds < min_hold_seconds:
                 return None
 
+            weak_exit = self._weak_impulse_exit_decision(state, position, price, age_seconds, pnl_pct, r_initial)
+            if weak_exit is not None:
+                return weak_exit
+
             macd = self._compute_macd(state)
             if macd is not None:
                 _, _, hist = macd
@@ -647,6 +657,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         if age_seconds < self.settings.macd_min_hold_seconds:
             return None
 
+        weak_exit = self._weak_impulse_exit_decision(state, position, price, age_seconds, pnl_pct, r_initial)
+        if weak_exit is not None:
+            return weak_exit
+
         macd = self._compute_macd(state)
         if macd is not None:
             _, _, hist = macd
@@ -665,6 +679,45 @@ class MACDEarlyImpulseStrategy(Strategy):
         if pnl_pct <= -self.settings.macd_stop_loss_pct:
             return ExitDecision("stop loss")
 
+        return None
+
+    def _weak_impulse_exit_decision(
+        self,
+        state: SymbolState,
+        position,
+        price: float,
+        age_seconds: float,
+        pnl_pct: float,
+        r_initial: float,
+    ) -> ExitDecision | None:
+        if position.partial_exit_taken:
+            return None
+
+        if (
+            self.settings.macd_stall_exit_seconds > 0
+            and r_initial > 0
+            and age_seconds >= self.settings.macd_stall_exit_seconds
+        ):
+            peak = max(position.max_price or 0.0, price, position.entry_price)
+            mfe_r = (peak - position.entry_price) / r_initial
+            if mfe_r < max(0.0, self.settings.macd_stall_exit_min_r):
+                return ExitDecision("impulse stall")
+
+        if self.settings.macd_weak_fade_exit_seconds <= 0:
+            return None
+        if age_seconds < self.settings.macd_weak_fade_exit_seconds:
+            return None
+        if pnl_pct > self.settings.macd_momentum_exit_min_profit_pct:
+            return None
+
+        macd = self._compute_macd(state)
+        if macd is None:
+            return None
+        macd_line, signal_line, hist = macd
+        if len(hist) < 2 or not macd_line or not signal_line:
+            return None
+        if hist[-1] < hist[-2] or macd_line[-1] <= signal_line[-1]:
+            return ExitDecision("weak macd fade")
         return None
 
     def allow_max_hold_exit(self, state: SymbolState, position, age_seconds: float, pnl_pct: float) -> bool:

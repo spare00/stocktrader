@@ -303,8 +303,8 @@ class Settings:
 
     macd_start_minute: int = 0
     macd_end_minute: int = 360
-    macd_hist_threshold: float = 0.001
-    macd_volume_ratio: float = 1.35
+    macd_hist_threshold: float = 0.0012
+    macd_volume_ratio: float = 1.45
     macd_target_profit_pct: float = 0.012
     macd_stop_loss_pct: float = 0.0035
     macd_trailing_stop_pct: float = 0.0045
@@ -325,13 +325,13 @@ class Settings:
     macd_target_r: float = 2.0
     macd_runner_pullback_pct: float = 0.0090
     macd_early_window_minutes: int = 60
-    macd_early_min_volume_ratio: float = 1.50
+    macd_early_min_volume_ratio: float = 1.65
     macd_early_volume_average_fallback_enabled: bool = False
     macd_early_volume_lookback_bars: int = 3
-    macd_early_min_avg_volume_ratio: float = 1.40
+    macd_early_min_avg_volume_ratio: float = 1.50
     macd_early_min_latest_volume_ratio: float = 0.70
     macd_early_max_spread_bps: float = 12.0
-    macd_early_min_hist_norm: float = 0.0012
+    macd_early_min_hist_norm: float = 0.00135
     macd_early_max_vwap_extension_pct: float = 0.015
     macd_volume_impulse_runner_volume_ratio: float = 3.0
     macd_volume_impulse_runner_hist_norm: float = 0.0015
@@ -344,6 +344,9 @@ class Settings:
     macd_momentum_exit_min_profit_pct: float = 0.0015
     macd_early_loss_cut_seconds: int = 75
     macd_early_loss_cut_pct: float = 0.0022
+    macd_stall_exit_seconds: int = 180
+    macd_stall_exit_min_r: float = 0.15
+    macd_weak_fade_exit_seconds: int = 120
     macd_early_impulse_max_trades_per_symbol_per_session: int = 2
     macd_early_impulse_symbol_loss_lock_count: int = 2
     macd_macd_warmup_bars: int = 120

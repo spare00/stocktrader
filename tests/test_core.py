@@ -2619,6 +2619,68 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "max hold")
 
+    def test_macd_early_impulse_exits_stalled_impulse(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            macd_min_hold_seconds=0,
+            macd_stall_exit_seconds=180,
+            macd_stall_exit_min_r=0.15,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", bid=100.01, ask=100.03, bid_size=100, ask_size=100, timestamp_ms=event_ms))
+        position = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=event_ms - 181_000,
+            target_price=102.0,
+            stop_price=99.0,
+            initial_stop_price=99.0,
+            max_price=100.10,
+        )
+
+        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.005, 0.006])):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "impulse stall")
+
+    def test_macd_early_impulse_exits_weak_fading_macd_before_max_hold(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_hold_seconds=420,
+            macd_min_hold_seconds=0,
+            macd_stall_exit_seconds=180,
+            macd_weak_fade_exit_seconds=120,
+            macd_momentum_exit_min_profit_pct=0.0015,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", bid=100.09, ask=100.11, bid_size=100, ask_size=100, timestamp_ms=event_ms))
+        position = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=event_ms - 121_000,
+            target_price=102.0,
+            stop_price=99.0,
+            initial_stop_price=99.0,
+            max_price=100.40,
+        )
+
+        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.006, 0.005])):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "weak macd fade")
+
     def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
         settings = Settings(
             alpaca_api_key="test",
