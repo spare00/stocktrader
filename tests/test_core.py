@@ -8671,6 +8671,96 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_rejects_flat_vwap_slope(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_min_vwap_rise_bps=1.0)
+        strategy = StochMACDReversalStrategy(settings)
+        state = SymbolState("AAPL")
+        closes = [100.0 + index * 0.08 for index in range(40)]
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=120_000 if index == len(closes) - 1 else 100_000,
+                    vwap=99.501 if index >= len(closes) - 3 else 99.50,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        last = state.bars[-1].close
+        state.update_quote(Quote("AAPL", last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(102.0, True),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_allows_clear_vwap_slope(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_min_vwap_rise_bps=1.0)
+        strategy = StochMACDReversalStrategy(settings)
+        state = SymbolState("AAPL")
+        closes = [100.0 + index * 0.08 for index in range(40)]
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            state.add_bar(
+                Bar(
+                    "AAPL",
+                    open=closes[index - 1] if index else close,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=120_000 if index == len(closes) - 1 else 100_000,
+                    vwap=99.70 if index >= len(closes) - 3 else 99.50,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        last = state.bars[-1].close
+        state.update_quote(Quote("AAPL", last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(102.0, True),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+
     def test_stoch_macd_reversal_rejects_low_atr_setup(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)

@@ -388,6 +388,8 @@ class Settings:
     stoch_macd_vwap_enabled: bool = True
     stoch_macd_vwap_buffer_pct: float = 0.0005
     stoch_macd_require_vwap_rising: bool = True
+    stoch_macd_vwap_rising_lookback_bars: int = 3
+    stoch_macd_min_vwap_rise_bps: float = 1.0
     stoch_macd_min_hist_norm: float = 0.00005
     stoch_macd_hist_rise_bars: int = 2
     stoch_macd_macd_rise_bars: int = 2

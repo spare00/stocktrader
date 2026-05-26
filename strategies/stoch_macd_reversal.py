@@ -50,6 +50,8 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_vwap_enabled", "STOCH_MACD_VWAP_ENABLED", bool_env, True),
         ("stoch_macd_vwap_buffer_pct", "STOCH_MACD_VWAP_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_require_vwap_rising", "STOCH_MACD_REQUIRE_VWAP_RISING", bool_env, True),
+        ("stoch_macd_vwap_rising_lookback_bars", "STOCH_MACD_VWAP_RISING_LOOKBACK_BARS", int_env, 3),
+        ("stoch_macd_min_vwap_rise_bps", "STOCH_MACD_MIN_VWAP_RISE_BPS", float_env, 1.0),
         ("stoch_macd_min_hist_norm", "STOCH_MACD_MIN_HIST_NORM", float_env, 0.00005),
         ("stoch_macd_hist_rise_bars", "STOCH_MACD_HIST_RISE_BARS", int_env, 2),
         ("stoch_macd_macd_rise_bars", "STOCH_MACD_MACD_RISE_BARS", int_env, 2),
@@ -170,6 +172,8 @@ class StochMACDReversalStrategy(Strategy):
             "vwap_enabled": settings.stoch_macd_vwap_enabled,
             "vwap_buffer_pct": settings.stoch_macd_vwap_buffer_pct,
             "require_vwap_rising": settings.stoch_macd_require_vwap_rising,
+            "vwap_rising_lookback_bars": settings.stoch_macd_vwap_rising_lookback_bars,
+            "min_vwap_rise_bps": settings.stoch_macd_min_vwap_rise_bps,
             "min_hist_norm": settings.stoch_macd_min_hist_norm,
             "hist_rise_bars": settings.stoch_macd_hist_rise_bars,
             "macd_rise_bars": settings.stoch_macd_macd_rise_bars,
@@ -507,13 +511,25 @@ class StochMACDReversalStrategy(Strategy):
                     "vwap",
                     f"price below VWAP ask={last.ask:.2f} vwap={session_vwap:.2f}",
                 )
-            if self.settings.stoch_macd_require_vwap_rising and len(current_session_bars) >= 6:
-                prev_vwap = self._session_vwap(current_session_bars[:-3])
-                if prev_vwap is None or session_vwap <= prev_vwap:
+            if self.settings.stoch_macd_require_vwap_rising:
+                lookback = max(1, self.settings.stoch_macd_vwap_rising_lookback_bars)
+                min_bars_for_vwap_slope = lookback * 2
+                if len(current_session_bars) < min_bars_for_vwap_slope:
                     return self._reject(
                         state,
                         "vwap",
-                        f"VWAP not rising current={session_vwap:.2f} previous={prev_vwap or 0.0:.2f}",
+                        f"not enough bars for VWAP slope bars={len(current_session_bars)} need={min_bars_for_vwap_slope}",
+                    )
+                prev_vwap = self._session_vwap(current_session_bars[:-lookback])
+                min_rise = max(0.0, self.settings.stoch_macd_min_vwap_rise_bps) / 10_000.0
+                required_vwap = (prev_vwap or 0.0) * (1.0 + min_rise)
+                if prev_vwap is None or session_vwap <= required_vwap:
+                    return self._reject(
+                        state,
+                        "vwap",
+                        "VWAP not rising enough "
+                        f"current={session_vwap:.4f} required={required_vwap:.4f} "
+                        f"previous={prev_vwap or 0.0:.4f} min_bps={self.settings.stoch_macd_min_vwap_rise_bps:.2f}",
                     )
 
         if reentry_freshness:
