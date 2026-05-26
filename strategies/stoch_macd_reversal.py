@@ -38,6 +38,13 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_supertrend_buffer_pct", "STOCH_MACD_SUPERTREND_BUFFER_PCT", float_env, 0.0005),
         ("stoch_macd_supertrend_period", "STOCH_MACD_SUPERTREND_PERIOD", int_env, 7),
         ("stoch_macd_supertrend_multiplier", "STOCH_MACD_SUPERTREND_MULTIPLIER", float_env, 3.0),
+        ("stoch_macd_supertrend_cross_ema_period", "STOCH_MACD_SUPERTREND_CROSS_EMA_PERIOD", int_env, 20),
+        (
+            "stoch_macd_supertrend_pre_ema_cross_multiplier",
+            "STOCH_MACD_SUPERTREND_PRE_EMA_CROSS_MULTIPLIER",
+            float_env,
+            0.0,
+        ),
         ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.80),
         ("stoch_macd_max_spread_bps", "STOCH_MACD_MAX_SPREAD_BPS", float_env, 15.0),
         ("stoch_macd_vwap_enabled", "STOCH_MACD_VWAP_ENABLED", bool_env, True),
@@ -156,6 +163,8 @@ class StochMACDReversalStrategy(Strategy):
             "supertrend_buffer_pct": settings.stoch_macd_supertrend_buffer_pct,
             "supertrend_period": settings.stoch_macd_supertrend_period,
             "supertrend_multiplier": settings.stoch_macd_supertrend_multiplier,
+            "supertrend_cross_ema_period": settings.stoch_macd_supertrend_cross_ema_period,
+            "supertrend_pre_ema_cross_multiplier": settings.stoch_macd_supertrend_pre_ema_cross_multiplier,
             "min_volume_ratio": settings.stoch_macd_min_volume_ratio,
             "max_spread_bps": settings.stoch_macd_max_spread_bps,
             "vwap_enabled": settings.stoch_macd_vwap_enabled,
@@ -363,12 +372,12 @@ class StochMACDReversalStrategy(Strategy):
                     f"STOCH overbought without strong MACD expansion k={k_now:.1f} hist_rise_norm={hist_rise_norm:.5f}",
                 )
 
+        supertrend_multiplier, ema_fast, ema_cross = self._supertrend_multiplier_for_bars(current_session_bars)
         supertrend = self._compute_supertrend(
             current_session_bars,
             self.settings.stoch_macd_supertrend_period,
-            self.settings.stoch_macd_supertrend_multiplier,
+            supertrend_multiplier,
         )
-        ema_fast = self._fast_ema(current_session_bars, self.settings.stoch_macd_ema_period)
         supertrend_reason = "st=disabled"
         supertrend_value: float | None = None
         if self.settings.stoch_macd_supertrend_enabled:
@@ -376,7 +385,16 @@ class StochMACDReversalStrategy(Strategy):
                 return self._reject(state, "supertrend", "could not compute EMA/SuperTrend")
             supertrend_value, supertrend_bullish = supertrend
             supertrend_color = "green" if supertrend_bullish else "red"
-            supertrend_reason = f"st={supertrend_color} st_line={supertrend_value:.2f} st_basis=session"
+            ema_cross_reason = ""
+            if ema_cross is not None and self.settings.stoch_macd_supertrend_pre_ema_cross_multiplier > 0:
+                ema_cross_reason = (
+                    f" ema{self.settings.stoch_macd_ema_period}={ema_fast:.2f}"
+                    f" ema{self.settings.stoch_macd_supertrend_cross_ema_period}={ema_cross:.2f}"
+                )
+            supertrend_reason = (
+                f"st={supertrend_color} st_line={supertrend_value:.2f}"
+                f" st_basis=session st_mult={supertrend_multiplier:.2f}{ema_cross_reason}"
+            )
             buffer_pct = max(0.0, self.settings.stoch_macd_supertrend_buffer_pct)
             min_ema = supertrend_value * (1.0 - buffer_pct)
             if self.settings.stoch_macd_require_ema_above_supertrend and ema_fast < min_ema:
@@ -590,12 +608,12 @@ class StochMACDReversalStrategy(Strategy):
         current_session_bars = self._current_session_indicator_bars(state)
         stoch = self._compute_stoch(state, current_session_bars)
         macd = self._compute_macd(state, current_session_bars)
+        supertrend_multiplier, ema_fast, _ = self._supertrend_multiplier_for_bars(current_session_bars)
         supertrend = self._compute_supertrend(
             current_session_bars,
             self.settings.stoch_macd_supertrend_period,
-            self.settings.stoch_macd_supertrend_multiplier,
+            supertrend_multiplier,
         )
-        ema_fast = self._fast_ema(current_session_bars, self.settings.stoch_macd_ema_period)
         if stoch is not None and macd is not None and supertrend is not None and ema_fast is not None:
             k_values, d_values = stoch
             macd_line, signal_line, _ = macd
@@ -636,10 +654,11 @@ class StochMACDReversalStrategy(Strategy):
             return True
 
         current_session_bars = self._current_session_indicator_bars(state)
+        supertrend_multiplier, _, _ = self._supertrend_multiplier_for_bars(current_session_bars)
         supertrend = self._compute_supertrend(
             current_session_bars,
             self.settings.stoch_macd_supertrend_period,
-            self.settings.stoch_macd_supertrend_multiplier,
+            supertrend_multiplier,
         )
         if supertrend is None:
             return True
@@ -953,6 +972,18 @@ class StochMACDReversalStrategy(Strategy):
         closes = [float(bar.close) for bar in session_bars if bar.close > 0]
         values = _ema_series(closes, period)
         return values[-1] if values else None
+
+    def _supertrend_multiplier_for_bars(self, session_bars) -> tuple[float, float | None, float | None]:
+        base_multiplier = self.settings.stoch_macd_supertrend_multiplier
+        ema_fast = self._fast_ema(session_bars, self.settings.stoch_macd_ema_period)
+        ema_cross: float | None = None
+        cross_period = self.settings.stoch_macd_supertrend_cross_ema_period
+        pre_cross_multiplier = self.settings.stoch_macd_supertrend_pre_ema_cross_multiplier
+        if pre_cross_multiplier > 0 and cross_period > 0:
+            ema_cross = self._fast_ema(session_bars, cross_period)
+            if ema_fast is not None and ema_cross is not None and ema_fast <= ema_cross:
+                return pre_cross_multiplier, ema_fast, ema_cross
+        return base_multiplier, ema_fast, ema_cross
 
     @staticmethod
     def _compute_supertrend(session_bars, period: int = 7, multiplier: float = 3.0) -> tuple[float, bool] | None:

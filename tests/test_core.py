@@ -9322,6 +9322,40 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_stoch_macd_reversal_uses_wider_supertrend_until_ema5_crosses_ema20(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_supertrend_multiplier=1.0,
+            stoch_macd_supertrend_cross_ema_period=20,
+            stoch_macd_supertrend_pre_ema_cross_multiplier=2.0,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state([100.0 - index * 0.10 for index in range(40)])
+
+        multiplier, ema5, ema20 = strategy._supertrend_multiplier_for_bars(state.bars)
+
+        self.assertEqual(multiplier, 2.0)
+        self.assertIsNotNone(ema5)
+        self.assertIsNotNone(ema20)
+        self.assertLessEqual(ema5, ema20)
+
+    def test_stoch_macd_reversal_uses_fast_supertrend_after_ema5_crosses_ema20(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_supertrend_multiplier=1.0,
+            stoch_macd_supertrend_cross_ema_period=20,
+            stoch_macd_supertrend_pre_ema_cross_multiplier=2.0,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state([100.0 + index * 0.10 for index in range(40)])
+
+        multiplier, ema5, ema20 = strategy._supertrend_multiplier_for_bars(state.bars)
+
+        self.assertEqual(multiplier, 1.0)
+        self.assertIsNotNone(ema5)
+        self.assertIsNotNone(ema20)
+        self.assertGreater(ema5, ema20)
+
     def test_stoch_macd_reversal_allows_green_supertrend_when_ema_is_below_line_by_default(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
