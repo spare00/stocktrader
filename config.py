@@ -287,6 +287,19 @@ class Settings:
     steady_intraday_symbol_loss_lock_count: int = 1
     steady_intraday_allow_orb_breakout: bool = True
     steady_intraday_allow_pullback_reclaim: bool = True
+    steady_intraday_risk_off_volume_add: float = 0.30
+    steady_intraday_risk_off_min_range_multiplier: float = 1.15
+    steady_intraday_risk_off_vwap_buffer_multiplier: float = 1.5
+    steady_intraday_risk_off_max_vwap_extension_multiplier: float = 0.80
+    steady_intraday_risk_off_max_ema_extension_multiplier: float = 0.85
+    steady_intraday_risk_off_max_r_multiplier: float = 0.80
+    steady_intraday_risk_off_allow_orb_breakout: bool = False
+    steady_intraday_neutral_volume_add: float = 0.10
+    steady_intraday_neutral_min_range_multiplier: float = 1.05
+    steady_intraday_neutral_vwap_buffer_multiplier: float = 1.20
+    steady_intraday_neutral_max_vwap_extension_multiplier: float = 0.90
+    steady_intraday_neutral_max_ema_extension_multiplier: float = 0.95
+    steady_intraday_neutral_max_r_multiplier: float = 0.90
 
     macd_start_minute: int = 0
     macd_end_minute: int = 360

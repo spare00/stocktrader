@@ -6926,6 +6926,31 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
+    def test_steady_intraday_market_regime_hardens_entry_thresholds(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["NVDA"],
+            strategy_names=["steady_intraday"],
+        )
+        strategy = SteadyIntradayStrategy(settings)
+
+        strategy.set_market_regime(types.SimpleNamespace(name="risk_off", score=-4))
+        self.assertTrue(strategy._risk_off_market_regime())
+        self.assertAlmostEqual(strategy._effective_min_volume_ratio(True, 0.0), 1.45)
+        self.assertAlmostEqual(strategy._effective_breakout_volume_ratio(True, 0.0), 1.65)
+        self.assertAlmostEqual(strategy._effective_min_range_pct(True, 0.0), 0.0069)
+        self.assertAlmostEqual(strategy._effective_vwap_buffer_pct(True, 0.0), 0.00075)
+        self.assertAlmostEqual(strategy._effective_max_r_pct(True, 0.0), 0.0096)
+        self.assertFalse(strategy._effective_allow_orb_breakout(True))
+
+        strategy.set_market_regime(types.SimpleNamespace(name="neutral", score=1.0))
+        neutral_hardening = strategy._neutral_market_regime_hardening()
+        self.assertAlmostEqual(neutral_hardening, 0.5)
+        self.assertAlmostEqual(strategy._effective_min_volume_ratio(False, neutral_hardening), 1.20)
+        self.assertAlmostEqual(strategy._effective_vwap_buffer_pct(False, neutral_hardening), 0.00055)
+        self.assertAlmostEqual(strategy._effective_max_r_pct(False, neutral_hardening), 0.0114)
+
     def test_steady_intraday_uses_current_session_for_session_fields(self):
         settings = Settings(
             alpaca_api_key="test",
