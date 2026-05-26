@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from candle import SymbolState
 from config import Settings, load_settings
 import alpaca_client
+import alpaca_stream as alpaca_stream_module
 from alpaca_stream import (
     AlpacaRestPollingStream,
     AlpacaStockStream,
@@ -6822,6 +6823,35 @@ class CoreTradingTests(unittest.TestCase):
         async def consume_once():
             stream = AlpacaRestPollingStream(settings)
             with patch("alpaca_stream.make_clients", return_value=clients):
+                with patch.object(stream, "_retry_delay_seconds", return_value=0):
+                    async for event in stream.events():
+                        return event
+            return None
+
+        event = asyncio.run(consume_once())
+
+        self.assertIsInstance(event, Heartbeat)
+
+    def test_rest_polling_stream_retries_after_bar_api_error(self):
+        class Historical:
+            def get_stock_latest_quote(self, request):
+                return {}
+
+        clients = types.SimpleNamespace(historical=Historical(), feed="iex")
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            alpaca_market_data_mode="rest",
+            alpaca_market_data_poll_seconds=0.01,
+        )
+
+        async def consume_once():
+            stream = AlpacaRestPollingStream(settings)
+            with patch("alpaca_stream.make_clients", return_value=clients), patch(
+                "alpaca_stream.get_bars_between",
+                side_effect=alpaca_stream_module.APIError('{"message":"connection reset"}'),
+            ):
                 with patch.object(stream, "_retry_delay_seconds", return_value=0):
                     async for event in stream.events():
                         return event

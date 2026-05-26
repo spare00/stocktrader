@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from alpaca.common.exceptions import APIError
 from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 from requests.exceptions import RequestException
@@ -96,7 +97,7 @@ class AlpacaRestPollingStream:
             quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbols, feed=clients.feed)
             try:
                 quote_response = await asyncio.to_thread(clients.historical.get_stock_latest_quote, quote_request)
-            except (OSError, RequestException) as exc:
+            except (OSError, RequestException, APIError) as exc:
                 consecutive_poll_errors += 1
                 delay_seconds = self._retry_delay_seconds(consecutive_poll_errors)
                 logger.warning(
@@ -115,7 +116,7 @@ class AlpacaRestPollingStream:
             start = now - timedelta(minutes=3)
             try:
                 bars_by_symbol = await asyncio.to_thread(get_bars_between, clients, symbols, TimeFrame.Minute, start, now)
-            except (OSError, RequestException) as exc:
+            except (OSError, RequestException, APIError) as exc:
                 consecutive_poll_errors += 1
                 delay_seconds = self._retry_delay_seconds(consecutive_poll_errors)
                 logger.warning(
