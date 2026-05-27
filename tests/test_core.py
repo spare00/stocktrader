@@ -9664,6 +9664,9 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(
             symbols=["F"],
             stoch_macd_vwap_enabled=False,
+            stoch_macd_supertrend_period=7,
+            stoch_macd_supertrend_multiplier=3.0,
+            stoch_macd_supertrend_pre_ema_cross_multiplier=0.0,
         )
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("F")

@@ -385,10 +385,10 @@ class Settings:
     stoch_macd_supertrend_enabled: bool = True
     stoch_macd_require_ema_above_supertrend: bool = False
     stoch_macd_supertrend_buffer_pct: float = 0.0005
-    stoch_macd_supertrend_period: int = 7
-    stoch_macd_supertrend_multiplier: float = 3.0
+    stoch_macd_supertrend_period: int = 10
+    stoch_macd_supertrend_multiplier: float = 2.0
     stoch_macd_supertrend_cross_ema_period: int = 20
-    stoch_macd_supertrend_pre_ema_cross_multiplier: float = 0.0
+    stoch_macd_supertrend_pre_ema_cross_multiplier: float = 2.0
     stoch_macd_min_volume_ratio: float = 0.80
     stoch_macd_max_spread_bps: float = 15.0
     stoch_macd_vwap_enabled: bool = True
