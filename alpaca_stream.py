@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
+import json
 import logging
 import os
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,11 +87,46 @@ class AlpacaRestPollingStream:
         normalized = symbol.strip().upper()
         self._symbols = [existing for existing in self._symbols if existing != normalized]
 
+    def _mock_status_url(self) -> str | None:
+        base_url = (self.settings.alpaca_data_base_url or "").strip().rstrip("/")
+        if not base_url:
+            return None
+        return f"{base_url}/v1/mock/status"
+
+    def _poll_clock_utc(self) -> datetime:
+        if not (self.settings.replay_market_data and self.settings.replay_use_mock_clock):
+            return datetime.now(tz=timezone.utc)
+        status_url = self._mock_status_url()
+        if not status_url:
+            return datetime.now(tz=timezone.utc)
+        try:
+            with urllib.request.urlopen(status_url, timeout=self.settings.replay_clock_timeout_seconds) as resp:
+                body = json.loads(resp.read().decode("utf-8") or "{}")
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            logger.debug("Mock replay clock poll failed (%s: %s); using wall clock", type(exc).__name__, exc)
+            return datetime.now(tz=timezone.utc)
+        replay_now = str(body.get("replay_now_utc") or "").strip()
+        if replay_now.endswith("Z"):
+            replay_now = replay_now[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(replay_now)
+        except ValueError:
+            return datetime.now(tz=timezone.utc)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _closed_bar_cutoff_ms(self, now: datetime) -> int | None:
+        if not (self.settings.replay_market_data and self.settings.replay_closed_bars_only):
+            return None
+        minute_start = now.replace(second=0, microsecond=0)
+        return int(minute_start.timestamp() * 1000)
+
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote]:
         clients = make_clients(self.settings)
         consecutive_poll_errors = 0
         while True:
-            now = datetime.now(tz=timezone.utc)
+            now = self._poll_clock_utc()
             symbols = list(self._symbols)
             if not symbols:
                 yield Heartbeat(timestamp_ms=int(now.timestamp() * 1000))
@@ -130,9 +168,12 @@ class AlpacaRestPollingStream:
                 await asyncio.sleep(delay_seconds)
                 continue
             consecutive_poll_errors = 0
+            closed_bar_cutoff_ms = self._closed_bar_cutoff_ms(now)
             for symbol in symbols:
                 last_seen_start_ms = self._last_bar_start_ms.get(symbol, 0)
                 new_bars = [bar for bar in bars_by_symbol.get(symbol, []) if bar.start_ms > last_seen_start_ms]
+                if closed_bar_cutoff_ms is not None:
+                    new_bars = [bar for bar in new_bars if bar.start_ms < closed_bar_cutoff_ms]
                 for bar in new_bars:
                     self._last_bar_start_ms[symbol] = max(self._last_bar_start_ms.get(symbol, 0), bar.start_ms)
                     yield bar

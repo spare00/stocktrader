@@ -240,6 +240,9 @@ class CoreTradingTests(unittest.TestCase):
                 "SYMBOLS": "AAPL,MSFT",
                 "ALPACA_MARKET_DATA_MODE": "rest",
                 "ALPACA_MARKET_DATA_POLL_SECONDS": "7.5",
+                "REPLAY_USE_MOCK_CLOCK": "true",
+                "REPLAY_CLOSED_BARS_ONLY": "true",
+                "REPLAY_CLOCK_TIMEOUT_SECONDS": "0.25",
                 "STOCH_MACD_MAX_OPEN_POSITIONS": "12",
                 "STOCH_MACD_MAX_POSITION_VALUE": "1500",
                 "STOCH_MACD_MAX_HOLD_SECONDS": "420",
@@ -260,6 +263,9 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.symbols, ["AAPL", "MSFT"])
         self.assertEqual(settings.alpaca_market_data_mode, "rest")
         self.assertEqual(settings.alpaca_market_data_poll_seconds, 7.5)
+        self.assertTrue(settings.replay_use_mock_clock)
+        self.assertTrue(settings.replay_closed_bars_only)
+        self.assertEqual(settings.replay_clock_timeout_seconds, 0.25)
         self.assertEqual(settings.stoch_macd_max_open_positions, 12)
         self.assertEqual(settings.stoch_macd_max_position_value, 1500)
         self.assertEqual(settings.stoch_macd_max_hold_seconds, 420)
@@ -6911,6 +6917,62 @@ class CoreTradingTests(unittest.TestCase):
         event = asyncio.run(consume_once())
 
         self.assertIsInstance(event, Heartbeat)
+
+    def test_rest_polling_stream_uses_mock_clock_for_replay_heartbeat(self):
+        replay_now = datetime(2026, 5, 22, 13, 35, 30, tzinfo=ZoneInfo("UTC"))
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            symbols=[],
+            alpaca_market_data_mode="rest",
+            alpaca_market_data_poll_seconds=0.01,
+            replay_market_data=True,
+            replay_use_mock_clock=True,
+        )
+
+        async def consume_once():
+            stream = AlpacaRestPollingStream(settings)
+            with patch.object(stream, "_poll_clock_utc", return_value=replay_now):
+                async for event in stream.events():
+                    return event
+            return None
+
+        event = asyncio.run(consume_once())
+
+        self.assertIsInstance(event, Heartbeat)
+        self.assertEqual(event.timestamp_ms, int(replay_now.timestamp() * 1000))
+
+    def test_rest_polling_stream_skips_current_replay_minute_bar(self):
+        class Historical:
+            def get_stock_latest_quote(self, request):
+                return {}
+
+        replay_now = datetime(2026, 5, 22, 13, 35, 30, tzinfo=ZoneInfo("UTC"))
+        closed = Bar("AAPL", 1, 2, 1, 2, 100, 2, int(datetime(2026, 5, 22, 13, 34, tzinfo=ZoneInfo("UTC")).timestamp() * 1000), 0)
+        current = Bar("AAPL", 2, 3, 2, 3, 100, 3, int(datetime(2026, 5, 22, 13, 35, tzinfo=ZoneInfo("UTC")).timestamp() * 1000), 0)
+        clients = types.SimpleNamespace(historical=Historical(), feed="iex")
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            alpaca_market_data_mode="rest",
+            alpaca_market_data_poll_seconds=0.01,
+            replay_market_data=True,
+            replay_closed_bars_only=True,
+        )
+
+        async def consume_once():
+            stream = AlpacaRestPollingStream(settings)
+            with patch("alpaca_stream.make_clients", return_value=clients), patch(
+                "alpaca_stream.get_bars_between", return_value={"AAPL": [closed, current]}
+            ), patch.object(stream, "_poll_clock_utc", return_value=replay_now):
+                async for event in stream.events():
+                    return event
+            return None
+
+        event = asyncio.run(consume_once())
+
+        self.assertEqual(event, closed)
 
     def test_alpaca_stream_raises_when_websocket_task_ends_silently(self):
         class FakeStream:

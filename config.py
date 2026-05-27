@@ -28,6 +28,9 @@ class Settings:
     alpaca_data_base_url: str | None = None
     alpaca_market_data_mode: str = "stream"
     alpaca_market_data_poll_seconds: float = 5.0
+    replay_use_mock_clock: bool = False
+    replay_closed_bars_only: bool = False
+    replay_clock_timeout_seconds: float = 0.5
     execution_mode: str = "local"
     strategy_names: list[str] = field(default_factory=lambda: ["opening_impulse"])
 
@@ -472,6 +475,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_data_base_url", "ALPACA_DATA_BASE_URL", _str_env, None),
     ("alpaca_market_data_mode", "ALPACA_MARKET_DATA_MODE", _lower_env, "stream"),
     ("alpaca_market_data_poll_seconds", "ALPACA_MARKET_DATA_POLL_SECONDS", _float_env, 1.0),
+    ("replay_use_mock_clock", "REPLAY_USE_MOCK_CLOCK", _bool_env, False),
+    ("replay_closed_bars_only", "REPLAY_CLOSED_BARS_ONLY", _bool_env, False),
+    ("replay_clock_timeout_seconds", "REPLAY_CLOCK_TIMEOUT_SECONDS", _float_env, 0.5),
     ("execution_mode", "EXECUTION_MODE", _lower_env, "local"),
     ("openai_api_key", "OPENAI_API_KEY", _str_env, None),
     ("openai_model", "OPENAI_MODEL", _str_env, "gpt-5.4-mini"),
@@ -651,5 +657,7 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
         raise ValueError("ALPACA_MARKET_DATA_MODE must be 'stream' or 'rest'.")
     if settings.alpaca_market_data_poll_seconds <= 0:
         raise ValueError("ALPACA_MARKET_DATA_POLL_SECONDS must be greater than 0.")
+    if settings.replay_clock_timeout_seconds <= 0:
+        raise ValueError("REPLAY_CLOCK_TIMEOUT_SECONDS must be greater than 0.")
 
     return settings

@@ -585,6 +585,9 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
         "stream": {
             "heartbeat_seconds": settings.heartbeat_seconds,
             "alpaca_market_data_poll_seconds": settings.alpaca_market_data_poll_seconds,
+            "replay_use_mock_clock": settings.replay_use_mock_clock,
+            "replay_closed_bars_only": settings.replay_closed_bars_only,
+            "replay_clock_timeout_seconds": settings.replay_clock_timeout_seconds,
             "alpaca_fill_timeout_seconds": settings.alpaca_fill_timeout_seconds,
             "alpaca_fill_poll_seconds": settings.alpaca_fill_poll_seconds,
             "max_entry_chase_pct": settings.max_entry_chase_pct,
