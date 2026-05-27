@@ -625,9 +625,7 @@ def print_text(summary: dict) -> None:
         )
         if positions.get("by_strategy"):
             print("\nPosition Strategies")
-            for strategy, item in sorted(
-                positions["by_strategy"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True
-            ):
+            for strategy, item in sorted(positions["by_strategy"].items(), key=lambda pair: pair[0]):
                 print(
                     f"- {strategy}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
                     f"win rate {item['win_rate']:.1%}, avg legs {item['average_legs']:.2f}"
@@ -658,7 +656,7 @@ def print_text(summary: dict) -> None:
 
     if summary["by_strategy"]:
         print("\nStrategies")
-        for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True):
+        for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[0]):
             print(f"- {strategy}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
 
     if summary.get("by_entry_market_regime"):

@@ -1,5 +1,6 @@
 import contextlib
 import asyncio
+import io
 import os
 import unittest
 import sys
@@ -12,6 +13,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from contextlib import redirect_stdout
 from zoneinfo import ZoneInfo
 
 from candle import SymbolState
@@ -715,6 +717,36 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(summary["by_day_strategy"]["2026-04-28"]["opening_impulse"]["trades"], 1)
         self.assertEqual(summary["by_day_strategy"]["2026-04-29"]["gap_and_go"]["trades"], 1)
         self.assertEqual(summary["best_trade"]["trade_day"], "2026-04-28")
+
+    def test_trade_journal_text_sorts_strategy_sections_by_name(self):
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy", "AAA", market_ms(2026, 4, 28, 9, 31), 10, 10.0, 0.0, "steady_intraday", "entry", "buy-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "AAA", market_ms(2026, 4, 28, 9, 40), 10, 11.0, 10.0, "steady_intraday", "target", "sell-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy", "BBB", market_ms(2026, 4, 28, 9, 41), 10, 10.0, 0.0, "macd_early_impulse", "entry", "buy-2"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell", "BBB", market_ms(2026, 4, 28, 9, 50), 10, 9.0, -10.0, "macd_early_impulse", "stop", "sell-2"
+            ),
+        ]
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+        out = io.StringIO()
+
+        with redirect_stdout(out):
+            analyze_trade_journal.print_text(summary)
+
+        text = out.getvalue()
+        self.assertLess(text.index("- macd_early_impulse:"), text.index("- steady_intraday:"))
+        self.assertLess(
+            text.index("Position Strategies"),
+            text.index("- macd_early_impulse:"),
+        )
+        self.assertLess(text.rindex("- macd_early_impulse:"), text.rindex("- steady_intraday:"))
 
     def test_trade_journal_analyzer_win_rate_by_entry_hour_et(self):
         day = 2026, 4, 28
