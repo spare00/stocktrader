@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 from candle import SymbolState
 from config import Settings
-from env_vars import EnvSpec, bool_env, float_env, int_env
+from env_vars import EnvSpec, bool_env, float_env, int_env, lower_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategy_selectors.select_gap_and_go import latest_valid_quote
@@ -45,7 +45,7 @@ class StochMACDReversalStrategy(Strategy):
             float_env,
             2.0,
         ),
-        ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.80),
+        ("stoch_macd_min_volume_ratio", "STOCH_MACD_MIN_VOLUME_RATIO", float_env, 0.85),
         ("stoch_macd_max_spread_bps", "STOCH_MACD_MAX_SPREAD_BPS", float_env, 15.0),
         ("stoch_macd_vwap_enabled", "STOCH_MACD_VWAP_ENABLED", bool_env, True),
         ("stoch_macd_vwap_buffer_pct", "STOCH_MACD_VWAP_BUFFER_PCT", float_env, 0.0005),
@@ -55,8 +55,8 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_min_hist_norm", "STOCH_MACD_MIN_HIST_NORM", float_env, 0.00005),
         ("stoch_macd_hist_rise_bars", "STOCH_MACD_HIST_RISE_BARS", int_env, 2),
         ("stoch_macd_macd_rise_bars", "STOCH_MACD_MACD_RISE_BARS", int_env, 2),
-        ("stoch_macd_stoch_cross_lookback_bars", "STOCH_MACD_STOCH_CROSS_LOOKBACK_BARS", int_env, 3),
-        ("stoch_macd_max_k", "STOCH_MACD_MAX_K", float_env, 88.0),
+        ("stoch_macd_stoch_cross_lookback_bars", "STOCH_MACD_STOCH_CROSS_LOOKBACK_BARS", int_env, 2),
+        ("stoch_macd_max_k", "STOCH_MACD_MAX_K", float_env, 68.0),
         ("stoch_macd_allow_overbought_expansion", "STOCH_MACD_ALLOW_OVERBOUGHT_EXPANSION", bool_env, False),
         ("stoch_macd_overbought_min_hist_rise_norm", "STOCH_MACD_OVERBOUGHT_MIN_HIST_RISE_NORM", float_env, 0.00005),
         ("stoch_macd_ao_filter_enabled", "STOCH_MACD_AO_FILTER_ENABLED", bool_env, False),
@@ -96,9 +96,9 @@ class StochMACDReversalStrategy(Strategy):
             "stoch_macd_max_trades_per_symbol_per_session",
             "STOCH_MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
             int_env,
-            2,
+            5,
         ),
-        ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
+        ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
         ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 35),
         (
             "stoch_macd_risk_off_stoch_cross_lookback_bars",
@@ -144,7 +144,40 @@ class StochMACDReversalStrategy(Strategy):
             "stoch_macd_reentry_max_support_extension_pct",
             "STOCH_MACD_REENTRY_MAX_SUPPORT_EXTENSION_PCT",
             float_env,
-            0.0045,
+            0.0030,
+        ),
+        ("stoch_macd_entry_profile", "STOCH_MACD_ENTRY_PROFILE", lower_env, "reversal"),
+        (
+            "stoch_macd_require_supertrend_bullish_for_entry",
+            "STOCH_MACD_REQUIRE_SUPERTREND_BULLISH_FOR_ENTRY",
+            bool_env,
+            False,
+        ),
+        ("stoch_macd_supertrend_entry_mode", "STOCH_MACD_SUPERTREND_ENTRY_MODE", lower_env, "support_touch"),
+        ("stoch_macd_supertrend_touch_lookback_bars", "STOCH_MACD_SUPERTREND_TOUCH_LOOKBACK_BARS", int_env, 5),
+        ("stoch_macd_supertrend_touch_buffer_pct", "STOCH_MACD_SUPERTREND_TOUCH_BUFFER_PCT", float_env, 0.003),
+        (
+            "stoch_macd_require_oversold_stoch_recovery",
+            "STOCH_MACD_REQUIRE_OVERSOLD_STOCH_RECOVERY",
+            bool_env,
+            True,
+        ),
+        ("stoch_macd_oversold_k_threshold", "STOCH_MACD_OVERSOLD_K_THRESHOLD", float_env, 35.0),
+        ("stoch_macd_oversold_lookback_bars", "STOCH_MACD_OVERSOLD_LOOKBACK_BARS", int_env, 8),
+        ("stoch_macd_require_macd_reversal", "STOCH_MACD_REQUIRE_MACD_REVERSAL", bool_env, True),
+        ("stoch_macd_pullback_min_pct", "STOCH_MACD_PULLBACK_MIN_PCT", float_env, 0.003),
+        ("stoch_macd_pullback_lookback_bars", "STOCH_MACD_PULLBACK_LOOKBACK_BARS", int_env, 15),
+        (
+            "stoch_macd_entry_chase_max_extension_pct",
+            "STOCH_MACD_ENTRY_CHASE_MAX_EXTENSION_PCT",
+            float_env,
+            0.003,
+        ),
+        (
+            "stoch_macd_entry_chase_session_high_lookback_bars",
+            "STOCH_MACD_ENTRY_CHASE_SESSION_HIGH_LOOKBACK_BARS",
+            int_env,
+            20,
         ),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.stoch_macd_reversal",)
@@ -241,6 +274,19 @@ class StochMACDReversalStrategy(Strategy):
                 "max_k": settings.stoch_macd_reentry_max_k,
                 "max_support_extension_pct": settings.stoch_macd_reentry_max_support_extension_pct,
             },
+            "entry_profile": settings.stoch_macd_entry_profile,
+            "require_supertrend_bullish_for_entry": settings.stoch_macd_require_supertrend_bullish_for_entry,
+            "supertrend_entry_mode": settings.stoch_macd_supertrend_entry_mode,
+            "supertrend_touch_lookback_bars": settings.stoch_macd_supertrend_touch_lookback_bars,
+            "supertrend_touch_buffer_pct": settings.stoch_macd_supertrend_touch_buffer_pct,
+            "require_oversold_stoch_recovery": settings.stoch_macd_require_oversold_stoch_recovery,
+            "oversold_k_threshold": settings.stoch_macd_oversold_k_threshold,
+            "oversold_lookback_bars": settings.stoch_macd_oversold_lookback_bars,
+            "require_macd_reversal": settings.stoch_macd_require_macd_reversal,
+            "pullback_min_pct": settings.stoch_macd_pullback_min_pct,
+            "pullback_lookback_bars": settings.stoch_macd_pullback_lookback_bars,
+            "entry_chase_max_extension_pct": settings.stoch_macd_entry_chase_max_extension_pct,
+            "entry_chase_session_high_lookback_bars": settings.stoch_macd_entry_chase_session_high_lookback_bars,
         }
 
     def __init__(self, settings: Settings):
@@ -335,6 +381,16 @@ class StochMACDReversalStrategy(Strategy):
         if not self._last_n_rising(k_values, 1):
             return self._reject(state, "stoch_timing", f"STOCH K not rising k={k_now:.1f}")
 
+        reversal_profile = self._uses_reversal_entry_profile()
+        if reversal_profile and self.settings.stoch_macd_require_oversold_stoch_recovery:
+            oversold_reject = self._oversold_stoch_recovery_reject_reason(
+                k_values,
+                d_values,
+                stoch_cross_lookback,
+            )
+            if oversold_reject:
+                return self._reject(state, "stoch_recovery", oversold_reject)
+
         ccc = macd_line[-1]
         macd_signal = signal_line[-1]
         if ccc <= macd_signal:
@@ -351,16 +407,27 @@ class StochMACDReversalStrategy(Strategy):
             min_hist_norm *= 1.0 + (
                 max(1.0, self.settings.stoch_macd_neutral_hist_multiplier) - 1.0
             ) * neutral_hardening
-        if hist_norm < min_hist_norm:
-            return self._reject(
-                state,
-                "macd_strength",
-                f"hist too weak hist_norm={hist_norm:.5f} min={min_hist_norm:.5f}",
+        if reversal_profile and self.settings.stoch_macd_require_macd_reversal:
+            macd_reject = self._macd_reversal_reject_reason(
+                macd_line,
+                signal_line,
+                hist,
+                hist_norm,
+                min_hist_norm,
             )
-        if not self._last_n_rising(hist, self.settings.stoch_macd_hist_rise_bars):
-            return self._reject(state, "macd_strength", "histogram not rising")
-        if not self._last_n_rising(macd_line, self.settings.stoch_macd_macd_rise_bars):
-            return self._reject(state, "macd_strength", "MACD line not rising")
+            if macd_reject:
+                return self._reject(state, "macd_reversal", macd_reject)
+        else:
+            if hist_norm < min_hist_norm:
+                return self._reject(
+                    state,
+                    "macd_strength",
+                    f"hist too weak hist_norm={hist_norm:.5f} min={min_hist_norm:.5f}",
+                )
+            if not self._last_n_rising(hist, self.settings.stoch_macd_hist_rise_bars):
+                return self._reject(state, "macd_strength", "histogram not rising")
+            if not self._last_n_rising(macd_line, self.settings.stoch_macd_macd_rise_bars):
+                return self._reject(state, "macd_strength", "MACD line not rising")
         if k_now > self.settings.stoch_macd_max_k:
             if not self.settings.stoch_macd_allow_overbought_expansion:
                 return self._reject(
@@ -407,8 +474,15 @@ class StochMACDReversalStrategy(Strategy):
                     "supertrend_bearish",
                     f"EMA{self.settings.stoch_macd_ema_period} <= SuperTrend ema={ema_fast:.2f} line={supertrend_value:.2f}",
                 )
-            if not supertrend_bullish:
-                return self._reject(state, "supertrend_bearish", f"SuperTrend bearish line={supertrend_value:.2f}")
+            supertrend_entry_reject = self._supertrend_entry_reject_reason(
+                current_session_bars,
+                last.ask,
+                supertrend_value,
+                supertrend_bullish,
+                ema_fast,
+            )
+            if supertrend_entry_reject:
+                return self._reject(state, "supertrend_entry", supertrend_entry_reject)
 
         ao_values = self._compute_ao(current_session_bars)
         ao_reason = ""
@@ -532,16 +606,23 @@ class StochMACDReversalStrategy(Strategy):
                         f"previous={prev_vwap or 0.0:.4f} min_bps={self.settings.stoch_macd_min_vwap_rise_bps:.2f}",
                     )
 
-        if reentry_freshness:
-            reentry_chase_reason = self._reentry_chase_reject_reason(
-                last.ask,
-                k_now,
-                ema_fast,
-                supertrend_value,
-                session_vwap,
-            )
-            if reentry_chase_reason:
-                return self._reject(state, "reentry_chase", reentry_chase_reason)
+        if reversal_profile:
+            pullback_reject = self._pullback_reject_reason(current_session_bars)
+            if pullback_reject:
+                return self._reject(state, "pullback", pullback_reject)
+
+        chase_reason = self._entry_chase_reject_reason(
+            last.ask,
+            k_now,
+            ema_fast,
+            supertrend_value,
+            session_vwap,
+            current_session_bars,
+            reentry_freshness,
+        )
+        if chase_reason:
+            code = "reentry_chase" if reentry_freshness else "entry_chase"
+            return self._reject(state, code, chase_reason)
 
         stop_price = self._entry_stop_price(current_session_bars, last.ask)
         r_pct = (last.ask - stop_price) / last.ask if last.ask > 0 else 0.0
@@ -559,6 +640,7 @@ class StochMACDReversalStrategy(Strategy):
         if not risk_off and neutral_hardening > 0:
             regime_reason = f" regime=neutral_hardened:{neutral_hardening:.2f}"
         reentry_reason = " reentry=fresh" if reentry_freshness else ""
+        entry_label = "reversal bounce" if reversal_profile else "confirmed trend"
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -569,7 +651,7 @@ class StochMACDReversalStrategy(Strategy):
             volume_ratio=vol_r,
             spread_bps=last.spread_bps,
             reason=(
-                "stoch_macd_reversal confirmed trend "
+                f"stoch_macd_reversal {entry_label} "
                 f"ema{self.settings.stoch_macd_ema_period}={ema_fast if ema_fast is not None else 0.0:.2f} "
                 f"{supertrend_reason} "
                 f"ccc={ccc:.4f} signal={macd_signal:.4f} hist_norm={hist_norm:.5f} r={r_pct:.2%} "
@@ -712,19 +794,191 @@ class StochMACDReversalStrategy(Strategy):
         score = getattr(regime, "score", 0)
         return min(1.0, max(0.0, (risk_on_score - score) / span))
 
-    def _reentry_chase_reject_reason(
+    def _uses_reversal_entry_profile(self) -> bool:
+        profile = (getattr(self.settings, "stoch_macd_entry_profile", "reversal") or "reversal").strip().lower()
+        return profile == "reversal"
+
+    def _oversold_stoch_recovery_reject_reason(
+        self,
+        k_values: list[float],
+        d_values: list[float],
+        cross_lookback: int,
+    ) -> str | None:
+        lookback = max(2, self.settings.stoch_macd_oversold_lookback_bars)
+        if len(k_values) < lookback:
+            return f"need >= {lookback} STOCH values, have {len(k_values)}"
+        oversold_k = self.settings.stoch_macd_oversold_k_threshold
+        if min(k_values[-lookback:]) >= oversold_k:
+            return (
+                f"no oversold STOCH in last {lookback} bars "
+                f"min_k={min(k_values[-lookback:]):.1f} threshold={oversold_k:.1f}"
+            )
+        if not self._stoch_bullish_cross_from_oversold(k_values, d_values, cross_lookback, oversold_k):
+            return (
+                f"no bullish STOCH cross from oversold lookback={cross_lookback} "
+                f"threshold={oversold_k:.1f}"
+            )
+        return None
+
+    @staticmethod
+    def _stoch_bullish_cross_from_oversold(
+        k_values: list[float],
+        d_values: list[float],
+        lookback: int,
+        oversold_k: float,
+    ) -> bool:
+        if lookback <= 0:
+            return min(k_values[-3:]) < oversold_k if len(k_values) >= 3 else False
+        if len(k_values) < 2 or len(d_values) < 2:
+            return False
+        paired = list(zip(k_values, d_values))
+        tail = paired[-(lookback + 1) :]
+        for previous, current in zip(tail, tail[1:]):
+            prev_k, prev_d = previous
+            curr_k, curr_d = current
+            if prev_k <= prev_d and curr_k > curr_d and min(prev_k, curr_k) < oversold_k:
+                return True
+        return False
+
+    def _macd_reversal_reject_reason(
+        self,
+        macd_line: list[float],
+        signal_line: list[float],
+        hist: list[float],
+        hist_norm: float,
+        min_hist_norm: float,
+    ) -> str | None:
+        if len(hist) < 2 or len(macd_line) < 2 or len(signal_line) < 2:
+            return "MACD warmup incomplete for reversal"
+        if hist_norm < min_hist_norm:
+            return f"hist too weak hist_norm={hist_norm:.5f} min={min_hist_norm:.5f}"
+        hist_flip = hist[-2] <= 0 < hist[-1]
+        macd_cross = macd_line[-2] <= signal_line[-2] and macd_line[-1] > signal_line[-1]
+        if not hist_flip and not macd_cross:
+            return "MACD not reversing (need hist cross up or MACD/ signal cross)"
+        if hist[-1] <= hist[-2]:
+            return "histogram not turning up"
+        return None
+
+    def _pullback_reject_reason(self, session_bars: list) -> str | None:
+        lookback = max(3, self.settings.stoch_macd_pullback_lookback_bars)
+        if len(session_bars) < lookback:
+            return f"need >= {lookback} session bars for pullback, have {len(session_bars)}"
+        window = session_bars[-lookback:]
+        recent_high = max(float(bar.high) for bar in window)
+        min_low = min(float(bar.low) for bar in window)
+        if recent_high <= 0:
+            return "invalid recent high for pullback"
+        depth = (recent_high - min_low) / recent_high
+        min_depth = max(0.0, self.settings.stoch_macd_pullback_min_pct)
+        if depth < min_depth:
+            return f"pullback too shallow depth={depth:.2%} min={min_depth:.2%}"
+        return None
+
+    def _supertrend_entry_reject_reason(
+        self,
+        session_bars: list,
+        ask: float,
+        supertrend_value: float | None,
+        supertrend_bullish: bool,
+        ema_fast: float | None,
+    ) -> str | None:
+        if not self.settings.stoch_macd_supertrend_enabled:
+            return None
+        if supertrend_value is None or supertrend_value <= 0:
+            return "missing SuperTrend line"
+
+        legacy_profile = not self._uses_reversal_entry_profile()
+        mode = (self.settings.stoch_macd_supertrend_entry_mode or "support_touch").strip().lower()
+        if legacy_profile or mode == "bullish" or self.settings.stoch_macd_require_supertrend_bullish_for_entry:
+            if not supertrend_bullish:
+                return f"SuperTrend bearish line={supertrend_value:.2f}"
+            return None
+
+        if mode == "off":
+            return None
+
+        buffer_pct = max(0.0, self.settings.stoch_macd_supertrend_touch_buffer_pct)
+        lookback = max(1, self.settings.stoch_macd_supertrend_touch_lookback_bars)
+        recent_bars = session_bars[-lookback:] if len(session_bars) >= lookback else session_bars
+        upper_bound = supertrend_value * (1.0 + buffer_pct)
+        lower_bound = supertrend_value * (1.0 - buffer_pct)
+        touched = any(float(bar.low) <= upper_bound and float(bar.high) >= lower_bound for bar in recent_bars)
+
+        if not supertrend_bullish:
+            if not touched:
+                return f"SuperTrend bearish without line touch line={supertrend_value:.2f}"
+            return None
+
+        max_ext = max(0.0, self.settings.stoch_macd_entry_chase_max_extension_pct)
+        if max_ext > 0 and ask > supertrend_value * (1.0 + max_ext):
+            extension = (ask - supertrend_value) / supertrend_value
+            return f"too extended above SuperTrend extension={extension:.2%} max={max_ext:.2%}"
+        return None
+
+    def _entry_chase_reject_reason(
         self,
         ask: float,
         k_now: float,
         ema_fast: float | None,
         supertrend_value: float | None,
         session_vwap: float | None,
+        session_bars: list,
+        reentry_freshness: bool,
     ) -> str | None:
-        max_k = self.settings.stoch_macd_reentry_max_k
-        if max_k > 0 and k_now > max_k:
-            return f"repeat entry overbought k={k_now:.1f} max={max_k:.1f}"
+        if reentry_freshness:
+            reentry_reason = self._reentry_chase_reject_reason(
+                ask,
+                k_now,
+                ema_fast,
+                supertrend_value,
+                session_vwap,
+            )
+            if reentry_reason:
+                return reentry_reason
 
-        max_extension_pct = max(0.0, self.settings.stoch_macd_reentry_max_support_extension_pct)
+        if not self._uses_reversal_entry_profile():
+            return None
+
+        max_ext = max(0.0, self.settings.stoch_macd_entry_chase_max_extension_pct)
+        if max_ext <= 0:
+            return None
+
+        lookback = max(2, self.settings.stoch_macd_entry_chase_session_high_lookback_bars)
+        if len(session_bars) >= lookback:
+            prior_bars = session_bars[-lookback:-1] if len(session_bars) > lookback else session_bars[:-1]
+            if prior_bars:
+                recent_high = max(float(bar.high) for bar in prior_bars)
+                if recent_high > 0 and ask >= recent_high * (1.0 - max_ext):
+                    return (
+                        f"too close to session high ask={ask:.2f} high={recent_high:.2f} "
+                        f"max_below={max_ext:.2%}"
+                    )
+
+        if not reentry_freshness:
+            max_k = self.settings.stoch_macd_max_k
+            if max_k > 0 and k_now > max_k:
+                return f"entry overbought k={k_now:.1f} max={max_k:.1f}"
+
+            support_reason = self._support_extension_reject_reason(
+                ask,
+                ema_fast,
+                supertrend_value,
+                session_vwap,
+                max_ext,
+            )
+            if support_reason:
+                return support_reason
+        return None
+
+    def _support_extension_reject_reason(
+        self,
+        ask: float,
+        ema_fast: float | None,
+        supertrend_value: float | None,
+        session_vwap: float | None,
+        max_extension_pct: float,
+    ) -> str | None:
         if max_extension_pct <= 0:
             return None
         support_candidates = [
@@ -739,9 +993,33 @@ class StochMACDReversalStrategy(Strategy):
         extension_pct = (ask - support_value) / support_value
         if extension_pct > max_extension_pct:
             return (
-                f"repeat entry too extended ask={ask:.2f} support={support_name}:{support_value:.2f} "
-                f"extension={extension_pct:.2%} max={max_extension_pct:.2%}"
+                f"too extended above {support_name} ask={ask:.2f} "
+                f"support={support_value:.2f} extension={extension_pct:.2%} max={max_extension_pct:.2%}"
             )
+        return None
+
+    def _reentry_chase_reject_reason(
+        self,
+        ask: float,
+        k_now: float,
+        ema_fast: float | None,
+        supertrend_value: float | None,
+        session_vwap: float | None,
+    ) -> str | None:
+        max_k = self.settings.stoch_macd_reentry_max_k
+        if max_k > 0 and k_now > max_k:
+            return f"repeat entry overbought k={k_now:.1f} max={max_k:.1f}"
+
+        max_extension_pct = max(0.0, self.settings.stoch_macd_reentry_max_support_extension_pct)
+        support_reason = self._support_extension_reject_reason(
+            ask,
+            ema_fast,
+            supertrend_value,
+            session_vwap,
+            max_extension_pct,
+        )
+        if support_reason:
+            return f"repeat entry {support_reason}"
         return None
 
     def on_entry_fill(self, fill) -> None:

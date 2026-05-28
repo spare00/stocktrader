@@ -8571,8 +8571,20 @@ class CoreTradingTests(unittest.TestCase):
         state.update_quote(Quote(symbol, last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
         return state
 
+    def _stoch_macd_legacy_settings(self, **overrides) -> Settings:
+        params = {
+            "symbols": ["AAPL"],
+            "stoch_macd_entry_profile": "legacy",
+            "stoch_macd_require_oversold_stoch_recovery": False,
+            "stoch_macd_require_macd_reversal": False,
+            "stoch_macd_max_k": 88.0,
+            "stoch_macd_stoch_cross_lookback_bars": 3,
+        }
+        params.update(overrides)
+        return Settings(**params)
+
     def test_stoch_macd_reversal_emits_buy_on_confirmed_indicator_stack(self):
-        settings = Settings(symbols=["AAPL"])
+        settings = self._stoch_macd_legacy_settings()
         strategy = StochMACDReversalStrategy(settings)
         closes = [90.0 + index * 0.2 for index in range(40)]
 
@@ -8609,7 +8621,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
     def test_stoch_macd_reversal_signal_time_uses_decision_event_not_stale_quote(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        settings = self._stoch_macd_legacy_settings(stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
         closes = [90.0 + index * 0.2 for index in range(40)]
         state = self._stoch_macd_state(closes)
@@ -8666,8 +8678,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertAlmostEqual(strategy._volume_ratio(state), 2.0)
 
     def test_stoch_macd_reversal_early_volume_can_use_recent_average(self):
-        settings = Settings(
-            symbols=["AAPL"],
+        settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
             stoch_macd_early_min_volume_ratio=1.2,
             stoch_macd_early_volume_lookback_bars=3,
@@ -8817,7 +8828,7 @@ class CoreTradingTests(unittest.TestCase):
             execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
 
     def test_stoch_macd_reversal_can_enter_near_0940_with_premarket_warmup(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=26)
+        settings = self._stoch_macd_legacy_settings(stoch_macd_macd_warmup_bars=26)
         strategy = StochMACDReversalStrategy(settings)
         state = self._stoch_macd_premarket_warmup_state()
 
@@ -8933,7 +8944,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_allows_clear_vwap_slope(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_min_vwap_rise_bps=1.0)
+        settings = self._stoch_macd_legacy_settings(stoch_macd_min_vwap_rise_bps=1.0)
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("AAPL")
         closes = [100.0 + index * 0.08 for index in range(40)]
@@ -9101,8 +9112,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_risk_off_requires_fresher_stoch_cross(self):
-        settings = Settings(
-            symbols=["AAPL"],
+        settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
             stoch_macd_stoch_cross_lookback_bars=10,
         )
@@ -9137,7 +9147,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(risk_off_signal)
 
     def test_stoch_macd_reversal_risk_off_requires_stronger_macd_histogram(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        settings = self._stoch_macd_legacy_settings(stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
         closes = [90.0 + index * 0.2 for index in range(40)]
         state = self._stoch_macd_state(closes)
@@ -9175,8 +9185,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(risk_off_signal)
 
     def test_stoch_macd_reversal_neutral_regime_scales_entry_hardening(self):
-        settings = Settings(
-            symbols=["AAPL"],
+        settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
             stoch_macd_early_window_minutes=0,
             stoch_macd_neutral_hist_multiplier=2.0,
@@ -9218,8 +9227,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(hardened_signal)
 
     def test_stoch_macd_reversal_repeat_entry_requires_fresh_impulse_after_fill(self):
-        settings = Settings(
-            symbols=["AAPL"],
+        settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
             stoch_macd_early_window_minutes=0,
             stoch_macd_reentry_volume_add=0.25,
@@ -9267,7 +9275,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(repeat_signal)
 
     def test_stoch_macd_reversal_repeat_entry_rejects_top_of_stair_chase(self):
-        settings = Settings(symbols=["AAPL"])
+        settings = self._stoch_macd_legacy_settings(stoch_macd_reentry_max_support_extension_pct=0.0045)
         strategy = StochMACDReversalStrategy(settings)
 
         overextended = strategy._reentry_chase_reject_reason(
@@ -9395,8 +9403,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_ao_filter_allows_improving_momentum(self):
-        settings = Settings(
-            symbols=["AAPL"],
+        settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
             stoch_macd_ao_filter_enabled=True,
         )
@@ -9434,8 +9441,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("ao=0.0400", signal.reason)
 
     def test_stoch_macd_reversal_ao_filter_allows_near_zero_improving_momentum(self):
-        settings = Settings(
-            symbols=["AAPL"],
+        settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
             stoch_macd_ao_filter_enabled=True,
             stoch_macd_ao_near_zero_min_value=-0.01,
@@ -9663,7 +9669,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(ema5, ema20)
 
     def test_stoch_macd_reversal_allows_green_supertrend_when_ema_is_below_line_by_default(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        settings = self._stoch_macd_legacy_settings(stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
 
         with patch.object(
@@ -9953,7 +9959,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(strategy._compute_stoch(state))
 
     def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_supertrend_enabled=False, stoch_macd_vwap_enabled=False)
+        settings = self._stoch_macd_legacy_settings(
+            stoch_macd_supertrend_enabled=False,
+            stoch_macd_vwap_enabled=False,
+        )
         strategy = StochMACDReversalStrategy(settings)
         closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
         state = self._stoch_macd_state(closes)
@@ -10134,6 +10143,97 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "runner pullback")
+
+    def test_stoch_macd_reversal_rejects_midrange_stoch_without_oversold_recovery(self):
+        settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [90.0 + index * 0.2 for index in range(40)]
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([49.0, 52.0, 55.0], [50.0, 51.0, 52.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.02, -0.01, 0.01],
+                [-0.015, -0.008, 0.002],
+                [-0.005, 0.002, 0.008],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ):
+            signal = strategy.evaluate(self._stoch_macd_state(closes))
+
+        self.assertIsNone(signal)
+
+    def test_stoch_macd_reversal_allows_bearish_supertrend_support_touch(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_entry_chase_max_extension_pct=0.004,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
+        state = self._stoch_macd_state(closes)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=(
+                [40.0, 35.0, 28.0, 22.0, 18.0, 20.0, 27.0, 35.0],
+                [42.0, 37.0, 30.0, 24.0, 20.0, 21.0, 28.0, 33.0],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.02, -0.01, 0.01],
+                [-0.015, -0.008, 0.002],
+                [-0.006, 0.001, 0.009],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(87.5, False),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=88.0,
+        ), patch.object(
+            strategy,
+            "_volume_ratio",
+            return_value=1.2,
+        ), patch.object(
+            strategy,
+            "_entry_stop_price",
+            return_value=87.55,
+        ):
+            last_bar = state.bars[-1]
+            state.bars[-1] = Bar(
+                symbol=last_bar.symbol,
+                open=88.0,
+                high=88.4,
+                low=87.48,
+                close=88.3,
+                volume=last_bar.volume,
+                vwap=88.0,
+                start_ms=last_bar.start_ms,
+                end_ms=last_bar.end_ms,
+            )
+            state.update_quote(Quote("AAPL", 88.29, 88.31, 100, 100, state.last_event_ms or 0))
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("reversal bounce", signal.reason)
+        self.assertIn("st=red", signal.reason)
 
     def test_stoch_macd_reversal_runner_ignores_fixed_profit_target(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_target_profit_pct=0.012)

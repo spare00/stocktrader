@@ -389,7 +389,7 @@ class Settings:
     stoch_macd_supertrend_multiplier: float = 2.0
     stoch_macd_supertrend_cross_ema_period: int = 20
     stoch_macd_supertrend_pre_ema_cross_multiplier: float = 2.0
-    stoch_macd_min_volume_ratio: float = 0.80
+    stoch_macd_min_volume_ratio: float = 0.85
     stoch_macd_max_spread_bps: float = 15.0
     stoch_macd_vwap_enabled: bool = True
     stoch_macd_vwap_buffer_pct: float = 0.0005
@@ -399,8 +399,8 @@ class Settings:
     stoch_macd_min_hist_norm: float = 0.00005
     stoch_macd_hist_rise_bars: int = 2
     stoch_macd_macd_rise_bars: int = 2
-    stoch_macd_stoch_cross_lookback_bars: int = 3
-    stoch_macd_max_k: float = 88.0
+    stoch_macd_stoch_cross_lookback_bars: int = 2
+    stoch_macd_max_k: float = 68.0
     stoch_macd_allow_overbought_expansion: bool = False
     stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
     stoch_macd_ao_filter_enabled: bool = False
@@ -436,8 +436,8 @@ class Settings:
     stoch_macd_stop_confirmations: int = 2
     stoch_macd_stop_max_spread_bps: float = 30.0
     stoch_macd_catastrophic_stop_loss_pct: float = 0.01
-    stoch_macd_max_trades_per_symbol_per_session: int = 2
-    stoch_macd_symbol_loss_lock_count: int = 1
+    stoch_macd_max_trades_per_symbol_per_session: int = 5
+    stoch_macd_symbol_loss_lock_count: int = 2
     stoch_macd_macd_warmup_bars: int = 35
     stoch_macd_risk_off_stoch_cross_lookback_bars: int = 3
     stoch_macd_risk_off_hist_multiplier: float = 1.5
@@ -454,7 +454,20 @@ class Settings:
     stoch_macd_reentry_hist_rise_multiplier: float = 1.25
     stoch_macd_reentry_volume_add: float = 0.25
     stoch_macd_reentry_max_k: float = 84.0
-    stoch_macd_reentry_max_support_extension_pct: float = 0.0045
+    stoch_macd_reentry_max_support_extension_pct: float = 0.0030
+    stoch_macd_entry_profile: str = "reversal"
+    stoch_macd_require_supertrend_bullish_for_entry: bool = False
+    stoch_macd_supertrend_entry_mode: str = "support_touch"
+    stoch_macd_supertrend_touch_lookback_bars: int = 5
+    stoch_macd_supertrend_touch_buffer_pct: float = 0.003
+    stoch_macd_require_oversold_stoch_recovery: bool = True
+    stoch_macd_oversold_k_threshold: float = 35.0
+    stoch_macd_oversold_lookback_bars: int = 8
+    stoch_macd_require_macd_reversal: bool = True
+    stoch_macd_pullback_min_pct: float = 0.003
+    stoch_macd_pullback_lookback_bars: int = 15
+    stoch_macd_entry_chase_max_extension_pct: float = 0.003
+    stoch_macd_entry_chase_session_high_lookback_bars: int = 20
 
     ai_review: bool = False
     news_hot_positive_only: bool = True
