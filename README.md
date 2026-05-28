@@ -60,8 +60,8 @@ Execution modes:
 
 Market-data modes:
 
-- `ALPACA_MARKET_DATA_MODE=stream`: use Alpaca's websocket feed. This is fastest and remains the default.
-- `ALPACA_MARKET_DATA_MODE=rest`: poll latest quotes and minute bars over REST every `ALPACA_MARKET_DATA_POLL_SECONDS`. Use this for secondary paper runners when Alpaca rejects another websocket with `connection limit exceeded`.
+- `ALPACA_MARKET_DATA_MODE=rest`: poll latest quotes and minute bars over REST every `ALPACA_MARKET_DATA_POLL_SECONDS`. This is the default.
+- `ALPACA_MARKET_DATA_MODE=stream`: use Alpaca's websocket feed. Runtime features that require real-time trades or news automatically upgrade the effective mode to stream.
 
 Strategies:
 
@@ -242,7 +242,25 @@ scripts/run_paper.sh --strategy macd_early_impulse stoch_macd_reversal steady_in
 
 Runtime logs are written to `logs/trader.log` with rotation. The console shows normal INFO events, while the log file also includes DEBUG diagnostics explaining why `opening_impulse` did not enter, such as low spread quality, insufficient quote move, retrace from local high, or low volume ratio. Confirmed buy/sell events are also appended to `logs/trade_journal.jsonl` so trade history survives log rotation.
 
-The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not run inside `main.py`. At runtime, `SYMBOLS` is the shared global universe, `data/<strategy>_plan.json` is that strategy's local universe, and news events can dynamically add hot symbols to the global universe.
+The selectors are REST-only pre-session steps. The market selector builds a broad liquid shortlist, and the per-strategy selectors rank that shortlist using strategy-specific criteria. They do not monitor live data and are not run inside `main.py`. At runtime, `SYMBOLS` is the shared global universe and `data/<strategy>_plan.json` is that strategy's local universe. Market data defaults to REST polling; real-time features automatically upgrade the runtime event source to websocket stream mode while REST remains available for warmup/backfill calls.
+
+You can also enable a runtime execution-strength dynamic selector. It reads the top symbols from `data/opening_universe.txt`, subscribes to their bars/quotes/trades without exposing them to strategies, and only adds a symbol to the global universe when it is in the top dollar-volume group and rolling execution strength crosses the threshold:
+
+```bash
+DYNAMIC_EXECUTION_SELECTOR_ENABLED=true
+DYNAMIC_EXECUTION_SELECTOR_STRENGTH_THRESHOLD=120
+DYNAMIC_EXECUTION_SELECTOR_TOP_DOLLAR_VOLUME_COUNT=30
+```
+
+REST polling has no trade ticks for true execution-strength calculation, so enabling this selector automatically upgrades the effective runtime market-data mode to `stream`.
+
+Runtime news expansion is separate and opt-in:
+
+```bash
+NEWS_DYNAMIC_SYMBOLS_ENABLED=true
+```
+
+When enabled, news events can dynamically add hot symbols to the global universe and the effective runtime market-data mode is also upgraded to `stream`. If both runtime news expansion and execution-strength selection are off, the process stays on REST polling unless you explicitly set `ALPACA_MARKET_DATA_MODE=stream`.
 
 The `data/` files act like embedded memory for the workflow. The broad market selector writes `data/opening_universe.txt` by default. The per-strategy selectors read that file by default and write their own strategy plan files, such as `data/opening_impulse_plan.json` and `data/gap_and_go_plan.json`.
 

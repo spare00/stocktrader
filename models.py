@@ -33,6 +33,14 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class Trade:
+    symbol: str
+    price: float
+    size: int
+    timestamp_ms: int
+
+
+@dataclass(frozen=True)
 class Heartbeat:
     timestamp_ms: int
 

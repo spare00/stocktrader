@@ -33,7 +33,8 @@ from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, Positio
 import main as trading_main
 from market_regime import MarketRegime, MarketRegimeMonitor
 from modules.symbol_manager import SymbolManager
-from models import Bar, Heartbeat, NewsEvent, Quote, Signal
+from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
+from models import Bar, Heartbeat, NewsEvent, Quote, Signal, Trade
 from order_prefixes import (
     CLIENT_ORDER_ID_ROOT,
     STRATEGY_ORDER_PREFIXES,
@@ -6731,6 +6732,57 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("MCHP", strategy.allowed_symbols)
         self.assertEqual(manager.symbol_refcount_for("MCHP"), 1)
 
+    def test_dynamic_execution_selector_selects_top_dollar_volume_strength_cross(self):
+        selector = DynamicExecutionStrengthSelector(
+            ["AAPL", "MSFT", "NVDA"],
+            strength_threshold=120.0,
+            lookback_seconds=60,
+            top_dollar_volume_count=2,
+            min_dollar_volume=1_000_000.0,
+            cooldown_seconds=600,
+        )
+        ts = market_ms(2026, 4, 24, 10, 0)
+        selector.record_bar(Bar("AAPL", 100, 101, 99, 100, 20_000, 100, ts - 60_000, ts))
+        selector.record_bar(Bar("MSFT", 50, 51, 49, 50, 30_000, 50, ts - 60_000, ts))
+        selector.record_bar(Bar("NVDA", 20, 21, 19, 20, 10_000, 20, ts - 60_000, ts))
+        selector.record_quote(Quote("AAPL", bid=99.99, ask=100.01, bid_size=100, ask_size=100, timestamp_ms=ts))
+
+        self.assertIsNone(selector.record_trade(Trade("AAPL", price=99.99, size=100, timestamp_ms=ts + 1_000)))
+        selected = selector.record_trade(Trade("AAPL", price=100.01, size=121, timestamp_ms=ts + 2_000))
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.symbol, "AAPL")
+        self.assertEqual(selected.execution_strength, 121.0)
+        self.assertEqual(selected.dollar_volume_rank, 1)
+
+    def test_dynamic_execution_selector_requires_top_dollar_volume_rank(self):
+        selector = DynamicExecutionStrengthSelector(
+            ["AAPL", "MSFT", "NVDA"],
+            strength_threshold=120.0,
+            lookback_seconds=60,
+            top_dollar_volume_count=2,
+            min_dollar_volume=1.0,
+        )
+        ts = market_ms(2026, 4, 24, 10, 0)
+        selector.record_bar(Bar("AAPL", 100, 100, 100, 100, 1_000, 100, ts - 60_000, ts))
+        selector.record_bar(Bar("MSFT", 100, 100, 100, 100, 3_000, 100, ts - 60_000, ts))
+        selector.record_bar(Bar("NVDA", 100, 100, 100, 100, 2_000, 100, ts - 60_000, ts))
+        selector.record_quote(Quote("AAPL", bid=99.99, ask=100.01, bid_size=100, ask_size=100, timestamp_ms=ts))
+
+        selector.record_trade(Trade("AAPL", price=99.99, size=100, timestamp_ms=ts + 1_000))
+        selected = selector.record_trade(Trade("AAPL", price=100.01, size=121, timestamp_ms=ts + 2_000))
+
+        self.assertIsNone(selected)
+
+    def test_dynamic_execution_candidate_loader_limits_file_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "universe.txt"
+            path.write_text("AAPL,MSFT\nNVDA,AAPL,TSLA\n")
+
+            symbols = load_candidate_symbols(path, limit=3)
+
+        self.assertEqual(symbols, ["AAPL", "MSFT", "NVDA"])
+
     def test_symbol_manager_keeps_shared_stream_until_last_owner_removes_symbol(self):
         class Stream:
             def __init__(self):
@@ -6783,7 +6835,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["execution_mode"], "alpaca_paper")
         self.assertEqual(snapshot["symbols"], ["AAPL", "MSFT"])
         self.assertEqual(snapshot["alpaca_api_key_fingerprint"], trading_main.credential_fingerprint("test"))
-        self.assertEqual(snapshot["alpaca_market_data_mode"], "stream")
+        self.assertEqual(snapshot["alpaca_market_data_mode"], "rest")
+        self.assertFalse(snapshot["news_dynamic_symbols_enabled"])
         self.assertFalse(snapshot["replay_market_data"])
         self.assertEqual(snapshot["indicator_preload_bars"], 1000)
         self.assertEqual(snapshot["indicator_max_bars_per_symbol"], 3000)
@@ -6816,6 +6869,23 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(trading_main.should_manage_exits_on_heartbeat(replay_settings))
         self.assertTrue(trading_main.should_manage_exits_on_heartbeat(live_settings))
+
+    def test_effective_market_data_mode_upgrades_for_realtime_features(self):
+        base = Settings(alpaca_api_key="test-key", alpaca_secret_key="test")
+        dynamic = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            dynamic_execution_selector_enabled=True,
+        )
+        news = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            news_dynamic_symbols_enabled=True,
+        )
+
+        self.assertEqual(trading_main.effective_market_data_mode(base), "rest")
+        self.assertEqual(trading_main.effective_market_data_mode(dynamic), "stream")
+        self.assertEqual(trading_main.effective_market_data_mode(news), "stream")
 
     def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):
         log_filter = trading_main.FriendlyAlpacaStreamErrorFilter(min_interval_seconds=60)
@@ -7036,6 +7106,7 @@ class CoreTradingTests(unittest.TestCase):
             alpaca_secret_key="test",
             symbols=["AAPL"],
             heartbeat_seconds=5,
+            news_dynamic_symbols_enabled=True,
         )
         clients = FakeClients()
 

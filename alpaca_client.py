@@ -14,7 +14,7 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 
 from config import Settings
-from models import Bar, Quote
+from models import Bar, Quote, Trade
 
 
 class AlpacaConfigError(RuntimeError):
@@ -72,6 +72,15 @@ def to_quote(raw_quote) -> Quote:
         bid_size=int(raw_quote.bid_size),
         ask_size=int(raw_quote.ask_size),
         timestamp_ms=_to_ms(raw_quote.timestamp),
+    )
+
+
+def to_trade(raw_trade) -> Trade:
+    return Trade(
+        symbol=raw_trade.symbol,
+        price=float(raw_trade.price),
+        size=int(raw_trade.size),
+        timestamp_ms=_to_ms(raw_trade.timestamp),
     )
 
 

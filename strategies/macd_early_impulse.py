@@ -354,7 +354,11 @@ class MACDEarlyImpulseStrategy(Strategy):
         vwap = self._session_vwap(rb)
         if vwap is not None and last.ask < vwap:
             return self._reject(state, "below_vwap", "price below vwap")
-        vwap_slope_reject = self._vwap_slope_reject_reason(rb, vwap)
+        vwap_slope_reject = self._vwap_slope_reject_reason(
+            rb,
+            vwap,
+            allow_insufficient_bars=early_window,
+        )
         if vwap_slope_reject:
             return self._reject(state, "vwap", vwap_slope_reject)
         runner_mode = self._runner_mode(state.symbol, rb, last.ask, ema_trend[-1], vwap, vol_r)
@@ -903,13 +907,21 @@ class MACDEarlyImpulseStrategy(Strategy):
         total_value = sum(bar.vwap * bar.volume for bar in session_bars if bar.volume > 0)
         return total_value / total_volume if total_value > 0 else None
 
-    def _vwap_slope_reject_reason(self, session_bars, session_vwap: float | None) -> str | None:
+    def _vwap_slope_reject_reason(
+        self,
+        session_bars,
+        session_vwap: float | None,
+        *,
+        allow_insufficient_bars: bool = False,
+    ) -> str | None:
         if not self.settings.macd_require_vwap_rising:
             return None
         bars = list(session_bars)
         lookback = max(1, self.settings.macd_vwap_rising_lookback_bars)
         min_bars = lookback * 2
         if len(bars) < min_bars:
+            if allow_insufficient_bars:
+                return None
             return f"not enough bars for VWAP slope bars={len(bars)} need={min_bars}"
         if session_vwap is None:
             return "missing current-session VWAP"

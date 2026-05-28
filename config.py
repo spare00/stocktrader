@@ -26,7 +26,7 @@ class Settings:
     alpaca_stream_url: str | None = None
     alpaca_trading_base_url: str | None = None
     alpaca_data_base_url: str | None = None
-    alpaca_market_data_mode: str = "stream"
+    alpaca_market_data_mode: str = "rest"
     alpaca_market_data_poll_seconds: float = 5.0
     replay_use_mock_clock: bool = False
     replay_closed_bars_only: bool = False
@@ -460,9 +460,18 @@ class Settings:
     news_hot_positive_only: bool = True
     news_hot_min_sentiment_score: float = 0.5
     news_log_events: bool = False
+    news_dynamic_symbols_enabled: bool = False
     news_listener_positive_only: bool = True
     news_listener_min_impact: float = 0.5
     news_listener_symbol_cooldown_seconds: int = 120
+    dynamic_execution_selector_enabled: bool = False
+    dynamic_execution_selector_universe_file: str = "data/opening_universe.txt"
+    dynamic_execution_selector_candidate_limit: int = 100
+    dynamic_execution_selector_top_dollar_volume_count: int = 30
+    dynamic_execution_selector_strength_threshold: float = 120.0
+    dynamic_execution_selector_lookback_seconds: int = 60
+    dynamic_execution_selector_min_dollar_volume: float = 500_000.0
+    dynamic_execution_selector_cooldown_seconds: int = 600
 
 
 COMMON_ENV: tuple[EnvSpec, ...] = (
@@ -473,7 +482,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_stream_url", "ALPACA_STREAM_URL", _str_env, None),
     ("alpaca_trading_base_url", "ALPACA_TRADING_BASE_URL", _str_env, None),
     ("alpaca_data_base_url", "ALPACA_DATA_BASE_URL", _str_env, None),
-    ("alpaca_market_data_mode", "ALPACA_MARKET_DATA_MODE", _lower_env, "stream"),
+    ("alpaca_market_data_mode", "ALPACA_MARKET_DATA_MODE", _lower_env, "rest"),
     ("alpaca_market_data_poll_seconds", "ALPACA_MARKET_DATA_POLL_SECONDS", _float_env, 1.0),
     ("replay_use_mock_clock", "REPLAY_USE_MOCK_CLOCK", _bool_env, False),
     ("replay_closed_bars_only", "REPLAY_CLOSED_BARS_ONLY", _bool_env, False),
@@ -617,9 +626,53 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("news_hot_positive_only", "NEWS_HOT_POSITIVE_ONLY", _bool_env, True),
     ("news_hot_min_sentiment_score", "NEWS_HOT_MIN_SENTIMENT_SCORE", _float_env, 0.5),
     ("news_log_events", "NEWS_LOG_EVENTS", _bool_env, False),
+    ("news_dynamic_symbols_enabled", "NEWS_DYNAMIC_SYMBOLS_ENABLED", _bool_env, False),
     ("news_listener_positive_only", "NEWS_LISTENER_POSITIVE_ONLY", _bool_env, True),
     ("news_listener_min_impact", "NEWS_LISTENER_MIN_IMPACT", _float_env, 0.5),
     ("news_listener_symbol_cooldown_seconds", "NEWS_LISTENER_SYMBOL_COOLDOWN_SECONDS", _int_env, 120),
+    ("dynamic_execution_selector_enabled", "DYNAMIC_EXECUTION_SELECTOR_ENABLED", _bool_env, False),
+    (
+        "dynamic_execution_selector_universe_file",
+        "DYNAMIC_EXECUTION_SELECTOR_UNIVERSE_FILE",
+        _str_env,
+        "data/opening_universe.txt",
+    ),
+    (
+        "dynamic_execution_selector_candidate_limit",
+        "DYNAMIC_EXECUTION_SELECTOR_CANDIDATE_LIMIT",
+        _int_env,
+        100,
+    ),
+    (
+        "dynamic_execution_selector_top_dollar_volume_count",
+        "DYNAMIC_EXECUTION_SELECTOR_TOP_DOLLAR_VOLUME_COUNT",
+        _int_env,
+        30,
+    ),
+    (
+        "dynamic_execution_selector_strength_threshold",
+        "DYNAMIC_EXECUTION_SELECTOR_STRENGTH_THRESHOLD",
+        _float_env,
+        120.0,
+    ),
+    (
+        "dynamic_execution_selector_lookback_seconds",
+        "DYNAMIC_EXECUTION_SELECTOR_LOOKBACK_SECONDS",
+        _int_env,
+        60,
+    ),
+    (
+        "dynamic_execution_selector_min_dollar_volume",
+        "DYNAMIC_EXECUTION_SELECTOR_MIN_DOLLAR_VOLUME",
+        _float_env,
+        500_000.0,
+    ),
+    (
+        "dynamic_execution_selector_cooldown_seconds",
+        "DYNAMIC_EXECUTION_SELECTOR_COOLDOWN_SECONDS",
+        _int_env,
+        600,
+    ),
 )
 
 

@@ -25,9 +25,10 @@ from config import Settings, load_settings
 from execution import build_executor
 from market_hours import MARKET_TZ, is_regular_market_time
 from market_regime import MarketRegimeMonitor
+from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
 from modules.news_listener import NewsListener
 from modules.symbol_manager import SymbolManager
-from models import Bar, Heartbeat, NewsEvent, Quote
+from models import Bar, Heartbeat, NewsEvent, Quote, Trade
 from opening_plan import (
     default_plan_file_for_strategy,
     default_plan_file_for_settings,
@@ -514,9 +515,20 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
         "news_hot_positive_only": settings.news_hot_positive_only,
         "news_hot_min_sentiment_score": settings.news_hot_min_sentiment_score,
         "news_log_events": settings.news_log_events,
+        "news_dynamic_symbols_enabled": settings.news_dynamic_symbols_enabled,
         "news_listener_positive_only": settings.news_listener_positive_only,
         "news_listener_min_impact": settings.news_listener_min_impact,
         "news_listener_symbol_cooldown_seconds": settings.news_listener_symbol_cooldown_seconds,
+        "dynamic_execution_selector": {
+            "enabled": settings.dynamic_execution_selector_enabled,
+            "universe_file": settings.dynamic_execution_selector_universe_file,
+            "candidate_limit": settings.dynamic_execution_selector_candidate_limit,
+            "top_dollar_volume_count": settings.dynamic_execution_selector_top_dollar_volume_count,
+            "strength_threshold": settings.dynamic_execution_selector_strength_threshold,
+            "lookback_seconds": settings.dynamic_execution_selector_lookback_seconds,
+            "min_dollar_volume": settings.dynamic_execution_selector_min_dollar_volume,
+            "cooldown_seconds": settings.dynamic_execution_selector_cooldown_seconds,
+        },
         "openai_model": settings.openai_model if settings.ai_review else None,
         "risk": {
             "target_profit_pct": settings.target_profit_pct,
@@ -595,6 +607,23 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
     }
     snapshot.update(merge_strategy_runtime_snapshots(settings))
     return snapshot
+
+
+def realtime_stream_reasons(settings: Settings) -> list[str]:
+    reasons = []
+    if settings.dynamic_execution_selector_enabled:
+        reasons.append("dynamic execution selector requires trade ticks")
+    if settings.news_dynamic_symbols_enabled:
+        reasons.append("dynamic news symbols require news stream")
+    if settings.news_log_events:
+        reasons.append("news logging requires news stream")
+    return reasons
+
+
+def effective_market_data_mode(settings: Settings) -> str:
+    if settings.alpaca_market_data_mode == "stream":
+        return "stream"
+    return "stream" if realtime_stream_reasons(settings) else settings.alpaca_market_data_mode
 
 
 def should_manage_exits_on_heartbeat(settings) -> bool:
@@ -839,11 +868,29 @@ async def main(args: argparse.Namespace | None = None) -> None:
     strategy_local_symbols = load_strategy_local_symbols(settings, loaded_plan_paths)
     tradable_symbols = set(settings.symbols).union(*(set(symbols) for symbols in strategy_local_symbols.values()))
     regime_symbols = set(settings.market_regime_symbols) if settings.market_regime_enabled else set()
+    dynamic_execution_symbols: list[str] = []
+    dynamic_execution_selector: DynamicExecutionStrengthSelector | None = None
+    if settings.dynamic_execution_selector_enabled:
+        dynamic_execution_symbols = load_candidate_symbols(
+            settings.dynamic_execution_selector_universe_file,
+            settings.dynamic_execution_selector_candidate_limit,
+        )
+        if dynamic_execution_symbols:
+            dynamic_execution_selector = DynamicExecutionStrengthSelector(
+                dynamic_execution_symbols,
+                strength_threshold=settings.dynamic_execution_selector_strength_threshold,
+                lookback_seconds=settings.dynamic_execution_selector_lookback_seconds,
+                top_dollar_volume_count=settings.dynamic_execution_selector_top_dollar_volume_count,
+                min_dollar_volume=settings.dynamic_execution_selector_min_dollar_volume,
+                cooldown_seconds=settings.dynamic_execution_selector_cooldown_seconds,
+            )
     initial_symbols = sorted(tradable_symbols.union(regime_symbols))
-    if not tradable_symbols:
+    stream_symbols = sorted(set(initial_symbols).union(dynamic_execution_symbols))
+    if not tradable_symbols and not dynamic_execution_symbols and not settings.news_dynamic_symbols_enabled:
         print(
             "No symbols to trade: set SYMBOLS in `.env`/your profile, or add symbols under "
-            "data/<strategy>_plan.json for each active strategy (see strategies registry).",
+            "data/<strategy>_plan.json for each active strategy (see strategies registry), or enable "
+            "DYNAMIC_EXECUTION_SELECTOR_ENABLED with a populated universe file, or enable NEWS_DYNAMIC_SYMBOLS_ENABLED.",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -861,9 +908,14 @@ async def main(args: argparse.Namespace | None = None) -> None:
         strategy: len(set(settings.symbols) | set(local_symbols))
         for strategy, local_symbols in strategy_local_symbols.items()
     }
+    requested_market_data_mode = settings.alpaca_market_data_mode
+    selected_market_data_mode = effective_market_data_mode(settings)
     settings_snapshot = runtime_settings_snapshot(settings, effective_symbol_counts)
+    settings_snapshot["alpaca_market_data_effective_mode"] = selected_market_data_mode
+    settings_snapshot["alpaca_market_data_stream_reasons"] = realtime_stream_reasons(settings)
     settings_snapshot["global_symbols"] = list(settings.symbols)
     settings_snapshot["strategy_symbols"] = strategy_local_symbols
+    settings_snapshot["dynamic_execution_symbols"] = dynamic_execution_symbols
     settings_snapshot["market_regime"] = {
         "enabled": settings.market_regime_enabled,
         "symbols": list(settings.market_regime_symbols),
@@ -889,7 +941,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         strategy: sorted(set(settings.symbols) | set(local_symbols))
         for strategy, local_symbols in strategy_local_symbols.items()
     }
-    stream_settings = replace(settings, symbols=initial_symbols)
+    stream_settings = replace(settings, symbols=stream_symbols, alpaca_market_data_mode=selected_market_data_mode)
     states = {
         symbol: SymbolState(symbol, indicator_max_bars=stream_settings.indicator_max_bars_per_symbol)
         for symbol in initial_symbols
@@ -923,6 +975,13 @@ async def main(args: argparse.Namespace | None = None) -> None:
         settings.execution_mode,
         ", ".join(settings.strategy_names),
     )
+    if selected_market_data_mode != requested_market_data_mode:
+        logging.info(
+            "Market data mode upgraded %s -> %s: %s",
+            requested_market_data_mode,
+            selected_market_data_mode,
+            "; ".join(realtime_stream_reasons(settings)),
+        )
     logging.info("Runtime settings %s", json.dumps(settings_snapshot, sort_keys=True))
 
     try:
@@ -946,6 +1005,8 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 heartbeat.record_news()
                 if settings.news_log_events:
                     logging.info("News feed %s", format_news_event_for_log(event))
+                if not settings.news_dynamic_symbols_enabled:
+                    continue
                 if not should_expand_symbols_from_news(event):
                     logging.debug("Ignoring news for dynamic symbols outside regular market hours")
                     continue
@@ -972,6 +1033,40 @@ async def main(args: argparse.Namespace | None = None) -> None:
                         impact=classified.impact,
                     )
                 continue
+
+            if dynamic_execution_selector is not None:
+                selection = None
+                if isinstance(event, Quote):
+                    dynamic_execution_selector.record_quote(event)
+                elif isinstance(event, Bar):
+                    dynamic_execution_selector.record_bar(event)
+                elif isinstance(event, Trade):
+                    if is_regular_market_time(event.timestamp_ms):
+                        selection = dynamic_execution_selector.record_trade(event)
+                if selection is not None:
+                    added = symbol_manager.add_symbol(selection.symbol)
+                    state = states.get(selection.symbol)
+                    if added:
+                        logging.info(
+                            "Added symbol %s from dynamic execution selector strength=%.2f dollar_volume=%.0f rank=%d buy_volume=%d sell_volume=%d",
+                            selection.symbol,
+                            selection.execution_strength,
+                            selection.dollar_volume,
+                            selection.dollar_volume_rank,
+                            selection.buy_volume,
+                            selection.sell_volume,
+                        )
+                    if added and state is not None:
+                        warmed = await asyncio.to_thread(
+                            warm_dynamic_news_symbol,
+                            settings,
+                            state,
+                            selection.symbol,
+                        )
+                        if warmed:
+                            logging.info("Warmed symbol %s from recent market data", selection.symbol)
+                if isinstance(event, Trade):
+                    continue
 
             state = states.get(event.symbol)
             if state is None:
