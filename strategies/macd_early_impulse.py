@@ -121,6 +121,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_stall_exit_seconds", "MACD_STALL_EXIT_SECONDS", int_env, 180),
         ("macd_stall_exit_min_r", "MACD_STALL_EXIT_MIN_R", float_env, 0.15),
         ("macd_weak_fade_exit_seconds", "MACD_WEAK_FADE_EXIT_SECONDS", int_env, 120),
+        ("macd_weak_fade_hist_bars", "MACD_WEAK_FADE_HIST_BARS", int_env, 2),
+        ("macd_weak_fade_max_mfe_pct", "MACD_WEAK_FADE_MAX_MFE_PCT", float_env, 0.0025),
+        ("macd_reentry_cooldown_seconds", "MACD_REENTRY_COOLDOWN_SECONDS", int_env, 600),
+        ("macd_block_neutral_hardened_above", "MACD_BLOCK_NEUTRAL_HARDENED_ABOVE", float_env, 0.55),
         (
             "macd_early_impulse_max_trades_per_symbol_per_session",
             "MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
@@ -229,6 +233,10 @@ class MACDEarlyImpulseStrategy(Strategy):
             "stall_exit_seconds": s.macd_stall_exit_seconds,
             "stall_exit_min_r": s.macd_stall_exit_min_r,
             "weak_fade_exit_seconds": s.macd_weak_fade_exit_seconds,
+            "weak_fade_hist_bars": s.macd_weak_fade_hist_bars,
+            "weak_fade_max_mfe_pct": s.macd_weak_fade_max_mfe_pct,
+            "reentry_cooldown_seconds": s.macd_reentry_cooldown_seconds,
+            "block_neutral_hardened_above": s.macd_block_neutral_hardened_above,
             "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": s.macd_early_impulse_symbol_loss_lock_count,
             "macd_warmup_bars": s.macd_macd_warmup_bars,
@@ -372,6 +380,13 @@ class MACDEarlyImpulseStrategy(Strategy):
             chop_range_pct *= 1.0 + (
                 max(1.0, self.settings.macd_neutral_chop_range_multiplier) - 1.0
             ) * neutral_hardening
+        block_neutral = max(0.0, self.settings.macd_block_neutral_hardened_above)
+        if block_neutral > 0 and neutral_hardening >= block_neutral and not runner_mode:
+            return self._reject(
+                state,
+                "neutral_chop",
+                f"neutral regime hardened {neutral_hardening:.2f} >= {block_neutral:.2f}",
+            )
         if self._is_chop(state, chop_range_pct) and not runner_mode:
             return self._reject(
                 state,
@@ -728,13 +743,21 @@ class MACDEarlyImpulseStrategy(Strategy):
         if pnl_pct > self.settings.macd_momentum_exit_min_profit_pct:
             return None
 
+        peak = max(position.max_price or 0.0, price, position.entry_price)
+        mfe_pct = (peak - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
+        if mfe_pct >= max(0.0, self.settings.macd_weak_fade_max_mfe_pct):
+            return None
+
         macd = self._compute_macd(state)
         if macd is None:
             return None
         macd_line, signal_line, hist = macd
-        if len(hist) < 2 or not macd_line or not signal_line:
+        hist_bars = max(2, self.settings.macd_weak_fade_hist_bars)
+        min_hist_len = hist_bars + 1
+        if len(hist) < min_hist_len or not macd_line or not signal_line:
             return None
-        if hist[-1] < hist[-2] or macd_line[-1] <= signal_line[-1]:
+        hist_fading = all(hist[-index] < hist[-index - 1] for index in range(1, hist_bars))
+        if hist_fading or macd_line[-1] <= signal_line[-1]:
             return ExitDecision("weak macd fade")
         return None
 

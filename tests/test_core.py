@@ -2697,7 +2697,43 @@ class CoreTradingTests(unittest.TestCase):
             macd_min_hold_seconds=0,
             macd_stall_exit_seconds=180,
             macd_weak_fade_exit_seconds=120,
+            macd_weak_fade_hist_bars=2,
+            macd_weak_fade_max_mfe_pct=0.005,
             macd_momentum_exit_min_profit_pct=0.0015,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 0)
+        state.update_quote(Quote("AAPL", bid=100.09, ask=100.11, bid_size=100, ask_size=100, timestamp_ms=event_ms))
+        position = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=event_ms - 121_000,
+            target_price=102.0,
+            stop_price=99.0,
+            initial_stop_price=99.0,
+            max_price=100.10,
+        )
+
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=([0.02, 0.03, 0.04], [0.01, 0.02, 0.03], [0.008, 0.006, 0.005]),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "weak macd fade")
+
+    def test_macd_early_impulse_skips_weak_fade_when_impulse_mfe_developed(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            regular_market_only=False,
+            macd_min_hold_seconds=0,
+            macd_weak_fade_exit_seconds=120,
+            macd_weak_fade_max_mfe_pct=0.0025,
         )
         strategy = MACDEarlyImpulseStrategy(settings)
         state = SymbolState("AAPL")
@@ -2715,11 +2751,14 @@ class CoreTradingTests(unittest.TestCase):
             max_price=100.40,
         )
 
-        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.006, 0.005])):
+        with patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=([0.02, 0.03, 0.04], [0.01, 0.02, 0.03], [0.008, 0.007, 0.006]),
+        ):
             decision = strategy.should_exit(state, position)
 
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "weak macd fade")
+        self.assertIsNone(decision)
 
     def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
         settings = Settings(
@@ -7401,6 +7440,43 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "EMA fast breakdown")
+
+    def test_steady_intraday_exits_failed_trend_before_long_stop_bleed(self):
+        settings = Settings(
+            symbols=["PATH"],
+            regular_market_only=False,
+            steady_intraday_min_hold_seconds=0,
+            steady_intraday_failed_trend_minutes=12,
+            steady_intraday_failed_trend_max_mfe_r=0.20,
+            steady_intraday_failed_trend_min_r=-0.40,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("PATH")
+        start_ms = market_ms(2026, 5, 27, 10, 0)
+        for index in range(20):
+            close = 11.40 - index * 0.01
+            end_ms = start_ms + (index + 1) * 60_000
+            state.add_bar(Bar("PATH", close, close + 0.02, close - 0.02, close, 100_000, close, end_ms - 60_000, end_ms))
+
+        entry_ms = state.bars[-1].end_ms
+        position = Position(
+            "PATH",
+            "steady_intraday",
+            10,
+            11.40,
+            entry_ms,
+            12.0,
+            11.30,
+            11.30,
+            max_price=11.41,
+        )
+        event_ms = entry_ms + 13 * 60_000
+        state.update_quote(Quote("PATH", 11.34, 11.36, 100, 100, event_ms))
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "failed trend")
 
     def test_steady_intraday_runner_atr_multiple_can_widen_pullback_exit(self):
         state = SymbolState("QBTS")

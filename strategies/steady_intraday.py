@@ -65,6 +65,9 @@ class SteadyIntradayStrategy(Strategy):
         ),
         ("steady_intraday_stall_minutes", "STEADY_INTRADAY_STALL_MINUTES", int_env, 25),
         ("steady_intraday_stall_min_r", "STEADY_INTRADAY_STALL_MIN_R", float_env, 0.35),
+        ("steady_intraday_failed_trend_minutes", "STEADY_INTRADAY_FAILED_TREND_MINUTES", int_env, 12),
+        ("steady_intraday_failed_trend_max_mfe_r", "STEADY_INTRADAY_FAILED_TREND_MAX_MFE_R", float_env, 0.20),
+        ("steady_intraday_failed_trend_min_r", "STEADY_INTRADAY_FAILED_TREND_MIN_R", float_env, -0.40),
         ("steady_intraday_position_size_multiplier", "STEADY_INTRADAY_POSITION_SIZE_MULTIPLIER", float_env, 0.8),
         (
             "steady_intraday_max_trades_per_symbol_per_session",
@@ -504,6 +507,17 @@ class SteadyIntradayStrategy(Strategy):
 
         age_minutes = (event_ms - position.entry_ms) / 60_000
         current_r = (price - position.entry_price) / r_initial
+        peak = max(position.max_price or 0.0, price, position.entry_price)
+        mfe_r = (peak - position.entry_price) / r_initial if r_initial > 0 else 0.0
+        failed_trend_minutes = max(0, self.settings.steady_intraday_failed_trend_minutes)
+        if (
+            failed_trend_minutes > 0
+            and age_minutes >= failed_trend_minutes
+            and mfe_r < max(0.0, self.settings.steady_intraday_failed_trend_max_mfe_r)
+            and current_r <= self.settings.steady_intraday_failed_trend_min_r
+        ):
+            return ExitDecision("failed trend")
+
         if (
             age_minutes >= self.settings.steady_intraday_stall_minutes
             and current_r < self.settings.steady_intraday_stall_min_r

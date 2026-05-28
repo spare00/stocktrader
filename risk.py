@@ -115,7 +115,11 @@ class RiskManager:
     def _reentry_cooldown_seconds_for_strategy(self, strategy: str) -> int:
         if strategy == "maha7":
             return self.settings.maha7_reentry_cooldown_seconds
-        return getattr(self.settings, f"{self._settings_prefix(strategy)}_reentry_cooldown_seconds", 0)
+        compact = self._compact_settings_prefix(strategy)
+        compact_value = int(getattr(self.settings, f"{compact}_reentry_cooldown_seconds", 0) or 0)
+        if compact_value > 0:
+            return compact_value
+        return int(getattr(self.settings, f"{self._settings_prefix(strategy)}_reentry_cooldown_seconds", 0) or 0)
 
     def _max_open_positions_for_strategy(self, strategy: str) -> int:
         return int(getattr(self.settings, f"{self._compact_settings_prefix(strategy)}_max_open_positions", 0) or 0)

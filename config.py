@@ -285,6 +285,9 @@ class Settings:
     steady_intraday_lost_vwap_min_hold_seconds: int = 900
     steady_intraday_stall_minutes: int = 25
     steady_intraday_stall_min_r: float = 0.35
+    steady_intraday_failed_trend_minutes: int = 12
+    steady_intraday_failed_trend_max_mfe_r: float = 0.20
+    steady_intraday_failed_trend_min_r: float = -0.40
     steady_intraday_position_size_multiplier: float = 0.8
     steady_intraday_max_trades_per_symbol_per_session: int = 2
     steady_intraday_symbol_loss_lock_count: int = 1
@@ -353,6 +356,10 @@ class Settings:
     macd_stall_exit_seconds: int = 180
     macd_stall_exit_min_r: float = 0.15
     macd_weak_fade_exit_seconds: int = 120
+    macd_weak_fade_hist_bars: int = 2
+    macd_weak_fade_max_mfe_pct: float = 0.0025
+    macd_reentry_cooldown_seconds: int = 600
+    macd_block_neutral_hardened_above: float = 0.55
     macd_early_impulse_max_trades_per_symbol_per_session: int = 2
     macd_early_impulse_symbol_loss_lock_count: int = 2
     macd_macd_warmup_bars: int = 120
