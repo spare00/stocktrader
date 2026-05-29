@@ -292,6 +292,8 @@ class RiskManager:
             return "stoch_macd"
         if strategy == "macd_early_impulse":
             return "macd"
+        if strategy == "breakout_power":
+            return "bp"
         return strategy
 
     @staticmethod

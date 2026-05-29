@@ -432,6 +432,24 @@ class Settings:
     stoch_macd_reentry_max_support_extension_pct: float = 0.0045
     stoch_macd_respect_consecutive_loss_limits: bool = False
 
+    bp_start_minute: int = 0
+    bp_end_minute: int = 360
+    bp_warmup_bars: int = 40
+    bp_green_threshold: float = 65.0
+    bp_trend_line: float = 50.0
+    bp_hold_floor: float = 45.0
+    bp_decline_grace_bars: int = 2
+    bp_partial_size: float = 0.5
+    bp_momentum_ema_period: int = 4
+    bp_max_spread_bps: float = 15.0
+    bp_stop_lookback_bars: int = 6
+    bp_stop_buffer_pct: float = 0.001
+    bp_stop_loss_pct: float = 0.005
+    bp_min_hold_seconds: int = 0
+    bp_max_trades_per_symbol_per_session: int = 3
+    bp_symbol_loss_lock_count: int = 1
+    bp_respect_consecutive_loss_limits: bool = False
+
     ai_review: bool = False
     news_hot_positive_only: bool = True
     news_hot_min_sentiment_score: float = 0.5

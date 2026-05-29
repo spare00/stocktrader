@@ -72,6 +72,7 @@ import strategy_selectors.select_steady_intraday as select_steady_intraday
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
+from strategies.breakout_power import BreakoutPowerStrategy, BPSeries, compute_breakout_power_series
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
@@ -9526,6 +9527,310 @@ class CoreTradingTests(unittest.TestCase):
         decision = strategy.should_exit(state, position)
 
         self.assertIsNone(decision)
+
+    def _bp_state(self, *, symbol: str = "AAPL", event_ms: int | None = None) -> SymbolState:
+        state = SymbolState(symbol)
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        for index in range(45):
+            ts = start_ms + index * 60_000
+            close = 100.0 + index * 0.05
+            state.add_bar(
+                Bar(
+                    symbol=symbol,
+                    open=close - 0.02,
+                    high=close + 0.25,
+                    low=close - 0.25,
+                    close=close,
+                    volume=100_000.0,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        last_ms = event_ms or state.bars[-1].end_ms
+        state.update_quote(Quote(symbol, 101.0, 101.02, 100, 100, last_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = last_ms
+        return state
+
+    def _bp_position(self, **overrides):
+        params = {
+            "symbol": "AAPL",
+            "strategy": "breakout_power",
+            "shares": 10,
+            "entry_price": 100.0,
+            "entry_ms": market_ms(2026, 4, 24, 9, 35),
+            "target_price": 101.0,
+            "stop_price": 99.5,
+            "initial_stop_price": 99.5,
+            "max_price": 101.0,
+        }
+        params.update(overrides)
+        return Position(**params)
+
+    def test_breakout_power_emits_buy_on_cross_above_trend_with_green_momentum(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 55.0],
+                momentums=[0.0, 100.0],
+                avg_momentums=[50.0, 70.0],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "breakout_power")
+        self.assertEqual(signal.side, "BUY")
+        self.assertIn("breakout_power cross", signal.reason)
+
+    def test_breakout_power_rejects_entry_without_green_momentum(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 55.0],
+                momentums=[0.0, 50.0],
+                avg_momentums=[40.0, 55.0],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_breakout_power_exits_full_when_score_below_trend_line(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 99.8, 99.82, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[52.0, 48.0],
+                momentums=[50.0, 0.0],
+                avg_momentums=[62.0, 58.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "BP below 50")
+
+    def test_breakout_power_defers_exit_when_recovery_hold_supported(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.last_event_kind = "bar"
+        position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[52.0, 48.0],
+                momentums=[50.0, 50.0],
+                avg_momentums=[60.0, 65.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+        self.assertIsNotNone(strategy._position_states["AAPL"].below_trend_hold_bar_end_ms)
+
+    def test_breakout_power_exits_after_recovery_hold_fails_on_next_bar(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.last_event_kind = "bar"
+        position = self._bp_position(entry_ms=market_ms(2026, 4, 24, 9, 30))
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.below_trend_hold_bar_end_ms = state.bars[1].end_ms
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 47.0],
+                momentums=[50.0, 0.0],
+                avg_momentums=[65.0, 70.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "BP failed recovery below 50")
+
+    def test_breakout_power_clears_recovery_hold_when_score_reclaims_trend_line(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.last_event_kind = "bar"
+        position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.below_trend_hold_bar_end_ms = market_ms(2026, 4, 24, 9, 31)
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 52.0],
+                momentums=[50.0, 50.0],
+                avg_momentums=[65.0, 68.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+        self.assertIsNone(pos_state.below_trend_hold_bar_end_ms)
+
+    def test_breakout_power_partial_on_first_decline_after_grace_bars(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"], bp_decline_grace_bars=2)
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.5, 100.52, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        strategy._position_states["AAPL"].bars_since_entry = 3
+        state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 52.0],
+                momentums=[50.0, 0.0],
+                avg_momentums=[70.0, 68.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "BP first decline partial")
+        self.assertEqual(decision.shares, 5)
+        self.assertTrue(decision.mark_partial)
+
+    def test_breakout_power_ignores_partial_decline_within_grace_bars(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"], bp_decline_grace_bars=2)
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        strategy._position_states["AAPL"].bars_since_entry = 2
+        state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 52.0],
+                momentums=[50.0, 0.0],
+                avg_momentums=[70.0, 68.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
+    def test_breakout_power_exits_on_double_decline_without_intervening_rise(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.bars_since_entry = 5
+        pos_state.declines_without_rise = 2
+        state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[54.0, 52.0],
+                momentums=[0.0, 0.0],
+                avg_momentums=[60.0, 58.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "BP double decline")
+
+    def test_breakout_power_hold_supported_when_score_above_floor_and_avg_momentum_rising(self):
+        bp = BPSeries(
+            scores=[46.0, 47.0],
+            momentums=[0.0, 50.0],
+            avg_momentums=[40.0, 45.0],
+        )
+        self.assertTrue(
+            BreakoutPowerStrategy.hold_supported(bp, trend_line=50.0, hold_floor=45.0)
+        )
+
+    def test_breakout_power_compute_series_matches_pine_score_components(self):
+        bars = []
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        closes = [100.0 + index * 0.3 for index in range(45)]
+        for index, close in enumerate(closes):
+            ts = start_ms + index * 60_000
+            bars.append(
+                Bar(
+                    "AAPL",
+                    open=close - 0.05,
+                    high=close + 0.4,
+                    low=close - 0.4,
+                    close=close,
+                    volume=100_000.0,
+                    vwap=close,
+                    start_ms=ts,
+                    end_ms=ts + 60_000,
+                )
+            )
+        series = compute_breakout_power_series(bars)
+        self.assertIsNotNone(series.scores[-1])
+        self.assertGreaterEqual(series.scores[-1], 0.0)
+        self.assertLessEqual(series.scores[-1], 100.0)
 
     @staticmethod
     def _maha7_selector_bars(symbol: str, base: float, start_ms: int, final_pullback: bool, volume: float) -> list[Bar]:

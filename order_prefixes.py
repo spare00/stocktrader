@@ -6,6 +6,7 @@ import re
 CLIENT_ORDER_ID_ROOT = "bk"
 
 STRATEGY_ORDER_PREFIXES: dict[str, str] = {
+    "breakout_power": "bop",
     "gap_and_go": "gag",
     "macd_early_impulse": "mei",
     "stoch_macd_reversal": "smr",
