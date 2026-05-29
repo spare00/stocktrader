@@ -579,6 +579,12 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
                     "max_position_value": settings.maha7_max_position_value,
                     "max_hold_seconds": settings.maha7_max_hold_seconds,
                 },
+                "breakout_power": {
+                    "max_open_positions": settings.bp_max_open_positions,
+                    "max_position_value": settings.bp_max_position_value,
+                    "max_hold_seconds": settings.bp_max_hold_seconds,
+                    "trade_cooldown_seconds": settings.bp_trade_cooldown_seconds,
+                },
             },
             "daily_max_loss": settings.daily_max_loss,
             "daily_max_loss_pct": settings.daily_max_loss_pct,

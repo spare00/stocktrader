@@ -120,6 +120,8 @@ class PositionTracker:
             return "stoch_macd"
         if strategy == "macd_early_impulse":
             return "macd"
+        if strategy == "breakout_power":
+            return "bp"
         return strategy
 
     def total_pnl(self, mark_prices: dict[str, float]) -> float:

@@ -70,8 +70,9 @@ Strategies:
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold
 - `stoch_macd_reversal`: 1-minute STOCH/MACD confirmation setup: buy when SuperTrend (7,3) is bullish, MACD/CCC is above signal, and STOCH %K is above %D; exit on the mirrored bearish indicator confirmation or risk exits
+- `breakout_power`: 1-minute BreakOut Power score cross above 50 with green avg_momentum; bar-based partial and recovery-aware exits
 
-Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal`.
+Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal,breakout_power`.
 When running `main.py`, you can override that directly with `--strategy`; if neither is set, the runner asks for the strategy before starting.
 
 Strategy entry windows are configured independently, in minutes from the
@@ -83,6 +84,7 @@ minutes. Supported window variables:
 - `GAP_AND_GO_START_MINUTE` / `GAP_AND_GO_END_MINUTE`
 - `MAHA7_START_MINUTE` / `MAHA7_END_MINUTE` (defaults to `30` / `300`, or `10:00` / `14:30` ET)
 - `STOCH_MACD_START_MINUTE` / `STOCH_MACD_END_MINUTE`
+- `BP_START_MINUTE` / `BP_END_MINUTE`
 - `SPIKE_START_MINUTE` / `SPIKE_END_MINUTE` (unset by default, so spike has no strategy-specific window)
 
 MAHA7 also supports `MAHA7_TREND_MIN_BARS` defaulting to `3`,
@@ -108,6 +110,7 @@ strategy needs different sizing, book size, hold time, or pacing:
 - `STOCH_MACD_MAX_POSITION_VALUE` / `STOCH_MACD_MAX_OPEN_POSITIONS` / `STOCH_MACD_MAX_HOLD_SECONDS` / `STOCH_MACD_TRADE_COOLDOWN_SECONDS`
 - `MACD_MAX_POSITION_VALUE` / `MACD_MAX_OPEN_POSITIONS` / `MACD_MAX_HOLD_SECONDS` / `MACD_TRADE_COOLDOWN_SECONDS`
 - `STEADY_INTRADAY_MAX_POSITION_VALUE` / `STEADY_INTRADAY_MAX_OPEN_POSITIONS` / `STEADY_INTRADAY_MAX_HOLD_SECONDS` / `STEADY_INTRADAY_TRADE_COOLDOWN_SECONDS`
+- `BP_MAX_POSITION_VALUE` / `BP_MAX_OPEN_POSITIONS` / `BP_MAX_HOLD_SECONDS` / `BP_TRADE_COOLDOWN_SECONDS`
 - `OPENING_IMPULSE_MAX_POSITION_VALUE` / `OPENING_IMPULSE_MAX_OPEN_POSITIONS` / `OPENING_IMPULSE_MAX_HOLD_SECONDS`
 - `GAP_AND_GO_MAX_POSITION_VALUE` / `GAP_AND_GO_MAX_OPEN_POSITIONS` / `GAP_AND_GO_MAX_HOLD_SECONDS`
 - `SPIKE_MAX_POSITION_VALUE` / `SPIKE_MAX_OPEN_POSITIONS` / `SPIKE_MAX_HOLD_SECONDS`
@@ -189,6 +192,16 @@ This selector uses daily OHLCV bars to rank the same confirmation stack used by
 the live handler: EMA 5 above SuperTrend (7,3), MACD/CCC above signal, and
 STOCH %K above %D. The live strategy still waits for minute confirmation before
 entering.
+
+For `breakout_power`, build a daily BreakOut Power alignment watchlist:
+
+```bash
+.venv/bin/python strategy_selectors/select_breakout_power.py --top 12
+```
+
+This selector uses daily OHLCV bars to rank BP score, green avg_momentum, recent
+cross above 50, and MACD/AO/EMA alignment. The live strategy still waits for the
+minute-bar BP cross with green momentum before entering.
 
 It also supports an embedded AI refinement pass:
 

@@ -65,6 +65,7 @@ import scripts.analyze_trade_journal as analyze_trade_journal
 import strategy_selectors.select_gap_and_go as select_gap_and_go
 import strategy_selectors.select_maha7 as select_maha7
 import strategy_selectors.select_macd_early_impulse as select_macd_early_impulse
+import strategy_selectors.select_breakout_power as select_breakout_power
 import strategy_selectors.select_stoch_macd_reversal as select_stoch_macd_reversal
 from strategy_selectors.select_market_universe import daily_metrics, score_symbol
 import strategy_selectors.select_opening_impulse as select_opening_impulse
@@ -257,6 +258,10 @@ class CoreTradingTests(unittest.TestCase):
                 "MACD_BURST_WINDOW_SECONDS": "300",
                 "STEADY_INTRADAY_MAX_POSITION_VALUE": "1000",
                 "STEADY_INTRADAY_MAX_HOLD_SECONDS": "1200",
+                "BP_MAX_OPEN_POSITIONS": "8",
+                "BP_MAX_POSITION_VALUE": "2500",
+                "BP_MAX_HOLD_SECONDS": "360",
+                "BP_TRADE_COOLDOWN_SECONDS": "90",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
             clear=True,
@@ -280,6 +285,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.macd_burst_window_seconds, 300)
         self.assertEqual(settings.steady_intraday_max_position_value, 1000)
         self.assertEqual(settings.steady_intraday_max_hold_seconds, 1200)
+        self.assertEqual(settings.bp_max_open_positions, 8)
+        self.assertEqual(settings.bp_max_position_value, 2500)
+        self.assertEqual(settings.bp_max_hold_seconds, 360)
+        self.assertEqual(settings.bp_trade_cooldown_seconds, 90)
         self.assertEqual(settings.gap_and_go_end_minute, 30)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
@@ -460,6 +469,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(default_plan_file_for_strategy("gap_and_go"), Path("data/gap_and_go_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("maha7"), Path("data/maha7_plan.json"))
         self.assertEqual(default_plan_file_for_strategy("steady_intraday"), Path("data/steady_intraday_plan.json"))
+        self.assertEqual(default_plan_file_for_strategy("breakout_power"), Path("data/breakout_power_plan.json"))
         self.assertEqual(
             selector_command_for_strategy("gap_and_go"),
             ".venv/bin/python strategy_selectors/select_gap_and_go.py --top 5",
@@ -475,6 +485,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(
             selector_command_for_strategy("stoch_macd_reversal"),
             ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12",
+        )
+        self.assertEqual(
+            selector_command_for_strategy("breakout_power"),
+            ".venv/bin/python strategy_selectors/select_breakout_power.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -9831,6 +9845,71 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(series.scores[-1])
         self.assertGreaterEqual(series.scores[-1], 0.0)
         self.assertLessEqual(series.scores[-1], 100.0)
+
+    def test_breakout_power_selector_prefers_green_above_trend_candidate(self):
+        def daily_bars_from_closes(symbol: str, closes: list[float], *, volume_scale: float = 1.0) -> list[Bar]:
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars: list[Bar] = []
+            for index, close in enumerate(closes):
+                previous = closes[index - 1] if index else close
+                high = max(close, previous) * 1.02
+                low = min(close, previous) * 0.98
+                volume = (2_000_000 if index == len(closes) - 1 else 1_000_000) * volume_scale
+                bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
+            return bars
+
+        base = [80 + index * 0.15 for index in range(40)]
+        strong = base + [86, 88, 90, 93, 97, 102, 108, 115, 123, 132]
+        weak = base + [86, 85.5, 85.2, 85.0, 84.8, 84.7, 84.6, 84.5, 84.4, 84.3]
+
+        candidates, rejected, stage_counts = select_breakout_power.rank_candidates(
+            ["STRONG", "WEAK"],
+            {
+                "STRONG": daily_bars_from_closes("STRONG", strong),
+                "WEAK": daily_bars_from_closes("WEAK", weak),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        self.assertEqual(rejected, [])
+        self.assertIn("STRONG", selected)
+        self.assertIn("WEAK", selected)
+        self.assertGreater(selected["STRONG"].bp_score, selected["WEAK"].bp_score)
+        self.assertGreater(selected["STRONG"].score, selected["WEAK"].score)
+        self.assertGreaterEqual(stage_counts["passed_indicator_data"], 2)
+
+        plan = select_breakout_power.deterministic_plan(
+            candidates,
+            rejected,
+            "breakout_power",
+            1,
+            filter_stage_counts=stage_counts,
+        )
+        self.assertEqual(plan["strategy"], "breakout_power")
+        self.assertEqual(plan["symbols"][0], "STRONG")
+        self.assertEqual(plan["settings"]["filter_thresholds"]["indicator_input"], "daily OHLCV bars")
+
+    def test_breakout_power_ai_selection_can_reorder_meaningful_score_gap(self):
+        ranked = [
+            {"symbol": "AAPL", "score": 112.0, "setup_stage": "green_above_trend"},
+            {"symbol": "MSFT", "score": 101.0, "setup_stage": "green_above_trend"},
+            {"symbol": "NVDA", "score": 70.0, "setup_stage": "not_ready"},
+        ]
+        ai_plan = {
+            "adjustments": {
+                "AAPL": {"ai_score_delta": -30.0, "ai_reason": "too extended"},
+                "MSFT": {"ai_score_delta": 30.0, "ai_reason": "cleaner BP stack"},
+                "FAKE": {"ai_score_delta": 15.0, "ai_reason": "not allowed"},
+            },
+            "rejected": ["FAKE"],
+            "risk_note": "bounded test",
+        }
+
+        validated = select_breakout_power.validated_breakout_power_selection(ai_plan, ranked, 2)
+
+        self.assertEqual(validated["symbols"], ["MSFT", "AAPL"])
+        self.assertEqual(validated["ranked"][0]["ai_score_delta"], select_breakout_power.AI_SCORE_DELTA_LIMIT)
+        self.assertEqual(validated["ranked"][1]["ai_score_delta"], -select_breakout_power.AI_SCORE_DELTA_LIMIT)
 
     @staticmethod
     def _maha7_selector_bars(symbol: str, base: float, start_ms: int, final_pullback: bool, volume: float) -> list[Bar]:

@@ -34,6 +34,26 @@ class BPSeries:
     avg_momentums: list[float]
 
 
+@dataclass(frozen=True)
+class BPBarDetails:
+    score: float
+    prev_score: float | None
+    momentum: float
+    avg_momentum: float
+    prev_avg_momentum: float | None
+    macd_above_signal: bool
+    macd_positive: bool
+    ao_positive: bool
+    ema5_above_ema20: bool
+    breakout_high: bool
+
+    def is_green(self, *, threshold: float = 65.0) -> bool:
+        return self.avg_momentum >= threshold
+
+    def avg_momentum_rising(self) -> bool:
+        return self.prev_avg_momentum is not None and self.avg_momentum > self.prev_avg_momentum
+
+
 @dataclass
 class _BPPositionState:
     entry_ms: int
@@ -119,11 +139,70 @@ def compute_breakout_power_series(
     return BPSeries(scores=scores, momentums=momentums, avg_momentums=avg_momentums)
 
 
+def latest_breakout_power_details(
+    bars: list,
+    *,
+    momentum_ema_period: int = 4,
+) -> BPBarDetails | None:
+    """Return the latest bar's BP score, momentum, and component flags."""
+    if len(bars) < 2:
+        return None
+
+    closes = [float(bar.close) for bar in bars]
+    highs = [float(bar.high) for bar in bars]
+    medians = [(high + float(bar.low)) / 2.0 for bar, high in zip(bars, highs)]
+
+    ema5 = _ema_series(closes, 5)
+    ema20 = _ema_series(closes, 20)
+    ema12 = _ema_series(closes, 12)
+    ema26 = _ema_series(closes, 26)
+    macd_line = [e12 - e26 for e12, e26 in zip(ema12, ema26)]
+    signal_line = _ema_series(macd_line, 9)
+    ao_values = _compute_ao_values(medians)
+    hh = _rolling_highest(highs, _HH_PERIOD)
+
+    series = compute_breakout_power_series(bars, momentum_ema_period=momentum_ema_period)
+    index = len(bars) - 1
+    score = series.scores[index]
+    if score is None or ao_values[index] is None or hh[index - 1] is None:
+        return None
+
+    return BPBarDetails(
+        score=score,
+        prev_score=series.scores[index - 1],
+        momentum=series.momentums[index],
+        avg_momentum=series.avg_momentums[index],
+        prev_avg_momentum=series.avg_momentums[index - 1] if index > 0 else None,
+        macd_above_signal=macd_line[index] > signal_line[index],
+        macd_positive=macd_line[index] > 0,
+        ao_positive=ao_values[index] > 0,
+        ema5_above_ema20=ema5[index] > ema20[index],
+        breakout_high=closes[index] > hh[index - 1],
+    )
+
+
+def recent_breakout_power_cross(
+    scores: list[float | None],
+    *,
+    trend_line: float = 50.0,
+    lookback: int = 5,
+) -> bool:
+    paired = [value for value in scores if value is not None]
+    if len(paired) < 2:
+        return False
+    tail = paired[-(lookback + 1) :]
+    for previous, current in zip(tail, tail[1:]):
+        if previous <= trend_line < current:
+            return True
+    return False
+
+
 class BreakoutPowerStrategy(Strategy):
     """BreakOut Power (BP) score cross with momentum-colored entries and bar-based exits."""
 
     name = "breakout_power"
     requires_plan: ClassVar[bool] = False
+    selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_breakout_power.py --top 12"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("bp_start_minute", "BP_START_MINUTE", int_env, 0),
         ("bp_end_minute", "BP_END_MINUTE", int_env, 360),

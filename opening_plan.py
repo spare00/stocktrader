@@ -37,6 +37,7 @@ _SELECTOR_COMMAND_HINTS: dict[str, str] = {
     "steady_intraday": ".venv/bin/python strategy_selectors/select_steady_intraday.py --top 12",
     "macd_early_impulse": ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12",
     "stoch_macd_reversal": ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12",
+    "breakout_power": ".venv/bin/python strategy_selectors/select_breakout_power.py --top 12",
 }
 
 

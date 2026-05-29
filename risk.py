@@ -284,6 +284,8 @@ class RiskManager:
     def _settings_prefix(strategy: str) -> str:
         if strategy == "stoch_macd_reversal":
             return "stoch_macd"
+        if strategy == "breakout_power":
+            return "bp"
         return strategy
 
     @staticmethod

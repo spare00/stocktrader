@@ -449,6 +449,13 @@ class Settings:
     bp_max_trades_per_symbol_per_session: int = 3
     bp_symbol_loss_lock_count: int = 1
     bp_respect_consecutive_loss_limits: bool = False
+    bp_max_open_positions: int = 0
+    bp_max_position_value: float = 0.0
+    bp_max_hold_seconds: int = 0
+    bp_trade_cooldown_seconds: int = 0
+    bp_consecutive_loss_pause_count: int | None = None
+    bp_consecutive_loss_pause_minutes: int | None = None
+    bp_consecutive_loss_stop_count: int | None = None
 
     ai_review: bool = False
     news_hot_positive_only: bool = True
@@ -576,6 +583,13 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
         _optional_int_env,
         None,
     ),
+    ("bp_max_open_positions", "BP_MAX_OPEN_POSITIONS", _int_env, 0),
+    ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
+    ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),
+    ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    ("bp_consecutive_loss_pause_count", "BP_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
+    ("bp_consecutive_loss_pause_minutes", "BP_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
+    ("bp_consecutive_loss_stop_count", "BP_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
     ("maha7_consecutive_loss_pause_count", "MAHA7_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
     ("maha7_consecutive_loss_pause_minutes", "MAHA7_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
     ("maha7_consecutive_loss_stop_count", "MAHA7_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
