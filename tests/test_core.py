@@ -2659,107 +2659,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.reason, "max hold")
 
-    def test_macd_early_impulse_exits_stalled_impulse(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            regular_market_only=False,
-            macd_min_hold_seconds=0,
-            macd_stall_exit_seconds=180,
-            macd_stall_exit_min_r=0.15,
-        )
-        strategy = MACDEarlyImpulseStrategy(settings)
-        state = SymbolState("AAPL")
-        event_ms = market_ms(2026, 4, 24, 10, 0)
-        state.update_quote(Quote("AAPL", bid=100.01, ask=100.03, bid_size=100, ask_size=100, timestamp_ms=event_ms))
-        position = Position(
-            symbol="AAPL",
-            strategy="macd_early_impulse",
-            shares=10,
-            entry_price=100.0,
-            entry_ms=event_ms - 181_000,
-            target_price=102.0,
-            stop_price=99.0,
-            initial_stop_price=99.0,
-            max_price=100.10,
-        )
-
-        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.005, 0.006])):
-            decision = strategy.should_exit(state, position)
-
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "impulse stall")
-
-    def test_macd_early_impulse_exits_weak_fading_macd_before_max_hold(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            regular_market_only=False,
-            max_hold_seconds=420,
-            macd_min_hold_seconds=0,
-            macd_stall_exit_seconds=180,
-            macd_weak_fade_exit_seconds=120,
-            macd_weak_fade_hist_bars=2,
-            macd_weak_fade_max_mfe_pct=0.005,
-            macd_momentum_exit_min_profit_pct=0.0015,
-        )
-        strategy = MACDEarlyImpulseStrategy(settings)
-        state = SymbolState("AAPL")
-        event_ms = market_ms(2026, 4, 24, 10, 0)
-        state.update_quote(Quote("AAPL", bid=100.09, ask=100.11, bid_size=100, ask_size=100, timestamp_ms=event_ms))
-        position = Position(
-            symbol="AAPL",
-            strategy="macd_early_impulse",
-            shares=10,
-            entry_price=100.0,
-            entry_ms=event_ms - 121_000,
-            target_price=102.0,
-            stop_price=99.0,
-            initial_stop_price=99.0,
-            max_price=100.10,
-        )
-
-        with patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=([0.02, 0.03, 0.04], [0.01, 0.02, 0.03], [0.008, 0.006, 0.005]),
-        ):
-            decision = strategy.should_exit(state, position)
-
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "weak macd fade")
-
-    def test_macd_early_impulse_skips_weak_fade_when_impulse_mfe_developed(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            regular_market_only=False,
-            macd_min_hold_seconds=0,
-            macd_weak_fade_exit_seconds=120,
-            macd_weak_fade_max_mfe_pct=0.0025,
-        )
-        strategy = MACDEarlyImpulseStrategy(settings)
-        state = SymbolState("AAPL")
-        event_ms = market_ms(2026, 4, 24, 10, 0)
-        state.update_quote(Quote("AAPL", bid=100.09, ask=100.11, bid_size=100, ask_size=100, timestamp_ms=event_ms))
-        position = Position(
-            symbol="AAPL",
-            strategy="macd_early_impulse",
-            shares=10,
-            entry_price=100.0,
-            entry_ms=event_ms - 121_000,
-            target_price=102.0,
-            stop_price=99.0,
-            initial_stop_price=99.0,
-            max_price=100.40,
-        )
-
-        with patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=([0.02, 0.03, 0.04], [0.01, 0.02, 0.03], [0.008, 0.007, 0.006]),
-        ):
-            decision = strategy.should_exit(state, position)
-
-        self.assertIsNone(decision)
-
     def test_shutdown_flatten_skips_wall_clock_in_replay_mode(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -5707,57 +5606,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
         self.assertIn("spread", "\n".join(captured.output))
 
-    def test_macd_rejects_flat_vwap_slope(self):
-        settings = Settings(symbols=["SMR"], macd_min_vwap_rise_bps=1.0)
-        strategy = MACDEarlyImpulseStrategy(settings)
-        state = SymbolState("SMR")
-        base_ms = market_ms(2026, 5, 8, 13, 0)
-        for index in range(25):
-            close = 100.0 + index * 0.08
-            state.add_bar(
-                Bar(
-                    "SMR",
-                    open=close - 0.04,
-                    high=close + 0.08,
-                    low=close - 0.08,
-                    close=close,
-                    volume=2_000 if index == 24 else 1_000,
-                    vwap=99.501 if index >= 22 else 99.50,
-                    start_ms=base_ms + index * 60_000,
-                    end_ms=base_ms + (index + 1) * 60_000,
-                )
-            )
-
-        reason = strategy._vwap_slope_reject_reason(state.bars, strategy._session_vwap(state.bars))
-
-        self.assertIsNotNone(reason)
-        self.assertIn("VWAP not rising enough", reason)
-
-    def test_macd_allows_clear_vwap_slope(self):
-        settings = Settings(symbols=["SMR"], macd_min_vwap_rise_bps=1.0)
-        strategy = MACDEarlyImpulseStrategy(settings)
-        state = SymbolState("SMR")
-        base_ms = market_ms(2026, 5, 8, 13, 0)
-        for index in range(25):
-            close = 100.0 + index * 0.08
-            state.add_bar(
-                Bar(
-                    "SMR",
-                    open=close - 0.04,
-                    high=close + 0.08,
-                    low=close - 0.08,
-                    close=close,
-                    volume=2_000 if index == 24 else 1_000,
-                    vwap=99.70 if index >= 22 else 99.50,
-                    start_ms=base_ms + index * 60_000,
-                    end_ms=base_ms + (index + 1) * 60_000,
-                )
-            )
-
-        reason = strategy._vwap_slope_reject_reason(state.bars, strategy._session_vwap(state.bars))
-
-        self.assertIsNone(reason)
-
     def test_macd_runner_mode_allows_strong_reclaim_without_perfect_histogram(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -7287,97 +7135,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 0.8)
 
-    def test_steady_intraday_market_regime_hardens_entry_thresholds(self):
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            symbols=["NVDA"],
-            strategy_names=["steady_intraday"],
-        )
-        strategy = SteadyIntradayStrategy(settings)
-
-        strategy.set_market_regime(types.SimpleNamespace(name="risk_off", score=-4))
-        self.assertTrue(strategy._risk_off_market_regime())
-        self.assertAlmostEqual(strategy._effective_min_volume_ratio(True, 0.0), 1.45)
-        self.assertAlmostEqual(strategy._effective_breakout_volume_ratio(True, 0.0), 1.65)
-        self.assertAlmostEqual(strategy._effective_min_range_pct(True, 0.0), 0.0069)
-        self.assertAlmostEqual(strategy._effective_vwap_buffer_pct(True, 0.0), 0.00075)
-        self.assertAlmostEqual(strategy._effective_max_r_pct(True, 0.0), 0.0096)
-        self.assertFalse(strategy._effective_allow_orb_breakout(True))
-
-        strategy.set_market_regime(types.SimpleNamespace(name="neutral", score=1.0))
-        neutral_hardening = strategy._neutral_market_regime_hardening()
-        self.assertAlmostEqual(neutral_hardening, 0.5)
-        self.assertAlmostEqual(strategy._effective_min_volume_ratio(False, neutral_hardening), 1.20)
-        self.assertAlmostEqual(strategy._effective_vwap_buffer_pct(False, neutral_hardening), 0.00055)
-        self.assertAlmostEqual(strategy._effective_max_r_pct(False, neutral_hardening), 0.0114)
-
-    def test_steady_intraday_uses_current_session_for_session_fields(self):
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            symbols=["F"],
-            strategy_names=["steady_intraday"],
-            steady_intraday_max_r_pct=0.05,
-        )
-        strategy = SteadyIntradayStrategy(settings)
-        state = SymbolState("F")
-        previous_start_ms = market_ms(2026, 5, 20, 9, 30)
-        for index in range(60):
-            close = 11.0 + index * 0.01
-            state.add_bar(
-                Bar(
-                    "F",
-                    open=close - 0.02,
-                    high=close + 0.04,
-                    low=close - 0.05,
-                    close=close,
-                    volume=90_000,
-                    vwap=close,
-                    start_ms=previous_start_ms + index * 60_000,
-                    end_ms=previous_start_ms + (index + 1) * 60_000,
-                )
-            )
-
-        current_start_ms = market_ms(2026, 5, 21, 9, 30)
-        for index in range(60):
-            if index < 15:
-                close = 13.00 + index * 0.02
-            elif index < 56:
-                close = 13.30 + (index - 15) * 0.01
-            elif index == 56:
-                close = 13.72
-            elif index == 57:
-                close = 13.66
-            elif index == 58:
-                close = 13.62
-            else:
-                close = 13.76
-            open_price = close - 0.04
-            state.add_bar(
-                Bar(
-                    "F",
-                    open=open_price,
-                    high=close + 0.04,
-                    low=open_price - 0.04,
-                    close=close,
-                    volume=100_000 if index < 59 else 180_000,
-                    vwap=close,
-                    start_ms=current_start_ms + index * 60_000,
-                    end_ms=current_start_ms + (index + 1) * 60_000,
-                )
-            )
-        state.update_quote(Quote("F", 13.755, 13.765, 100, 100, current_start_ms + 60 * 60_000))
-        state.last_event_kind = "bar"
-        state.last_event_ms = state.bars[-1].end_ms
-
-        signal = strategy.evaluate(state)
-
-        self.assertIsNotNone(signal)
-        self.assertEqual(signal.session_open_price, state.bars[60].open)
-        self.assertAlmostEqual(signal.entry_open_pct, (signal.price - state.bars[60].open) / state.bars[60].open)
-        self.assertLess(signal.entry_open_pct, 0.08)
-
     def test_steady_intraday_vwap_hold_blocks_early_lost_vwap_exit(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -7440,135 +7197,6 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "EMA fast breakdown")
-
-    def test_steady_intraday_exits_failed_trend_before_long_stop_bleed(self):
-        settings = Settings(
-            symbols=["PATH"],
-            regular_market_only=False,
-            steady_intraday_min_hold_seconds=0,
-            steady_intraday_failed_trend_minutes=12,
-            steady_intraday_failed_trend_max_mfe_r=0.20,
-            steady_intraday_failed_trend_min_r=-0.40,
-        )
-        strategy = SteadyIntradayStrategy(settings)
-        state = SymbolState("PATH")
-        start_ms = market_ms(2026, 5, 27, 10, 0)
-        for index in range(20):
-            close = 11.40 - index * 0.01
-            end_ms = start_ms + (index + 1) * 60_000
-            state.add_bar(Bar("PATH", close, close + 0.02, close - 0.02, close, 100_000, close, end_ms - 60_000, end_ms))
-
-        entry_ms = state.bars[-1].end_ms
-        position = Position(
-            "PATH",
-            "steady_intraday",
-            10,
-            11.40,
-            entry_ms,
-            12.0,
-            11.30,
-            11.30,
-            max_price=11.41,
-        )
-        event_ms = entry_ms + 13 * 60_000
-        state.update_quote(Quote("PATH", 11.34, 11.36, 100, 100, event_ms))
-
-        decision = strategy.should_exit(state, position)
-
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "failed trend")
-
-    def test_steady_intraday_runner_atr_multiple_can_widen_pullback_exit(self):
-        state = SymbolState("QBTS")
-        start_ms = market_ms(2026, 5, 22, 10, 0)
-        for index in range(20):
-            close = 100.0 + index * 0.02
-            state.add_bar(
-                Bar(
-                    "QBTS",
-                    open=close - 0.10,
-                    high=close + 1.00,
-                    low=close - 1.00,
-                    close=close,
-                    volume=100_000,
-                    vwap=close,
-                    start_ms=start_ms + index * 60_000,
-                    end_ms=start_ms + (index + 1) * 60_000,
-                )
-            )
-        event_ms = state.bars[-1].end_ms + 60_000
-        state.update_quote(Quote("QBTS", 99.99, 100.01, 100, 100, event_ms))
-        position = Position(
-            "QBTS",
-            "steady_intraday",
-            10,
-            100.0,
-            start_ms,
-            102.0,
-            99.0,
-            99.0,
-            max_price=101.0,
-            partial_exit_taken=True,
-        )
-
-        fixed_strategy = SteadyIntradayStrategy(
-            Settings(
-                alpaca_api_key="test",
-                alpaca_secret_key="test",
-                symbols=["QBTS"],
-                strategy_names=["steady_intraday"],
-                steady_intraday_min_hold_seconds=0,
-                steady_intraday_lost_vwap_min_hold_seconds=999_999,
-                steady_intraday_runner_pullback_pct=0.009,
-                steady_intraday_runner_atr_multiple=0.0,
-            )
-        )
-        atr_strategy = SteadyIntradayStrategy(
-            Settings(
-                alpaca_api_key="test",
-                alpaca_secret_key="test",
-                symbols=["QBTS"],
-                strategy_names=["steady_intraday"],
-                steady_intraday_min_hold_seconds=0,
-                steady_intraday_lost_vwap_min_hold_seconds=999_999,
-                steady_intraday_runner_pullback_pct=0.009,
-                steady_intraday_runner_atr_multiple=1.0,
-            )
-        )
-
-        fixed_decision = fixed_strategy.should_exit(state, position)
-        atr_decision = atr_strategy.should_exit(state, position)
-
-        self.assertIsNotNone(fixed_decision)
-        self.assertEqual(fixed_decision.reason, "runner pullback")
-        self.assertIsNone(atr_decision)
-
-    def test_steady_intraday_reject_log_includes_context(self):
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            symbols=["F"],
-            strategy_names=["steady_intraday"],
-        )
-        strategy = SteadyIntradayStrategy(settings)
-        state = SymbolState("F")
-        state.last_event_ms = market_ms(2026, 5, 22, 10, 0)
-
-        with self.assertLogs("strategies.steady_intraday", level="DEBUG") as captured:
-            strategy._reject(
-                state,
-                "trigger",
-                "no pullback reclaim or ORB continuation",
-                volume_ratio=1.1,
-                min_volume_ratio=1.15,
-                reclaimed_fast=False,
-            )
-
-        message = captured.output[0]
-        self.assertIn("No steady_intraday entry F [trigger]", message)
-        self.assertIn("volume_ratio=1.1", message)
-        self.assertIn("min_volume_ratio=1.15", message)
-        self.assertIn("reclaimed_fast=false", message)
 
     def test_macd_volume_runner_does_not_take_same_tick_full_target_after_partial(self):
         settings = Settings(
@@ -8024,6 +7652,7 @@ class CoreTradingTests(unittest.TestCase):
             consecutive_loss_pause_count=99,
             consecutive_loss_stop_count=5,
             stoch_macd_consecutive_loss_stop_count=6,
+            stoch_macd_respect_consecutive_loss_limits=True,
         )
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
@@ -8145,6 +7774,7 @@ class CoreTradingTests(unittest.TestCase):
             symbols=[f"SYM{index}" for index in range(45)],
             regular_market_only=False,
             daily_max_loss=10_000.0,
+            stoch_macd_respect_consecutive_loss_limits=True,
         )
         risk = RiskManager(settings)
         base_ms = market_ms(2026, 4, 24, 10, 0)
@@ -8650,9 +8280,6 @@ class CoreTradingTests(unittest.TestCase):
     def _stoch_macd_legacy_settings(self, **overrides) -> Settings:
         params = {
             "symbols": ["AAPL"],
-            "stoch_macd_entry_profile": "legacy",
-            "stoch_macd_require_oversold_stoch_recovery": False,
-            "stoch_macd_require_macd_reversal": False,
             "stoch_macd_max_k": 88.0,
             "stoch_macd_stoch_cross_lookback_bars": 3,
         }
@@ -8973,96 +8600,6 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(self._stoch_macd_state())
 
         self.assertIsNone(signal)
-
-    def test_stoch_macd_reversal_rejects_flat_vwap_slope(self):
-        settings = Settings(symbols=["AAPL"], stoch_macd_min_vwap_rise_bps=1.0)
-        strategy = StochMACDReversalStrategy(settings)
-        state = SymbolState("AAPL")
-        closes = [100.0 + index * 0.08 for index in range(40)]
-        start_ms = market_ms(2026, 4, 24, 9, 30)
-        for index, close in enumerate(closes):
-            ts = start_ms + index * 60_000
-            state.add_bar(
-                Bar(
-                    "AAPL",
-                    open=closes[index - 1] if index else close,
-                    high=close + 0.25,
-                    low=close - 0.25,
-                    close=close,
-                    volume=120_000 if index == len(closes) - 1 else 100_000,
-                    vwap=99.501 if index >= len(closes) - 3 else 99.50,
-                    start_ms=ts,
-                    end_ms=ts + 60_000,
-                )
-            )
-        last = state.bars[-1].close
-        state.update_quote(Quote("AAPL", last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
-
-        with patch.object(
-            strategy,
-            "_compute_stoch",
-            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
-        ), patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=(
-                [-0.05, -0.035, -0.015],
-                [-0.06, -0.045, -0.030],
-                [0.006, 0.012, 0.024],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_supertrend",
-            return_value=(102.0, True),
-        ):
-            signal = strategy.evaluate(state)
-
-        self.assertIsNone(signal)
-
-    def test_stoch_macd_reversal_allows_clear_vwap_slope(self):
-        settings = self._stoch_macd_legacy_settings(stoch_macd_min_vwap_rise_bps=1.0)
-        strategy = StochMACDReversalStrategy(settings)
-        state = SymbolState("AAPL")
-        closes = [100.0 + index * 0.08 for index in range(40)]
-        start_ms = market_ms(2026, 4, 24, 9, 30)
-        for index, close in enumerate(closes):
-            ts = start_ms + index * 60_000
-            state.add_bar(
-                Bar(
-                    "AAPL",
-                    open=closes[index - 1] if index else close,
-                    high=close + 0.25,
-                    low=close - 0.25,
-                    close=close,
-                    volume=120_000 if index == len(closes) - 1 else 100_000,
-                    vwap=99.70 if index >= len(closes) - 3 else 99.50,
-                    start_ms=ts,
-                    end_ms=ts + 60_000,
-                )
-            )
-        last = state.bars[-1].close
-        state.update_quote(Quote("AAPL", last - 0.01, last + 0.01, 100, 100, state.last_event_ms or 0))
-
-        with patch.object(
-            strategy,
-            "_compute_stoch",
-            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
-        ), patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=(
-                [-0.05, -0.035, -0.015],
-                [-0.06, -0.045, -0.030],
-                [0.006, 0.012, 0.024],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_supertrend",
-            return_value=(102.0, True),
-        ):
-            signal = strategy.evaluate(state)
-
-        self.assertIsNotNone(signal)
 
     def test_stoch_macd_reversal_rejects_low_atr_setup(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_vwap_enabled=False)
@@ -9516,84 +9053,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertIn("ao=0.0400", signal.reason)
 
-    def test_stoch_macd_reversal_ao_filter_allows_near_zero_improving_momentum(self):
-        settings = self._stoch_macd_legacy_settings(
-            stoch_macd_vwap_enabled=False,
-            stoch_macd_ao_filter_enabled=True,
-            stoch_macd_ao_near_zero_min_value=-0.01,
-        )
-        strategy = StochMACDReversalStrategy(settings)
-        closes = [90.0 + index * 0.2 for index in range(40)]
-
-        with patch.object(
-            strategy,
-            "_compute_stoch",
-            return_value=([42.0, 51.0, 60.0], [50.0, 50.5, 52.0]),
-        ), patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=(
-                [-0.05, -0.030, -0.005],
-                [-0.06, -0.045, -0.020],
-                [0.004, 0.010, 0.018],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_supertrend",
-            return_value=(60.80, True),
-        ), patch.object(
-            strategy,
-            "_fast_ema",
-            return_value=60.92,
-        ), patch.object(
-            strategy,
-            "_compute_ao",
-            return_value=[-0.020, -0.012, -0.007],
-        ):
-            signal = strategy.evaluate(self._stoch_macd_state(closes))
-
-        self.assertIsNotNone(signal)
-        self.assertIn("ao=-0.0070", signal.reason)
-
-    def test_stoch_macd_reversal_ao_filter_rejects_deep_negative_momentum(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            stoch_macd_vwap_enabled=False,
-            stoch_macd_ao_filter_enabled=True,
-            stoch_macd_ao_near_zero_min_value=-0.01,
-        )
-        strategy = StochMACDReversalStrategy(settings)
-        closes = [90.0 + index * 0.2 for index in range(40)]
-
-        with patch.object(
-            strategy,
-            "_compute_stoch",
-            return_value=([42.0, 51.0, 60.0], [50.0, 50.5, 52.0]),
-        ), patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=(
-                [-0.05, -0.030, -0.005],
-                [-0.06, -0.045, -0.020],
-                [0.004, 0.010, 0.018],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_supertrend",
-            return_value=(60.80, True),
-        ), patch.object(
-            strategy,
-            "_fast_ema",
-            return_value=60.92,
-        ), patch.object(
-            strategy,
-            "_compute_ao",
-            return_value=[-0.040, -0.030, -0.020],
-        ):
-            signal = strategy.evaluate(self._stoch_macd_state(closes))
-
-        self.assertIsNone(signal)
-
     def test_stoch_macd_reversal_does_not_synthesize_indicators_from_sparse_opening_bars(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=120, stoch_macd_min_bars=35)
         strategy = StochMACDReversalStrategy(settings)
@@ -9710,40 +9169,6 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_stoch_macd_reversal_uses_wider_supertrend_until_ema5_crosses_ema20(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            stoch_macd_supertrend_multiplier=1.0,
-            stoch_macd_supertrend_cross_ema_period=20,
-            stoch_macd_supertrend_pre_ema_cross_multiplier=2.0,
-        )
-        strategy = StochMACDReversalStrategy(settings)
-        state = self._stoch_macd_state([100.0 - index * 0.10 for index in range(40)])
-
-        multiplier, ema5, ema20 = strategy._supertrend_multiplier_for_bars(state.bars)
-
-        self.assertEqual(multiplier, 2.0)
-        self.assertIsNotNone(ema5)
-        self.assertIsNotNone(ema20)
-        self.assertLessEqual(ema5, ema20)
-
-    def test_stoch_macd_reversal_uses_fast_supertrend_after_ema5_crosses_ema20(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            stoch_macd_supertrend_multiplier=1.0,
-            stoch_macd_supertrend_cross_ema_period=20,
-            stoch_macd_supertrend_pre_ema_cross_multiplier=2.0,
-        )
-        strategy = StochMACDReversalStrategy(settings)
-        state = self._stoch_macd_state([100.0 + index * 0.10 for index in range(40)])
-
-        multiplier, ema5, ema20 = strategy._supertrend_multiplier_for_bars(state.bars)
-
-        self.assertEqual(multiplier, 1.0)
-        self.assertIsNotNone(ema5)
-        self.assertIsNotNone(ema20)
-        self.assertGreater(ema5, ema20)
-
     def test_stoch_macd_reversal_allows_green_supertrend_when_ema_is_below_line_by_default(self):
         settings = self._stoch_macd_legacy_settings(stoch_macd_vwap_enabled=False)
         strategy = StochMACDReversalStrategy(settings)
@@ -9810,113 +9235,6 @@ class CoreTradingTests(unittest.TestCase):
             return_value=94.0,
         ):
             signal = strategy.evaluate(self._stoch_macd_state())
-
-        self.assertIsNone(signal)
-
-    def test_stoch_macd_reversal_uses_session_supertrend_for_entry(self):
-        settings = Settings(
-            symbols=["F"],
-            stoch_macd_vwap_enabled=False,
-            stoch_macd_supertrend_period=7,
-            stoch_macd_supertrend_multiplier=3.0,
-            stoch_macd_supertrend_pre_ema_cross_multiplier=0.0,
-        )
-        strategy = StochMACDReversalStrategy(settings)
-        state = SymbolState("F")
-        rows = [
-            (12.35, 12.38, 12.32, 12.38, 4173, 12.371),
-            (12.34, 12.34, 12.29, 12.29, 26470, 12.301042),
-            (12.31, 12.32, 12.31, 12.32, 1717, 12.315271),
-            (12.305, 12.305, 12.275, 12.28, 8021, 12.279061),
-            (12.28, 12.29, 12.28, 12.29, 10586, 12.285999),
-            (12.285, 12.285, 12.255, 12.255, 16374, 12.257501),
-            (12.255, 12.255, 12.24, 12.24, 7283, 12.252409),
-            (12.22, 12.22, 12.19, 12.19, 37305, 12.211746),
-            (12.19, 12.195, 12.185, 12.185, 7599, 12.193076),
-            (12.185, 12.195, 12.185, 12.195, 9888, 12.187295),
-            (12.195, 12.215, 12.195, 12.21, 8597, 12.211943),
-            (12.225, 12.225, 12.215, 12.215, 3815, 12.223296),
-            (12.22, 12.245, 12.22, 12.245, 22408, 12.23181),
-            (12.22, 12.22, 12.215, 12.22, 5917, 12.219829),
-            (12.225, 12.24, 12.215, 12.235, 21518, 12.223303),
-            (12.24, 12.27, 12.24, 12.26, 3052, 12.252342),
-            (12.255, 12.27, 12.255, 12.27, 1498, 12.262652),
-            (12.27, 12.28, 12.245, 12.245, 22445, 12.256286),
-        ]
-        prior_start_ms = market_ms(2026, 5, 8, 15, 0)
-        for index in range(20):
-            close = 11.8 + index * 0.02
-            ts = prior_start_ms + index * 60_000
-            state.add_bar(
-                Bar(
-                    "F",
-                    open=close - 0.01,
-                    high=close + 0.03,
-                    low=close - 0.03,
-                    close=close,
-                    volume=10_000,
-                    vwap=close,
-                    start_ms=ts,
-                    end_ms=ts + 60_000,
-                )
-            )
-
-        start_ms = market_ms(2026, 5, 11, 9, 30)
-        for index, (open_px, high, low, close, volume, vwap) in enumerate(rows):
-            ts = start_ms + index * 60_000
-            state.add_bar(
-                Bar(
-                    "F",
-                    open=open_px,
-                    high=high,
-                    low=low,
-                    close=close,
-                    volume=volume,
-                    vwap=vwap,
-                    start_ms=ts,
-                    end_ms=ts + 60_000,
-                )
-            )
-        state.update_quote(Quote("F", bid=12.265, ask=12.275, bid_size=100, ask_size=100, timestamp_ms=state.last_event_ms or 0))
-
-        real_supertrend = strategy._compute_supertrend
-        real_fast_ema = strategy._fast_ema
-        current_day = datetime.fromtimestamp(state.last_event_ms / 1000, tz=MARKET_TZ).date()
-
-        def supertrend_for_chain(bars, period=7, multiplier=3.0):
-            first_day = datetime.fromtimestamp(bars[0].start_ms / 1000, tz=MARKET_TZ).date() if bars else current_day
-            if first_day != current_day:
-                return 11.90, True
-            return real_supertrend(bars, period, multiplier)
-
-        def fast_ema_for_chain(bars, period):
-            first_day = datetime.fromtimestamp(bars[0].start_ms / 1000, tz=MARKET_TZ).date() if bars else current_day
-            if first_day != current_day:
-                return 12.40
-            return real_fast_ema(bars, period)
-
-        with patch.object(
-            strategy,
-            "_compute_stoch",
-            return_value=([45.0, 55.0, 61.2], [50.0, 49.0, 49.8]),
-        ), patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=(
-                [-0.0200, -0.0170, -0.0152],
-                [-0.0190, -0.0185, -0.0181],
-                [0.0010, 0.0020, 0.0030],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_supertrend",
-            side_effect=supertrend_for_chain,
-        ), patch.object(
-            strategy,
-            "_fast_ema",
-            side_effect=fast_ema_for_chain,
-        ):
-            signal = strategy.evaluate(state)
 
         self.assertIsNone(signal)
 
@@ -10249,67 +9567,6 @@ class CoreTradingTests(unittest.TestCase):
             signal = strategy.evaluate(self._stoch_macd_state(closes))
 
         self.assertIsNone(signal)
-
-    def test_stoch_macd_reversal_allows_bearish_supertrend_support_touch(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            stoch_macd_vwap_enabled=False,
-            stoch_macd_entry_chase_max_extension_pct=0.004,
-        )
-        strategy = StochMACDReversalStrategy(settings)
-        closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
-        state = self._stoch_macd_state(closes)
-
-        with patch.object(
-            strategy,
-            "_compute_stoch",
-            return_value=(
-                [40.0, 35.0, 28.0, 22.0, 18.0, 20.0, 27.0, 35.0],
-                [42.0, 37.0, 30.0, 24.0, 20.0, 21.0, 28.0, 33.0],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_macd",
-            return_value=(
-                [-0.02, -0.01, 0.01],
-                [-0.015, -0.008, 0.002],
-                [-0.006, 0.001, 0.009],
-            ),
-        ), patch.object(
-            strategy,
-            "_compute_supertrend",
-            return_value=(87.5, False),
-        ), patch.object(
-            strategy,
-            "_fast_ema",
-            return_value=88.0,
-        ), patch.object(
-            strategy,
-            "_volume_ratio",
-            return_value=1.2,
-        ), patch.object(
-            strategy,
-            "_entry_stop_price",
-            return_value=87.55,
-        ):
-            last_bar = state.bars[-1]
-            state.bars[-1] = Bar(
-                symbol=last_bar.symbol,
-                open=88.0,
-                high=88.4,
-                low=87.48,
-                close=88.3,
-                volume=last_bar.volume,
-                vwap=88.0,
-                start_ms=last_bar.start_ms,
-                end_ms=last_bar.end_ms,
-            )
-            state.update_quote(Quote("AAPL", 88.29, 88.31, 100, 100, state.last_event_ms or 0))
-            signal = strategy.evaluate(state)
-
-        self.assertIsNotNone(signal)
-        self.assertIn("reversal bounce", signal.reason)
-        self.assertIn("st=red", signal.reason)
 
     def test_stoch_macd_reversal_runner_ignores_fixed_profit_target(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_target_profit_pct=0.012)

@@ -69,8 +69,8 @@ class MACDEarlyImpulseStrategy(Strategy):
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("macd_start_minute", "MACD_START_MINUTE", int_env, 0),
         ("macd_end_minute", "MACD_END_MINUTE", int_env, 360),
-        ("macd_hist_threshold", "MACD_HIST_THRESHOLD", float_env, 0.0012),
-        ("macd_volume_ratio", "MACD_VOLUME_RATIO", float_env, 1.45),
+        ("macd_hist_threshold", "MACD_HIST_THRESHOLD", float_env, 0.001),
+        ("macd_volume_ratio", "MACD_VOLUME_RATIO", float_env, 1.35),
         ("macd_target_profit_pct", "MACD_TARGET_PROFIT_PCT", float_env, 0.012),
         ("macd_stop_loss_pct", "MACD_STOP_LOSS_PCT", float_env, 0.0035),
         ("macd_trailing_stop_pct", "MACD_TRAILING_STOP_PCT", float_env, 0.0045),
@@ -91,7 +91,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_target_r", "MACD_TARGET_R", float_env, 2.0),
         ("macd_runner_pullback_pct", "MACD_RUNNER_PULLBACK_PCT", float_env, 0.0090),
         ("macd_early_window_minutes", "MACD_EARLY_WINDOW_MINUTES", int_env, 60),
-        ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.65),
+        ("macd_early_min_volume_ratio", "MACD_EARLY_MIN_VOLUME_RATIO", float_env, 1.50),
         (
             "macd_early_volume_average_fallback_enabled",
             "MACD_EARLY_VOLUME_AVERAGE_FALLBACK_ENABLED",
@@ -99,14 +99,11 @@ class MACDEarlyImpulseStrategy(Strategy):
             False,
         ),
         ("macd_early_volume_lookback_bars", "MACD_EARLY_VOLUME_LOOKBACK_BARS", int_env, 3),
-        ("macd_early_min_avg_volume_ratio", "MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 1.50),
+        ("macd_early_min_avg_volume_ratio", "MACD_EARLY_MIN_AVG_VOLUME_RATIO", float_env, 1.40),
         ("macd_early_min_latest_volume_ratio", "MACD_EARLY_MIN_LATEST_VOLUME_RATIO", float_env, 0.70),
         ("macd_early_max_spread_bps", "MACD_EARLY_MAX_SPREAD_BPS", float_env, 12.0),
-        ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.00135),
+        ("macd_early_min_hist_norm", "MACD_EARLY_MIN_HIST_NORM", float_env, 0.0012),
         ("macd_early_max_vwap_extension_pct", "MACD_EARLY_MAX_VWAP_EXTENSION_PCT", float_env, 0.015),
-        ("macd_require_vwap_rising", "MACD_REQUIRE_VWAP_RISING", bool_env, True),
-        ("macd_vwap_rising_lookback_bars", "MACD_VWAP_RISING_LOOKBACK_BARS", int_env, 3),
-        ("macd_min_vwap_rise_bps", "MACD_MIN_VWAP_RISE_BPS", float_env, 1.0),
         ("macd_volume_impulse_runner_volume_ratio", "MACD_VOLUME_IMPULSE_RUNNER_VOLUME_RATIO", float_env, 3.0),
         ("macd_volume_impulse_runner_hist_norm", "MACD_VOLUME_IMPULSE_RUNNER_HIST_NORM", float_env, 0.0015),
         ("macd_volume_impulse_max_spread_bps", "MACD_VOLUME_IMPULSE_MAX_SPREAD_BPS", float_env, 30.0),
@@ -118,13 +115,6 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_momentum_exit_min_profit_pct", "MACD_MOMENTUM_EXIT_MIN_PROFIT_PCT", float_env, 0.0015),
         ("macd_early_loss_cut_seconds", "MACD_EARLY_LOSS_CUT_SECONDS", int_env, 75),
         ("macd_early_loss_cut_pct", "MACD_EARLY_LOSS_CUT_PCT", float_env, 0.0022),
-        ("macd_stall_exit_seconds", "MACD_STALL_EXIT_SECONDS", int_env, 180),
-        ("macd_stall_exit_min_r", "MACD_STALL_EXIT_MIN_R", float_env, 0.15),
-        ("macd_weak_fade_exit_seconds", "MACD_WEAK_FADE_EXIT_SECONDS", int_env, 120),
-        ("macd_weak_fade_hist_bars", "MACD_WEAK_FADE_HIST_BARS", int_env, 2),
-        ("macd_weak_fade_max_mfe_pct", "MACD_WEAK_FADE_MAX_MFE_PCT", float_env, 0.0025),
-        ("macd_reentry_cooldown_seconds", "MACD_REENTRY_COOLDOWN_SECONDS", int_env, 600),
-        ("macd_block_neutral_hardened_above", "MACD_BLOCK_NEUTRAL_HARDENED_ABOVE", float_env, 0.55),
         (
             "macd_early_impulse_max_trades_per_symbol_per_session",
             "MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
@@ -216,9 +206,6 @@ class MACDEarlyImpulseStrategy(Strategy):
             "early_max_spread_bps": s.macd_early_max_spread_bps,
             "early_min_hist_norm": s.macd_early_min_hist_norm,
             "early_max_vwap_extension_pct": s.macd_early_max_vwap_extension_pct,
-            "require_vwap_rising": s.macd_require_vwap_rising,
-            "vwap_rising_lookback_bars": s.macd_vwap_rising_lookback_bars,
-            "min_vwap_rise_bps": s.macd_min_vwap_rise_bps,
             "volume_impulse_runner_volume_ratio": s.macd_volume_impulse_runner_volume_ratio,
             "volume_impulse_runner_hist_norm": s.macd_volume_impulse_runner_hist_norm,
             "volume_impulse_max_spread_bps": s.macd_volume_impulse_max_spread_bps,
@@ -230,13 +217,6 @@ class MACDEarlyImpulseStrategy(Strategy):
             "momentum_exit_min_profit_pct": s.macd_momentum_exit_min_profit_pct,
             "early_loss_cut_seconds": s.macd_early_loss_cut_seconds,
             "early_loss_cut_pct": s.macd_early_loss_cut_pct,
-            "stall_exit_seconds": s.macd_stall_exit_seconds,
-            "stall_exit_min_r": s.macd_stall_exit_min_r,
-            "weak_fade_exit_seconds": s.macd_weak_fade_exit_seconds,
-            "weak_fade_hist_bars": s.macd_weak_fade_hist_bars,
-            "weak_fade_max_mfe_pct": s.macd_weak_fade_max_mfe_pct,
-            "reentry_cooldown_seconds": s.macd_reentry_cooldown_seconds,
-            "block_neutral_hardened_above": s.macd_block_neutral_hardened_above,
             "max_trades_per_symbol_per_session": s.macd_early_impulse_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": s.macd_early_impulse_symbol_loss_lock_count,
             "macd_warmup_bars": s.macd_macd_warmup_bars,
@@ -362,13 +342,6 @@ class MACDEarlyImpulseStrategy(Strategy):
         vwap = self._session_vwap(rb)
         if vwap is not None and last.ask < vwap:
             return self._reject(state, "below_vwap", "price below vwap")
-        vwap_slope_reject = self._vwap_slope_reject_reason(
-            rb,
-            vwap,
-            allow_insufficient_bars=early_window,
-        )
-        if vwap_slope_reject:
-            return self._reject(state, "vwap", vwap_slope_reject)
         runner_mode = self._runner_mode(state.symbol, rb, last.ask, ema_trend[-1], vwap, vol_r)
 
         chop_range_pct = self.settings.macd_chop_range_pct
@@ -380,13 +353,6 @@ class MACDEarlyImpulseStrategy(Strategy):
             chop_range_pct *= 1.0 + (
                 max(1.0, self.settings.macd_neutral_chop_range_multiplier) - 1.0
             ) * neutral_hardening
-        block_neutral = max(0.0, self.settings.macd_block_neutral_hardened_above)
-        if block_neutral > 0 and neutral_hardening >= block_neutral and not runner_mode:
-            return self._reject(
-                state,
-                "neutral_chop",
-                f"neutral regime hardened {neutral_hardening:.2f} >= {block_neutral:.2f}",
-            )
         if self._is_chop(state, chop_range_pct) and not runner_mode:
             return self._reject(
                 state,
@@ -656,10 +622,6 @@ class MACDEarlyImpulseStrategy(Strategy):
             if age_seconds < min_hold_seconds:
                 return None
 
-            weak_exit = self._weak_impulse_exit_decision(state, position, price, age_seconds, pnl_pct, r_initial)
-            if weak_exit is not None:
-                return weak_exit
-
             macd = self._compute_macd(state)
             if macd is not None:
                 _, _, hist = macd
@@ -690,10 +652,6 @@ class MACDEarlyImpulseStrategy(Strategy):
         if age_seconds < self.settings.macd_min_hold_seconds:
             return None
 
-        weak_exit = self._weak_impulse_exit_decision(state, position, price, age_seconds, pnl_pct, r_initial)
-        if weak_exit is not None:
-            return weak_exit
-
         macd = self._compute_macd(state)
         if macd is not None:
             _, _, hist = macd
@@ -712,53 +670,6 @@ class MACDEarlyImpulseStrategy(Strategy):
         if pnl_pct <= -self.settings.macd_stop_loss_pct:
             return ExitDecision("stop loss")
 
-        return None
-
-    def _weak_impulse_exit_decision(
-        self,
-        state: SymbolState,
-        position,
-        price: float,
-        age_seconds: float,
-        pnl_pct: float,
-        r_initial: float,
-    ) -> ExitDecision | None:
-        if position.partial_exit_taken:
-            return None
-
-        if (
-            self.settings.macd_stall_exit_seconds > 0
-            and r_initial > 0
-            and age_seconds >= self.settings.macd_stall_exit_seconds
-        ):
-            peak = max(position.max_price or 0.0, price, position.entry_price)
-            mfe_r = (peak - position.entry_price) / r_initial
-            if mfe_r < max(0.0, self.settings.macd_stall_exit_min_r):
-                return ExitDecision("impulse stall")
-
-        if self.settings.macd_weak_fade_exit_seconds <= 0:
-            return None
-        if age_seconds < self.settings.macd_weak_fade_exit_seconds:
-            return None
-        if pnl_pct > self.settings.macd_momentum_exit_min_profit_pct:
-            return None
-
-        peak = max(position.max_price or 0.0, price, position.entry_price)
-        mfe_pct = (peak - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
-        if mfe_pct >= max(0.0, self.settings.macd_weak_fade_max_mfe_pct):
-            return None
-
-        macd = self._compute_macd(state)
-        if macd is None:
-            return None
-        macd_line, signal_line, hist = macd
-        hist_bars = max(2, self.settings.macd_weak_fade_hist_bars)
-        min_hist_len = hist_bars + 1
-        if len(hist) < min_hist_len or not macd_line or not signal_line:
-            return None
-        hist_fading = all(hist[-index] < hist[-index - 1] for index in range(1, hist_bars))
-        if hist_fading or macd_line[-1] <= signal_line[-1]:
-            return ExitDecision("weak macd fade")
         return None
 
     def allow_max_hold_exit(self, state: SymbolState, position, age_seconds: float, pnl_pct: float) -> bool:
@@ -929,35 +840,6 @@ class MACDEarlyImpulseStrategy(Strategy):
             return None
         total_value = sum(bar.vwap * bar.volume for bar in session_bars if bar.volume > 0)
         return total_value / total_volume if total_value > 0 else None
-
-    def _vwap_slope_reject_reason(
-        self,
-        session_bars,
-        session_vwap: float | None,
-        *,
-        allow_insufficient_bars: bool = False,
-    ) -> str | None:
-        if not self.settings.macd_require_vwap_rising:
-            return None
-        bars = list(session_bars)
-        lookback = max(1, self.settings.macd_vwap_rising_lookback_bars)
-        min_bars = lookback * 2
-        if len(bars) < min_bars:
-            if allow_insufficient_bars:
-                return None
-            return f"not enough bars for VWAP slope bars={len(bars)} need={min_bars}"
-        if session_vwap is None:
-            return "missing current-session VWAP"
-        prev_vwap = self._session_vwap(bars[:-lookback])
-        min_rise = max(0.0, self.settings.macd_min_vwap_rise_bps) / 10_000.0
-        required_vwap = (prev_vwap or 0.0) * (1.0 + min_rise)
-        if prev_vwap is None or session_vwap <= required_vwap:
-            return (
-                "VWAP not rising enough "
-                f"current={session_vwap:.4f} required={required_vwap:.4f} "
-                f"previous={prev_vwap or 0.0:.4f} min_bps={self.settings.macd_min_vwap_rise_bps:.2f}"
-            )
-        return None
 
     def _volume_ratio(self, state: SymbolState) -> float:
         session_bars = self._regular_bars(state)

@@ -22,7 +22,7 @@ class SteadyIntradayStrategy(Strategy):
 
     name = "steady_intraday"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
-        ("steady_intraday_start_minute", "STEADY_INTRADAY_START_MINUTE", int_env, 30),
+        ("steady_intraday_start_minute", "STEADY_INTRADAY_START_MINUTE", int_env, 15),
         ("steady_intraday_end_minute", "STEADY_INTRADAY_END_MINUTE", int_env, 330),
         ("steady_intraday_min_bars", "STEADY_INTRADAY_MIN_BARS", int_env, 55),
         ("steady_intraday_orb_minutes", "STEADY_INTRADAY_ORB_MINUTES", int_env, 15),
@@ -48,7 +48,6 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_partial_size", "STEADY_INTRADAY_PARTIAL_SIZE", float_env, 0.5),
         ("steady_intraday_target_r", "STEADY_INTRADAY_TARGET_R", float_env, 2.0),
         ("steady_intraday_runner_pullback_pct", "STEADY_INTRADAY_RUNNER_PULLBACK_PCT", float_env, 0.009),
-        ("steady_intraday_runner_atr_multiple", "STEADY_INTRADAY_RUNNER_ATR_MULTIPLE", float_env, 0.0),
         ("steady_intraday_min_hold_seconds", "STEADY_INTRADAY_MIN_HOLD_SECONDS", int_env, 30),
         ("steady_intraday_breakdown_bars", "STEADY_INTRADAY_BREAKDOWN_BARS", int_env, 2),
         (
@@ -65,9 +64,6 @@ class SteadyIntradayStrategy(Strategy):
         ),
         ("steady_intraday_stall_minutes", "STEADY_INTRADAY_STALL_MINUTES", int_env, 25),
         ("steady_intraday_stall_min_r", "STEADY_INTRADAY_STALL_MIN_R", float_env, 0.35),
-        ("steady_intraday_failed_trend_minutes", "STEADY_INTRADAY_FAILED_TREND_MINUTES", int_env, 12),
-        ("steady_intraday_failed_trend_max_mfe_r", "STEADY_INTRADAY_FAILED_TREND_MAX_MFE_R", float_env, 0.20),
-        ("steady_intraday_failed_trend_min_r", "STEADY_INTRADAY_FAILED_TREND_MIN_R", float_env, -0.40),
         ("steady_intraday_position_size_multiplier", "STEADY_INTRADAY_POSITION_SIZE_MULTIPLIER", float_env, 0.8),
         (
             "steady_intraday_max_trades_per_symbol_per_session",
@@ -78,64 +74,6 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_symbol_loss_lock_count", "STEADY_INTRADAY_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("steady_intraday_allow_orb_breakout", "STEADY_INTRADAY_ALLOW_ORB_BREAKOUT", bool_env, True),
         ("steady_intraday_allow_pullback_reclaim", "STEADY_INTRADAY_ALLOW_PULLBACK_RECLAIM", bool_env, True),
-        ("steady_intraday_risk_off_volume_add", "STEADY_INTRADAY_RISK_OFF_VOLUME_ADD", float_env, 0.30),
-        (
-            "steady_intraday_risk_off_min_range_multiplier",
-            "STEADY_INTRADAY_RISK_OFF_MIN_RANGE_MULTIPLIER",
-            float_env,
-            1.15,
-        ),
-        (
-            "steady_intraday_risk_off_vwap_buffer_multiplier",
-            "STEADY_INTRADAY_RISK_OFF_VWAP_BUFFER_MULTIPLIER",
-            float_env,
-            1.5,
-        ),
-        (
-            "steady_intraday_risk_off_max_vwap_extension_multiplier",
-            "STEADY_INTRADAY_RISK_OFF_MAX_VWAP_EXTENSION_MULTIPLIER",
-            float_env,
-            0.80,
-        ),
-        (
-            "steady_intraday_risk_off_max_ema_extension_multiplier",
-            "STEADY_INTRADAY_RISK_OFF_MAX_EMA_EXTENSION_MULTIPLIER",
-            float_env,
-            0.85,
-        ),
-        ("steady_intraday_risk_off_max_r_multiplier", "STEADY_INTRADAY_RISK_OFF_MAX_R_MULTIPLIER", float_env, 0.80),
-        (
-            "steady_intraday_risk_off_allow_orb_breakout",
-            "STEADY_INTRADAY_RISK_OFF_ALLOW_ORB_BREAKOUT",
-            bool_env,
-            False,
-        ),
-        ("steady_intraday_neutral_volume_add", "STEADY_INTRADAY_NEUTRAL_VOLUME_ADD", float_env, 0.10),
-        (
-            "steady_intraday_neutral_min_range_multiplier",
-            "STEADY_INTRADAY_NEUTRAL_MIN_RANGE_MULTIPLIER",
-            float_env,
-            1.05,
-        ),
-        (
-            "steady_intraday_neutral_vwap_buffer_multiplier",
-            "STEADY_INTRADAY_NEUTRAL_VWAP_BUFFER_MULTIPLIER",
-            float_env,
-            1.20,
-        ),
-        (
-            "steady_intraday_neutral_max_vwap_extension_multiplier",
-            "STEADY_INTRADAY_NEUTRAL_MAX_VWAP_EXTENSION_MULTIPLIER",
-            float_env,
-            0.90,
-        ),
-        (
-            "steady_intraday_neutral_max_ema_extension_multiplier",
-            "STEADY_INTRADAY_NEUTRAL_MAX_EMA_EXTENSION_MULTIPLIER",
-            float_env,
-            0.95,
-        ),
-        ("steady_intraday_neutral_max_r_multiplier", "STEADY_INTRADAY_NEUTRAL_MAX_R_MULTIPLIER", float_env, 0.90),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.steady_intraday",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_steady_intraday.py --top 12"
@@ -169,30 +107,12 @@ class SteadyIntradayStrategy(Strategy):
             "partial_r": settings.steady_intraday_partial_r,
             "target_r": settings.steady_intraday_target_r,
             "runner_pullback_pct": settings.steady_intraday_runner_pullback_pct,
-            "runner_atr_multiple": settings.steady_intraday_runner_atr_multiple,
             "min_hold_seconds": settings.steady_intraday_min_hold_seconds,
             "breakdown_min_hold_seconds": settings.steady_intraday_breakdown_min_hold_seconds,
             "lost_vwap_min_hold_seconds": settings.steady_intraday_lost_vwap_min_hold_seconds,
             "position_size_multiplier": settings.steady_intraday_position_size_multiplier,
             "max_trades_per_symbol_per_session": settings.steady_intraday_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.steady_intraday_symbol_loss_lock_count,
-            "risk_off": {
-                "volume_add": settings.steady_intraday_risk_off_volume_add,
-                "min_range_multiplier": settings.steady_intraday_risk_off_min_range_multiplier,
-                "vwap_buffer_multiplier": settings.steady_intraday_risk_off_vwap_buffer_multiplier,
-                "max_vwap_extension_multiplier": settings.steady_intraday_risk_off_max_vwap_extension_multiplier,
-                "max_ema_extension_multiplier": settings.steady_intraday_risk_off_max_ema_extension_multiplier,
-                "max_r_multiplier": settings.steady_intraday_risk_off_max_r_multiplier,
-                "allow_orb_breakout": settings.steady_intraday_risk_off_allow_orb_breakout,
-            },
-            "neutral_regime": {
-                "volume_add": settings.steady_intraday_neutral_volume_add,
-                "min_range_multiplier": settings.steady_intraday_neutral_min_range_multiplier,
-                "vwap_buffer_multiplier": settings.steady_intraday_neutral_vwap_buffer_multiplier,
-                "max_vwap_extension_multiplier": settings.steady_intraday_neutral_max_vwap_extension_multiplier,
-                "max_ema_extension_multiplier": settings.steady_intraday_neutral_max_ema_extension_multiplier,
-                "max_r_multiplier": settings.steady_intraday_neutral_max_r_multiplier,
-            },
         }
 
     def __init__(self, settings: Settings):
@@ -211,42 +131,18 @@ class SteadyIntradayStrategy(Strategy):
             return self._reject(state, "eod", "entry disabled near close")
 
         bars = self._regular_bars(state)
-        session_bars = self._current_regular_session_bars(state)
-        risk_off = self._risk_off_market_regime()
-        neutral_hardening = self._neutral_market_regime_hardening()
-        regime_reason = self._regime_reason(risk_off, neutral_hardening)
-        if len(session_bars) < 2:
-            return self._reject(
-                state,
-                "history",
-                "insufficient current-session bars",
-                session_bars=len(session_bars),
-            )
-
         min_bars = max(self.settings.steady_intraday_min_bars, self.settings.steady_intraday_ema_slow + 5)
         if len(bars) < min_bars:
-            return self._reject(
-                state,
-                "history",
-                "insufficient regular-session bars",
-                regular_bars=len(bars),
-                required_bars=min_bars,
-            )
+            return self._reject(state, "history", "insufficient regular-session bars")
 
-        latest = session_bars[-1]
+        latest = bars[-1]
         entry = latest.close
         if entry < self.settings.steady_intraday_min_price:
-            return self._reject(state, "price", "price below minimum", price=entry, min_price=self.settings.steady_intraday_min_price)
+            return self._reject(state, "price", "price below minimum")
 
         spread_bps = state.quote.spread_bps if state.quote else None
         if spread_bps is not None and spread_bps > self.settings.steady_intraday_max_spread_bps:
-            return self._reject(
-                state,
-                "spread",
-                "spread too wide",
-                spread_bps=spread_bps,
-                max_spread_bps=self.settings.steady_intraday_max_spread_bps,
-            )
+            return self._reject(state, "spread", f"spread {spread_bps:.2f}bps too wide")
 
         closes = [bar.close for bar in bars]
         ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
@@ -254,185 +150,57 @@ class SteadyIntradayStrategy(Strategy):
         ema_slow = self._ema(closes, self.settings.steady_intraday_ema_slow)
         prev_ema_mid = self._ema(closes[:-3], self.settings.steady_intraday_ema_mid)
         if None in {ema_fast, ema_mid, ema_slow, prev_ema_mid}:
-            return self._reject(
-                state,
-                "history",
-                "insufficient EMA history",
-                regular_bars=len(bars),
-                ema_fast_period=self.settings.steady_intraday_ema_fast,
-                ema_mid_period=self.settings.steady_intraday_ema_mid,
-                ema_slow_period=self.settings.steady_intraday_ema_slow,
-            )
+            return self._reject(state, "history", "insufficient EMA history")
 
-        session_vwap = self._session_vwap(session_bars)
-        prev_vwap = self._session_vwap(session_bars[:-5])
+        session_vwap = self._session_vwap(bars)
+        prev_vwap = self._session_vwap(bars[:-5])
         if session_vwap is None or prev_vwap is None:
-            return self._reject(
-                state,
-                "vwap",
-                "missing session VWAP",
-                session_bars=len(session_bars),
-                prior_vwap_bars=len(session_bars[:-5]),
-            )
+            return self._reject(state, "vwap", "missing session VWAP")
 
         atr = self._atr(bars, self.settings.steady_intraday_atr_period)
         if atr is None or atr <= 0:
-            return self._reject(state, "atr", "missing ATR", regular_bars=len(bars), atr_period=self.settings.steady_intraday_atr_period)
+            return self._reject(state, "atr", "missing ATR")
         atr_pct = atr / entry
         if atr_pct < self.settings.steady_intraday_min_atr_pct:
-            return self._reject(
-                state,
-                "atr",
-                "ATR too low",
-                atr_pct=atr_pct,
-                min_atr_pct=self.settings.steady_intraday_min_atr_pct,
-            )
+            return self._reject(state, "atr", "ATR too low")
         if atr_pct > self.settings.steady_intraday_max_atr_pct:
-            return self._reject(
-                state,
-                "atr",
-                "ATR too high",
-                atr_pct=atr_pct,
-                max_atr_pct=self.settings.steady_intraday_max_atr_pct,
-            )
+            return self._reject(state, "atr", "ATR too high")
 
-        recent_range_pct = self._range_pct(session_bars[-20:])
-        min_range_pct = self._effective_min_range_pct(risk_off, neutral_hardening)
-        if recent_range_pct < min_range_pct:
-            return self._reject(
-                state,
-                "range",
-                "recent range too compressed",
-                range_pct=recent_range_pct,
-                min_range_pct=min_range_pct,
-                session_bars=len(session_bars),
-                regime=regime_reason or None,
-            )
+        recent_range_pct = self._range_pct(bars[-20:])
+        if recent_range_pct < self.settings.steady_intraday_min_range_pct:
+            return self._reject(state, "range", "recent range too compressed")
 
         if not (ema_fast > ema_mid > ema_slow):
-            return self._reject(
-                state,
-                "trend",
-                "EMA stack not bullish",
-                ema_fast=ema_fast,
-                ema_mid=ema_mid,
-                ema_slow=ema_slow,
-            )
+            return self._reject(state, "trend", "EMA stack not bullish")
         if ema_mid <= prev_ema_mid:
-            return self._reject(
-                state,
-                "trend",
-                "EMA20 not rising",
-                ema_mid=ema_mid,
-                prev_ema_mid=prev_ema_mid,
-            )
-        vwap_buffer_pct = self._effective_vwap_buffer_pct(risk_off, neutral_hardening)
-        if entry <= session_vwap * (1 + vwap_buffer_pct):
-            return self._reject(
-                state,
-                "vwap",
-                "price not above VWAP",
-                price=entry,
-                session_vwap=session_vwap,
-                vwap_buffer_pct=vwap_buffer_pct,
-                vwap_distance_pct=(entry - session_vwap) / session_vwap if session_vwap else None,
-                regime=regime_reason or None,
-            )
+            return self._reject(state, "trend", "EMA20 not rising")
+        if entry <= session_vwap * (1 + self.settings.steady_intraday_vwap_buffer_pct):
+            return self._reject(state, "vwap", "price not above VWAP")
         if session_vwap <= prev_vwap:
-            return self._reject(
-                state,
-                "vwap",
-                "VWAP not rising",
-                session_vwap=session_vwap,
-                prev_vwap=prev_vwap,
-            )
+            return self._reject(state, "vwap", "VWAP not rising")
 
         vwap_extension_pct = (entry - session_vwap) / session_vwap
         ema_extension_pct = (entry - ema_mid) / ema_mid
-        max_vwap_extension_pct = self._effective_max_vwap_extension_pct(risk_off, neutral_hardening)
-        max_ema_extension_pct = self._effective_max_ema_extension_pct(risk_off, neutral_hardening)
-        if vwap_extension_pct > max_vwap_extension_pct:
-            return self._reject(
-                state,
-                "extension",
-                "too extended from VWAP",
-                vwap_extension_pct=vwap_extension_pct,
-                max_vwap_extension_pct=max_vwap_extension_pct,
-                regime=regime_reason or None,
-            )
-        if ema_extension_pct > max_ema_extension_pct:
-            return self._reject(
-                state,
-                "extension",
-                "too extended from EMA20",
-                ema_extension_pct=ema_extension_pct,
-                max_ema_extension_pct=max_ema_extension_pct,
-                regime=regime_reason or None,
-            )
+        if vwap_extension_pct > self.settings.steady_intraday_max_vwap_extension_pct:
+            return self._reject(state, "extension", "too extended from VWAP")
+        if ema_extension_pct > self.settings.steady_intraday_max_ema_extension_pct:
+            return self._reject(state, "extension", "too extended from EMA20")
 
-        volume_ratio = self._volume_ratio(session_bars)
-        min_volume_ratio = self._effective_min_volume_ratio(risk_off, neutral_hardening)
-        breakout_volume_ratio = self._effective_breakout_volume_ratio(risk_off, neutral_hardening)
-        allow_orb_breakout = self._effective_allow_orb_breakout(risk_off)
-        trigger = self._entry_trigger(
-            session_bars,
-            entry,
-            ema_fast,
-            ema_mid,
-            session_vwap,
-            volume_ratio,
-            min_volume_ratio,
-            breakout_volume_ratio,
-            allow_orb_breakout,
-        )
+        volume_ratio = self._volume_ratio(bars)
+        trigger = self._entry_trigger(bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
         if trigger is None:
-            return self._reject(
-                state,
-                "trigger",
-                "no pullback reclaim or ORB continuation",
-                **self._entry_trigger_state(
-                    session_bars,
-                    entry,
-                    ema_fast,
-                    ema_mid,
-                    session_vwap,
-                    volume_ratio,
-                    min_volume_ratio,
-                    breakout_volume_ratio,
-                    allow_orb_breakout,
-                ),
-                regime=regime_reason or None,
-            )
+            return self._reject(state, "trigger", "no pullback reclaim or ORB continuation")
 
-        stop_price = self._stop_price(session_bars, entry, ema_mid, session_vwap, atr)
+        stop_price = self._stop_price(bars, entry, ema_mid, session_vwap, atr)
         r_pct = (entry - stop_price) / entry if entry > 0 else 0.0
         if r_pct < self.settings.steady_intraday_min_r_pct:
-            return self._reject(
-                state,
-                "risk",
-                "R too small",
-                r_pct=r_pct,
-                min_r_pct=self.settings.steady_intraday_min_r_pct,
-                entry=entry,
-                stop_price=stop_price,
-            )
-        max_r_pct = self._effective_max_r_pct(risk_off, neutral_hardening)
-        if r_pct > max_r_pct:
-            return self._reject(
-                state,
-                "risk",
-                "R too wide",
-                r_pct=r_pct,
-                max_r_pct=max_r_pct,
-                entry=entry,
-                stop_price=stop_price,
-                regime=regime_reason or None,
-            )
+            return self._reject(state, "risk", "R too small")
+        if r_pct > self.settings.steady_intraday_max_r_pct:
+            return self._reject(state, "risk", "R too wide")
 
         reason = (
             f"steady_intraday {trigger}: EMA stack {ema_fast:.2f}>{ema_mid:.2f}>{ema_slow:.2f}, "
             f"VWAP {session_vwap:.2f}, ATR {atr_pct:.2%}, R {r_pct:.2%}, vol {volume_ratio:.2f}x"
-            f"{regime_reason}"
         )
         return Signal(
             strategy=self.name,
@@ -440,13 +208,13 @@ class SteadyIntradayStrategy(Strategy):
             side="BUY",
             price=entry,
             timestamp_ms=latest.end_ms,
-            change_pct=(entry - session_bars[0].open) / session_bars[0].open if session_bars[0].open else 0.0,
+            change_pct=(entry - bars[0].open) / bars[0].open if bars[0].open else 0.0,
             volume_ratio=volume_ratio,
             spread_bps=spread_bps,
             reason=reason,
             stop_price=stop_price,
-            session_open_price=session_bars[0].open,
-            entry_open_pct=(entry - session_bars[0].open) / session_bars[0].open if session_bars[0].open else None,
+            session_open_price=bars[0].open,
+            entry_open_pct=(entry - bars[0].open) / bars[0].open if bars[0].open else None,
             position_size_multiplier=self.settings.steady_intraday_position_size_multiplier,
         )
 
@@ -479,23 +247,21 @@ class SteadyIntradayStrategy(Strategy):
         if age_seconds < self.settings.steady_intraday_min_hold_seconds:
             return None
 
-        bars = self._regular_bars(state)
-        session_bars = self._current_regular_session_bars(state)
         if position.partial_exit_taken:
             peak = position.max_price if position.max_price > 0 else position.entry_price
-            runner_pullback_pct = self._runner_pullback_pct(bars, peak)
-            if peak > 0 and price <= peak * (1 - runner_pullback_pct):
+            if peak > 0 and price <= peak * (1 - self.settings.steady_intraday_runner_pullback_pct):
                 return ExitDecision("runner pullback")
 
-        if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2) and len(session_bars) >= 1:
+        bars = self._regular_bars(state)
+        if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2):
             closes = [bar.close for bar in bars]
             ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
-            session_vwap = self._session_vwap(session_bars)
+            session_vwap = self._session_vwap(bars)
             breakdown_bars = max(1, self.settings.steady_intraday_breakdown_bars)
             if (
                 age_seconds >= self.settings.steady_intraday_breakdown_min_hold_seconds
                 and ema_fast
-                and self._last_n_closes_below(session_bars, ema_fast, breakdown_bars)
+                and self._last_n_closes_below(bars, ema_fast, breakdown_bars)
             ):
                 return ExitDecision("EMA fast breakdown")
             if (
@@ -507,17 +273,6 @@ class SteadyIntradayStrategy(Strategy):
 
         age_minutes = (event_ms - position.entry_ms) / 60_000
         current_r = (price - position.entry_price) / r_initial
-        peak = max(position.max_price or 0.0, price, position.entry_price)
-        mfe_r = (peak - position.entry_price) / r_initial if r_initial > 0 else 0.0
-        failed_trend_minutes = max(0, self.settings.steady_intraday_failed_trend_minutes)
-        if (
-            failed_trend_minutes > 0
-            and age_minutes >= failed_trend_minutes
-            and mfe_r < max(0.0, self.settings.steady_intraday_failed_trend_max_mfe_r)
-            and current_r <= self.settings.steady_intraday_failed_trend_min_r
-        ):
-            return ExitDecision("failed trend")
-
         if (
             age_minutes >= self.settings.steady_intraday_stall_minutes
             and current_r < self.settings.steady_intraday_stall_min_r
@@ -528,97 +283,6 @@ class SteadyIntradayStrategy(Strategy):
 
     def use_fixed_target_exit(self, position) -> bool:
         return False
-
-    def _risk_off_market_regime(self) -> bool:
-        return getattr(getattr(self, "_market_regime", None), "name", "") == "risk_off"
-
-    def _neutral_market_regime_hardening(self) -> float:
-        regime = getattr(self, "_market_regime", None)
-        if getattr(regime, "name", "") != "neutral":
-            return 0.0
-        risk_off_score = self.settings.market_regime_risk_off_score
-        risk_on_score = self.settings.market_regime_risk_on_score
-        span = max(1, risk_on_score - risk_off_score)
-        score = getattr(regime, "score", 0)
-        return min(1.0, max(0.0, (risk_on_score - score) / span))
-
-    @staticmethod
-    def _regime_reason(risk_off: bool, neutral_hardening: float) -> str:
-        if risk_off:
-            return " regime=risk_off"
-        if neutral_hardening > 0:
-            return f" regime=neutral_hardened:{neutral_hardening:.2f}"
-        return ""
-
-    def _effective_min_range_pct(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_min_range_pct
-        if risk_off:
-            return value * max(0.0, self.settings.steady_intraday_risk_off_min_range_multiplier)
-        if neutral_hardening > 0:
-            multiplier = 1.0 + (
-                max(1.0, self.settings.steady_intraday_neutral_min_range_multiplier) - 1.0
-            ) * neutral_hardening
-            return value * multiplier
-        return value
-
-    def _effective_min_volume_ratio(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_min_volume_ratio
-        if risk_off:
-            return value + max(0.0, self.settings.steady_intraday_risk_off_volume_add)
-        if neutral_hardening > 0:
-            return value + max(0.0, self.settings.steady_intraday_neutral_volume_add) * neutral_hardening
-        return value
-
-    def _effective_breakout_volume_ratio(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_breakout_volume_ratio
-        if risk_off:
-            return value + max(0.0, self.settings.steady_intraday_risk_off_volume_add)
-        if neutral_hardening > 0:
-            return value + max(0.0, self.settings.steady_intraday_neutral_volume_add) * neutral_hardening
-        return value
-
-    def _effective_vwap_buffer_pct(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_vwap_buffer_pct
-        if risk_off:
-            return value * max(1.0, self.settings.steady_intraday_risk_off_vwap_buffer_multiplier)
-        if neutral_hardening > 0:
-            multiplier = 1.0 + (
-                max(1.0, self.settings.steady_intraday_neutral_vwap_buffer_multiplier) - 1.0
-            ) * neutral_hardening
-            return value * multiplier
-        return value
-
-    def _effective_max_vwap_extension_pct(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_max_vwap_extension_pct
-        if risk_off:
-            return value * max(0.0, self.settings.steady_intraday_risk_off_max_vwap_extension_multiplier)
-        if neutral_hardening > 0:
-            multiplier = min(1.0, max(0.0, self.settings.steady_intraday_neutral_max_vwap_extension_multiplier))
-            return value * (1.0 - ((1.0 - multiplier) * neutral_hardening))
-        return value
-
-    def _effective_max_ema_extension_pct(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_max_ema_extension_pct
-        if risk_off:
-            return value * max(0.0, self.settings.steady_intraday_risk_off_max_ema_extension_multiplier)
-        if neutral_hardening > 0:
-            multiplier = min(1.0, max(0.0, self.settings.steady_intraday_neutral_max_ema_extension_multiplier))
-            return value * (1.0 - ((1.0 - multiplier) * neutral_hardening))
-        return value
-
-    def _effective_max_r_pct(self, risk_off: bool, neutral_hardening: float) -> float:
-        value = self.settings.steady_intraday_max_r_pct
-        if risk_off:
-            return value * max(0.0, self.settings.steady_intraday_risk_off_max_r_multiplier)
-        if neutral_hardening > 0:
-            multiplier = min(1.0, max(0.0, self.settings.steady_intraday_neutral_max_r_multiplier))
-            return value * (1.0 - ((1.0 - multiplier) * neutral_hardening))
-        return value
-
-    def _effective_allow_orb_breakout(self, risk_off: bool) -> bool:
-        if risk_off:
-            return self.settings.steady_intraday_allow_orb_breakout and self.settings.steady_intraday_risk_off_allow_orb_breakout
-        return self.settings.steady_intraday_allow_orb_breakout
 
     def _within_entry_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None:
@@ -637,85 +301,33 @@ class SteadyIntradayStrategy(Strategy):
         ema_mid: float,
         session_vwap: float,
         volume_ratio: float,
-        min_volume_ratio: float,
-        breakout_volume_ratio: float,
-        allow_orb_breakout: bool,
     ) -> str | None:
-        state = self._entry_trigger_state(
-            bars,
-            entry,
-            ema_fast,
-            ema_mid,
-            session_vwap,
-            volume_ratio,
-            min_volume_ratio,
-            breakout_volume_ratio,
-            allow_orb_breakout,
-        )
+        latest = bars[-1]
+        previous = bars[-2]
+        reclaimed_fast = previous.close <= ema_fast * 1.002 and latest.close > max(previous.high, ema_fast)
+        held_mid = latest.low >= min(ema_mid, session_vwap) * 0.997
+        bullish_close = latest.close > latest.open and self._close_near_high(latest)
         if (
             self.settings.steady_intraday_allow_pullback_reclaim
-            and state["reclaimed_fast"]
-            and state["held_mid"]
-            and state["bullish_close"]
-            and state["volume_ratio"] >= min_volume_ratio
+            and reclaimed_fast
+            and held_mid
+            and bullish_close
+            and volume_ratio >= self.settings.steady_intraday_min_volume_ratio
         ):
             return "pullback_reclaim"
 
-        if allow_orb_breakout:
+        if self.settings.steady_intraday_allow_orb_breakout:
+            opening_high = self._opening_range_high(bars)
             if (
-                state["opening_high"] is not None
-                and state["latest_close"] > state["opening_high"]
-                and state["previous_close"] <= state["opening_high"] * 1.002
-                and state["bullish_close"]
-                and state["volume_ratio"] >= breakout_volume_ratio
+                opening_high is not None
+                and latest.close > opening_high
+                and previous.close <= opening_high * 1.002
+                and bullish_close
+                and volume_ratio >= self.settings.steady_intraday_breakout_volume_ratio
             ):
                 return "orb_continuation"
 
         return None
-
-    def _entry_trigger_state(
-        self,
-        bars,
-        entry: float,
-        ema_fast: float,
-        ema_mid: float,
-        session_vwap: float,
-        volume_ratio: float,
-        min_volume_ratio: float | None = None,
-        breakout_volume_ratio: float | None = None,
-        allow_orb_breakout: bool | None = None,
-    ) -> dict[str, Any]:
-        if min_volume_ratio is None:
-            min_volume_ratio = self.settings.steady_intraday_min_volume_ratio
-        if breakout_volume_ratio is None:
-            breakout_volume_ratio = self.settings.steady_intraday_breakout_volume_ratio
-        if allow_orb_breakout is None:
-            allow_orb_breakout = self.settings.steady_intraday_allow_orb_breakout
-        latest = bars[-1]
-        previous = bars[-2]
-        opening_high = self._opening_range_high(bars)
-        reclaimed_fast = previous.close <= ema_fast * 1.002 and latest.close > max(previous.high, ema_fast)
-        held_mid = latest.low >= min(ema_mid, session_vwap) * 0.997
-        bullish_close = latest.close > latest.open and self._close_near_high(latest)
-        return {
-            "entry": entry,
-            "latest_open": latest.open,
-            "latest_close": latest.close,
-            "latest_low": latest.low,
-            "previous_close": previous.close,
-            "previous_high": previous.high,
-            "ema_fast": ema_fast,
-            "ema_mid": ema_mid,
-            "session_vwap": session_vwap,
-            "volume_ratio": volume_ratio,
-            "min_volume_ratio": min_volume_ratio,
-            "breakout_volume_ratio": breakout_volume_ratio,
-            "allow_orb_breakout": allow_orb_breakout,
-            "opening_high": opening_high,
-            "reclaimed_fast": reclaimed_fast,
-            "held_mid": held_mid,
-            "bullish_close": bullish_close,
-        }
 
     def _stop_price(self, bars, entry: float, ema_mid: float, session_vwap: float, atr: float) -> float:
         swing_low = min(bar.low for bar in bars[-6:])
@@ -724,36 +336,8 @@ class SteadyIntradayStrategy(Strategy):
         raw_stop = min(structure_stop, atr_stop)
         return raw_stop * (1 - self.settings.steady_intraday_stop_buffer_pct)
 
-    def _runner_pullback_pct(self, bars, peak: float) -> float:
-        fixed = self.settings.steady_intraday_runner_pullback_pct
-        atr_multiple = self.settings.steady_intraday_runner_atr_multiple
-        if atr_multiple <= 0 or peak <= 0:
-            return fixed
-        atr = self._atr(bars, self.settings.steady_intraday_atr_period)
-        if atr is None or atr <= 0:
-            return fixed
-        return max(fixed, (atr / peak) * atr_multiple)
-
     def _regular_bars(self, state: SymbolState):
         return [bar for bar in state.bars if self._is_regular_bar(bar)]
-
-    def _current_regular_session_bars(self, state: SymbolState):
-        session_date = self._session_date(state)
-        if session_date is None:
-            return []
-        return [
-            bar
-            for bar in state.bars
-            if self._is_regular_bar(bar)
-            and datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz).date() == session_date
-        ]
-
-    def _session_date(self, state: SymbolState):
-        if state.last_event_ms is not None:
-            return datetime.fromtimestamp(state.last_event_ms / 1000, tz=self.market_tz).date()
-        if state.bars:
-            return datetime.fromtimestamp(state.bars[-1].start_ms / 1000, tz=self.market_tz).date()
-        return None
 
     def _is_regular_bar(self, bar) -> bool:
         current = datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz)
@@ -836,31 +420,11 @@ class SteadyIntradayStrategy(Strategy):
             return False
         return all(bar.close < level for bar in bars[-n:])
 
-    def _reject(self, state: SymbolState, code: str, detail: str, **context: Any) -> None:
+    def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
         key = (state.symbol, code)
         last_log_ms = self._last_reject_log_ms.get(key, -30_000)
         if timestamp_ms - last_log_ms >= 30_000:
             self._last_reject_log_ms[key] = timestamp_ms
-            suffix = self._format_reject_context(context)
-            LOG.debug("No steady_intraday entry %s [%s]: %s%s", state.symbol, code, detail, suffix)
+            LOG.debug("No steady_intraday entry %s [%s]: %s", state.symbol, code, detail)
         return None
-
-    @staticmethod
-    def _format_reject_context(context: dict[str, Any]) -> str:
-        if not context:
-            return ""
-        parts = []
-        for key, value in context.items():
-            if value is None:
-                continue
-            if isinstance(value, bool):
-                rendered = "true" if value else "false"
-            elif isinstance(value, int):
-                rendered = str(value)
-            elif isinstance(value, float):
-                rendered = f"{value:.5g}"
-            else:
-                rendered = str(value)
-            parts.append(f"{key}={rendered}")
-        return f" ({', '.join(parts)})" if parts else ""
