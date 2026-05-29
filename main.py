@@ -379,6 +379,8 @@ def _required_preload_bars_for_settings(settings: Settings, limit: int) -> int:
         required = max(required, settings.stoch_macd_macd_warmup_bars)
     if "macd_early_impulse" in settings.strategy_names:
         required = max(required, settings.macd_macd_warmup_bars)
+    if "breakout_power" in settings.strategy_names:
+        required = max(required, settings.bp_warmup_bars)
     return min(limit, required) if required > 0 else 0
 
 

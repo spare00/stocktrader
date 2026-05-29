@@ -6528,6 +6528,19 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(list(states["QS"].bars), [prior_bar_1, prior_bar_2, current_bar])
         self.assertEqual(get_between.call_count, 2)
 
+    def test_required_preload_bars_includes_breakout_power_warmup(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["breakout_power"],
+            indicator_preload_bars=100,
+            bp_warmup_bars=40,
+        )
+
+        required = trading_main._required_preload_bars_for_settings(settings, settings.indicator_preload_bars)
+
+        self.assertEqual(required, 40)
+
     def test_indicator_preload_uses_custom_data_url_in_replay_mode(self):
         settings = Settings(
             alpaca_api_key="test",
