@@ -9632,6 +9632,23 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_breakout_power_rejects_entry_without_rising_green_momentum(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 55.0],
+                momentums=[100.0, 50.0],
+                avg_momentums=[70.0, 68.0],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_breakout_power_exits_full_when_score_below_trend_line(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
@@ -9834,6 +9851,42 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(
             BreakoutPowerStrategy.hold_supported(bp, trend_line=50.0, hold_floor=45.0)
         )
+
+    def test_breakout_power_defers_max_hold_when_bp_constructive(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 52.0],
+                momentums=[50.0, 100.0],
+                avg_momentums=[60.0, 70.0],
+            ),
+        ):
+            allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=-0.001)
+
+        self.assertFalse(allow_exit)
+
+    def test_breakout_power_allows_max_hold_when_bp_not_constructive(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[52.0, 44.0],
+                momentums=[50.0, 0.0],
+                avg_momentums=[70.0, 50.0],
+            ),
+        ):
+            allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=-0.001)
+
+        self.assertTrue(allow_exit)
 
     def test_breakout_power_compute_series_matches_pine_score_components(self):
         bars = []

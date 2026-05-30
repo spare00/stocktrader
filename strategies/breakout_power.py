@@ -283,6 +283,7 @@ class BreakoutPowerStrategy(Strategy):
         prev_score = bp.scores[-2]
         score = bp.scores[-1]
         avg_momentum = bp.avg_momentums[-1]
+        prev_avg_momentum = bp.avg_momentums[-2] if len(bp.avg_momentums) >= 2 else None
         if prev_score is None or score is None:
             return self._reject(state, "bp", "BP score unavailable")
 
@@ -299,6 +300,13 @@ class BreakoutPowerStrategy(Strategy):
                 state,
                 "bp_color",
                 f"BP not green avg_momentum={avg_momentum:.1f} need>={green_threshold:.0f}",
+            )
+        if prev_avg_momentum is None or avg_momentum <= prev_avg_momentum:
+            prev_text = f"{prev_avg_momentum:.1f}" if prev_avg_momentum is not None else "unavailable"
+            return self._reject(
+                state,
+                "bp_momentum_rising",
+                f"BP momentum not rising avg_momentum={avg_momentum:.1f} prev={prev_text}",
             )
 
         stop_price = self._entry_stop_price(indicator_bars, last.ask)
@@ -409,6 +417,31 @@ class BreakoutPowerStrategy(Strategy):
 
     def exit_activation_delay_seconds(self, position) -> int:
         return max(0, self.settings.bp_min_hold_seconds)
+
+    def allow_max_hold_exit(self, state: SymbolState, position, age_seconds: float, pnl_pct: float) -> bool:
+        if getattr(position, "strategy", "") != self.name:
+            return True
+
+        bp = self._compute_bp(self._indicator_bars(state))
+        if len(bp.scores) < 2:
+            return True
+
+        trend_line = self.settings.bp_trend_line
+        hold_floor = self.settings.bp_hold_floor
+        if self.hold_supported(bp, trend_line=trend_line, hold_floor=hold_floor):
+            score = bp.scores[-1]
+            avg_momentum = bp.avg_momentums[-1] if bp.avg_momentums else 0.0
+            LOG.debug(
+                "Max hold deferred %s [breakout_power]: BP constructive age=%.1fs pnl=%.3f%% score=%.1f avg_momentum=%.1f",
+                state.symbol,
+                age_seconds,
+                pnl_pct * 100,
+                score,
+                avg_momentum,
+            )
+            return False
+
+        return True
 
     def _compute_bp(self, bars: list) -> BPSeries:
         return compute_breakout_power_series(
