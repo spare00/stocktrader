@@ -758,10 +758,7 @@ class CoreTradingTests(unittest.TestCase):
 
         text = out.getvalue()
         self.assertLess(text.index("- macd_early_impulse:"), text.index("- steady_intraday:"))
-        self.assertLess(
-            text.index("Position Strategies"),
-            text.index("- macd_early_impulse:"),
-        )
+        self.assertLess(text.index("Position Strategies"), text.index("\nTrade Journal Summary"))
         self.assertLess(text.rindex("- macd_early_impulse:"), text.rindex("- steady_intraday:"))
 
     def test_trade_journal_analyzer_win_rate_by_entry_hour_et(self):

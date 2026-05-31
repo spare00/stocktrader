@@ -617,49 +617,7 @@ def format_timestamp(timestamp_ms: int) -> str:
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=TRADING_TZ).isoformat(timespec="seconds")
 
 
-def print_text(summary: dict) -> None:
-    print("Trade Journal Summary")
-    print(f"Trades: {summary['trades']} | Wins: {summary['wins']} | Losses: {summary['losses']} | Win rate: {summary['win_rate']:.1%}")
-    print(f"Total P/L: {summary['total_pnl']:.2f} | Avg P/L: {summary['average_pnl']:.2f} | Median P/L: {summary['median_pnl']:.2f}")
-    print(
-        f"Expectancy: {summary['expectancy_r']:.2f}R | "
-        f"Avg runner: {summary['average_runner_r_multiple']:.2f}R | "
-        f"Avg full trade: {summary['average_full_trade_r_multiple']:.2f}R"
-    )
-    print(
-        "Avg P/L%: "
-        f"{summary['average_pnl_pct']:.2%} | Avg MFE: {summary['average_mfe_pct']:.2%} | "
-        f"Avg MAE: {summary['average_mae_pct']:.2%} | Avg missed: {summary['average_missed_profit_pct']:.2%}"
-    )
-    print(f"Avg hold: {summary['average_hold_seconds']:.1f}s | Median hold: {summary['median_hold_seconds']:.1f}s")
-
-    positions = summary.get("positions", {})
-    if positions:
-        print(
-            "\nPositions "
-            f"(partials/runners combined): {positions['count']} | Wins: {positions['wins']} | "
-            f"Losses: {positions['losses']} | Win rate: {positions['win_rate']:.1%}"
-        )
-        print(
-            f"Position P/L: {positions['total_pnl']:.2f} | Avg: {positions['average_pnl']:.2f} | "
-            f"Median: {positions['median_pnl']:.2f} | Expectancy full R: {positions['expectancy_full_r']:.2f}R | "
-            f"Avg legs: {positions['average_legs']:.2f}"
-        )
-        if positions.get("by_strategy"):
-            print("\nPosition Strategies")
-            for strategy, item in sorted(positions["by_strategy"].items(), key=lambda pair: pair[0]):
-                print(
-                    f"- {strategy}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
-                    f"win rate {item['win_rate']:.1%}, avg legs {item['average_legs']:.2f}"
-                )
-        if positions.get("by_entry_market_regime"):
-            print("\nPosition Entry Market Regime")
-            for regime, item in sort_market_regime_groups(positions["by_entry_market_regime"]):
-                print(
-                    f"- {regime}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
-                    f"win rate {item['win_rate']:.1%}"
-                )
-
+def _print_text_details(summary: dict, positions: dict) -> None:
     if summary["by_exit_reason"]:
         print("\nExit Reasons")
         for reason, item in sorted(summary["by_exit_reason"].items(), key=lambda pair: pair[1]["trades"], reverse=True):
@@ -710,6 +668,21 @@ def print_text(summary: dict) -> None:
                 f"win rate {item['win_rate']:.1%}"
             )
 
+    if positions.get("by_strategy"):
+        print("\nPosition Strategies")
+        for strategy, item in sorted(positions["by_strategy"].items(), key=lambda pair: pair[0]):
+            print(
+                f"- {strategy}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
+                f"win rate {item['win_rate']:.1%}, avg legs {item['average_legs']:.2f}"
+            )
+    if positions.get("by_entry_market_regime"):
+        print("\nPosition Entry Market Regime")
+        for regime, item in sort_market_regime_groups(positions["by_entry_market_regime"]):
+            print(
+                f"- {regime}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
+                f"win rate {item['win_rate']:.1%}"
+            )
+
     if summary["best_trade"]:
         print(f"\nBest: {summary['best_trade']['symbol']} P/L {summary['best_trade']['pnl']:.2f} via {summary['best_trade']['reason']}")
     if summary["worst_trade"]:
@@ -723,6 +696,41 @@ def print_text(summary: dict) -> None:
 
     if summary["unmatched_events"]:
         print(f"\nUnmatched events: {len(summary['unmatched_events'])}")
+
+
+def _print_text_summary(summary: dict, positions: dict) -> None:
+    print("\nTrade Journal Summary")
+    print(f"Trades: {summary['trades']} | Wins: {summary['wins']} | Losses: {summary['losses']} | Win rate: {summary['win_rate']:.1%}")
+    print(f"Total P/L: {summary['total_pnl']:.2f} | Avg P/L: {summary['average_pnl']:.2f} | Median P/L: {summary['median_pnl']:.2f}")
+    print(
+        f"Expectancy: {summary['expectancy_r']:.2f}R | "
+        f"Avg runner: {summary['average_runner_r_multiple']:.2f}R | "
+        f"Avg full trade: {summary['average_full_trade_r_multiple']:.2f}R"
+    )
+    print(
+        "Avg P/L%: "
+        f"{summary['average_pnl_pct']:.2%} | Avg MFE: {summary['average_mfe_pct']:.2%} | "
+        f"Avg MAE: {summary['average_mae_pct']:.2%} | Avg missed: {summary['average_missed_profit_pct']:.2%}"
+    )
+    print(f"Avg hold: {summary['average_hold_seconds']:.1f}s | Median hold: {summary['median_hold_seconds']:.1f}s")
+
+    if positions:
+        print(
+            "\nPositions "
+            f"(partials/runners combined): {positions['count']} | Wins: {positions['wins']} | "
+            f"Losses: {positions['losses']} | Win rate: {positions['win_rate']:.1%}"
+        )
+        print(
+            f"Position P/L: {positions['total_pnl']:.2f} | Avg: {positions['average_pnl']:.2f} | "
+            f"Median: {positions['median_pnl']:.2f} | Expectancy full R: {positions['expectancy_full_r']:.2f}R | "
+            f"Avg legs: {positions['average_legs']:.2f}"
+        )
+
+
+def print_text(summary: dict) -> None:
+    positions = summary.get("positions", {})
+    _print_text_details(summary, positions)
+    _print_text_summary(summary, positions)
 
 
 def analyze(path: Path, strategy: str | None = None, target_date: str | None = None) -> dict:
