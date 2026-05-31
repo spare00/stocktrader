@@ -493,6 +493,9 @@ def entry_noon_bucket_et(buy_timestamp_ms: int) -> str:
     return "before 12:00" if dt.hour < 12 else "12:00 and after"
 
 
+NOON_ENTRY_BUCKETS = ("before 12:00", "12:00 and after")
+
+
 def entry_day_et(trade: RoundTrip) -> str:
     """Calendar date of the buy in America/New_York (for per-day entry-time stats)."""
     return datetime.fromtimestamp(trade.buy_timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat()
@@ -532,7 +535,7 @@ def summarize_entry_time_hour_et_by_entry_day(trades: list[RoundTrip]) -> dict[s
             buckets[entry_noon_bucket_et(trade.buy_timestamp_ms)].append(trade)
         summary[day] = {
             name: entry_time_bucket_stats(buckets[name])
-            for name in ("before 12:00", "12:00 and after")
+            for name in NOON_ENTRY_BUCKETS
             if name in buckets
         }
     return summary
@@ -685,6 +688,41 @@ def _print_aligned_metric_rows(
         print(indent + separator.join(cells))
 
 
+def _print_by_day_entry_time_et(by_day: dict[str, dict[str, dict]]) -> None:
+    _print_section("Entry Time vs 12:00 by Day (America/New_York)")
+
+    trades_w = 5
+    win_w = 6
+    pnl_w = 7
+    label_w = max(len(name) for name in NOON_ENTRY_BUCKETS)
+    day_w = max(10, *(len(day) for day in by_day))
+
+    for buckets in by_day.values():
+        for name in NOON_ENTRY_BUCKETS:
+            item = buckets.get(name)
+            if not item or not item["trades"]:
+                continue
+            trades_w = max(trades_w, len(str(item["trades"])))
+            win_w = max(win_w, len(f"{item['win_rate']:.1%}"))
+            pnl_w = max(pnl_w, len(_format_pnl(item["total_pnl"])))
+            label_w = max(label_w, len(name))
+
+    for day in sorted(by_day):
+        buckets = by_day[day]
+        blocks: list[str] = []
+        for name in NOON_ENTRY_BUCKETS:
+            item = buckets.get(name)
+            if not item or not item["trades"]:
+                continue
+            trades = str(item["trades"])
+            win = f"{item['win_rate']:.1%}"
+            pnl = _format_pnl(item["total_pnl"])
+            metrics = f"{trades:>{trades_w}} @ {win:>{win_w}}  {pnl:>{pnl_w}}"
+            blocks.append(f"{name:<{label_w}} {metrics}")
+        if blocks:
+            print(f"{DETAIL_INDENT}{day:<{day_w}}  " + " | ".join(blocks))
+
+
 def _print_text_details(summary: dict, positions: dict) -> None:
     if summary["by_exit_reason"]:
         _print_section("Exit Reasons")
@@ -757,21 +795,7 @@ def _print_text_details(summary: dict, positions: dict) -> None:
         _print_table(["Hour", "Trades", "Win%", "P/L", "Wins", "Losses"], rows)
 
     if summary.get("by_day_entry_time_et"):
-        _print_section("Entry Time vs 12:00 by Day (America/New_York)")
-        for day, buckets in sorted(summary["by_day_entry_time_et"].items()):
-            bucket_rows = [
-                (bucket, str(item["trades"]), f"{item['win_rate']:.1%}", _format_pnl(item["total_pnl"]))
-                for bucket, item in buckets.items()
-            ]
-            row_width = max(
-                22,
-                max(
-                    len(label) + len(f"{trades} @ {win}  {pnl}") + 2
-                    for label, trades, win, pnl in bucket_rows
-                ),
-            )
-            cells = [_metric_cell(label, f"{trades} @ {win}  {pnl}", row_width) for label, trades, win, pnl in bucket_rows]
-            print(f"{DETAIL_INDENT}{day}  " + " | ".join(cells))
+        _print_by_day_entry_time_et(summary["by_day_entry_time_et"])
 
     if summary["by_day"]:
         _print_section("Trading Days")
