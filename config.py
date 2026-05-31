@@ -439,6 +439,8 @@ class Settings:
     bp_trend_line: float = 50.0
     bp_hold_floor: float = 45.0
     bp_decline_grace_bars: int = 2
+    bp_partial_r: float = 1.0
+    bp_partial_profit_pct: float = 0.01
     bp_partial_size: float = 0.5
     bp_momentum_ema_period: int = 4
     bp_max_spread_bps: float = 15.0

@@ -212,6 +212,8 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_trend_line", "BP_TREND_LINE", float_env, 50.0),
         ("bp_hold_floor", "BP_HOLD_FLOOR", float_env, 45.0),
         ("bp_decline_grace_bars", "BP_DECLINE_GRACE_BARS", int_env, 2),
+        ("bp_partial_r", "BP_PARTIAL_R", float_env, 1.0),
+        ("bp_partial_profit_pct", "BP_PARTIAL_PROFIT_PCT", float_env, 0.01),
         ("bp_partial_size", "BP_PARTIAL_SIZE", float_env, 0.5),
         ("bp_momentum_ema_period", "BP_MOMENTUM_EMA_PERIOD", int_env, 4),
         ("bp_max_spread_bps", "BP_MAX_SPREAD_BPS", float_env, 15.0),
@@ -239,6 +241,8 @@ class BreakoutPowerStrategy(Strategy):
             "trend_line": settings.bp_trend_line,
             "hold_floor": settings.bp_hold_floor,
             "decline_grace_bars": settings.bp_decline_grace_bars,
+            "partial_r": settings.bp_partial_r,
+            "partial_profit_pct": settings.bp_partial_profit_pct,
             "partial_size": settings.bp_partial_size,
             "momentum_ema_period": settings.bp_momentum_ema_period,
             "max_spread_bps": settings.bp_max_spread_bps,
@@ -382,6 +386,10 @@ class BreakoutPowerStrategy(Strategy):
             self._clear_position_state(position.symbol)
             return ExitDecision("stop loss")
 
+        profit_partial = self._profit_partial_exit_decision(position, price)
+        if profit_partial is not None:
+            return profit_partial
+
         indicator_bars = self._indicator_bars(state)
         bp = self._compute_bp(indicator_bars)
         if len(bp.scores) < 2:
@@ -435,11 +443,48 @@ class BreakoutPowerStrategy(Strategy):
             and pos_state.bars_since_entry > self.settings.bp_decline_grace_bars
             and not (recovery_hold and score < trend_line)
         ):
-            fraction = min(1.0, max(0.0, self.settings.bp_partial_size))
-            shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
-            return ExitDecision("BP first decline partial", shares=shares, mark_partial=True)
+            return self._partial_exit_decision(position, reason="BP first decline partial")
 
         return None
+
+    def _profit_partial_exit_decision(self, position, price: float) -> ExitDecision | None:
+        if position.partial_exit_taken or position.shares <= 1:
+            return None
+
+        pnl_pct = (price - position.entry_price) / position.entry_price
+        r_initial = self._initial_r_per_share(position)
+        partial_r_hit = (
+            r_initial > 0
+            and price >= position.entry_price + r_initial * self.settings.bp_partial_r
+        )
+        partial_pct_hit = pnl_pct >= self.settings.bp_partial_profit_pct
+        if not (partial_r_hit or partial_pct_hit):
+            return None
+
+        if partial_r_hit:
+            reason = f"partial {self.settings.bp_partial_r:.1f}R"
+        else:
+            reason = f"partial {self.settings.bp_partial_profit_pct:.1%}"
+        return self._partial_exit_decision(position, reason=reason)
+
+    def _partial_exit_decision(self, position, *, reason: str) -> ExitDecision:
+        return ExitDecision(
+            reason,
+            shares=self._partial_exit_shares(position),
+            mark_partial=True,
+        )
+
+    def _partial_exit_shares(self, position) -> int:
+        fraction = min(1.0, max(0.0, self.settings.bp_partial_size))
+        return max(1, min(position.shares - 1, int(position.shares * fraction)))
+
+    def _initial_r_per_share(self, position) -> float:
+        initial_stop = position.initial_stop_price or position.stop_price
+        if initial_stop and initial_stop > 0:
+            risk = position.entry_price - initial_stop
+            if risk > 0:
+                return risk
+        return position.entry_price * self.settings.bp_stop_loss_pct
 
     def exit_activation_delay_seconds(self, position) -> int:
         return max(0, self.settings.bp_min_hold_seconds)
