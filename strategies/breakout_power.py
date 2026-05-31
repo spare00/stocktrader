@@ -61,6 +61,7 @@ class _BPPositionState:
     bars_since_entry: int = 0
     declines_without_rise: int = 0
     last_processed_bar_end_ms: int | None = None
+    below_trend_hold_bar_end_ms: int | None = None
 
 
 def _compute_ao_values(medians: list[float], fast: int = _AO_FAST, slow: int = _AO_SLOW) -> list[float | None]:
@@ -209,8 +210,9 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_warmup_bars", "BP_WARMUP_BARS", int_env, _MIN_WARMUP_BARS),
         ("bp_green_threshold", "BP_GREEN_THRESHOLD", float_env, 65.0),
         ("bp_trend_line", "BP_TREND_LINE", float_env, 50.0),
+        ("bp_hold_floor", "BP_HOLD_FLOOR", float_env, 45.0),
         ("bp_decline_grace_bars", "BP_DECLINE_GRACE_BARS", int_env, 2),
-        ("bp_partial_size", "BP_PARTIAL_SIZE", float_env, 0.75),
+        ("bp_partial_size", "BP_PARTIAL_SIZE", float_env, 0.5),
         ("bp_momentum_ema_period", "BP_MOMENTUM_EMA_PERIOD", int_env, 4),
         ("bp_max_spread_bps", "BP_MAX_SPREAD_BPS", float_env, 15.0),
         ("bp_supertrend_period", "BP_SUPERTREND_PERIOD", int_env, 10),
@@ -235,6 +237,7 @@ class BreakoutPowerStrategy(Strategy):
             "warmup_bars": settings.bp_warmup_bars,
             "green_threshold": settings.bp_green_threshold,
             "trend_line": settings.bp_trend_line,
+            "hold_floor": settings.bp_hold_floor,
             "decline_grace_bars": settings.bp_decline_grace_bars,
             "partial_size": settings.bp_partial_size,
             "momentum_ema_period": settings.bp_momentum_ema_period,
@@ -398,9 +401,23 @@ class BreakoutPowerStrategy(Strategy):
         if state.last_event_kind == "bar":
             self._sync_position_bar_state(position, indicator_bars, pos_state, prev_score, score, is_decline, is_rise)
 
-        if score < trend_line:
-            self._clear_position_state(position.symbol)
-            return ExitDecision(f"BP below {trend_line:.0f}")
+        hold_floor = self.settings.bp_hold_floor
+        recovery_hold = self.hold_supported(bp, trend_line=trend_line, hold_floor=hold_floor)
+
+        below_trend_exit = self._below_trend_exit_decision(
+            state,
+            position,
+            indicator_bars,
+            pos_state,
+            score,
+            trend_line,
+            hold_floor,
+            recovery_hold,
+        )
+        if below_trend_exit is not None:
+            return below_trend_exit
+        if recovery_hold and score < trend_line:
+            return None
 
         if (
             score >= trend_line
@@ -416,6 +433,7 @@ class BreakoutPowerStrategy(Strategy):
             and position.shares > 1
             and pos_state is not None
             and pos_state.bars_since_entry > self.settings.bp_decline_grace_bars
+            and not (recovery_hold and score < trend_line)
         ):
             fraction = min(1.0, max(0.0, self.settings.bp_partial_size))
             shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
@@ -435,7 +453,8 @@ class BreakoutPowerStrategy(Strategy):
             return True
 
         trend_line = self.settings.bp_trend_line
-        if self.hold_supported(bp, trend_line=trend_line):
+        hold_floor = self.settings.bp_hold_floor
+        if self.hold_supported(bp, trend_line=trend_line, hold_floor=hold_floor):
             score = bp.scores[-1]
             avg_momentum = bp.avg_momentums[-1] if bp.avg_momentums else 0.0
             LOG.debug(
@@ -455,6 +474,51 @@ class BreakoutPowerStrategy(Strategy):
             bars,
             momentum_ema_period=self.settings.bp_momentum_ema_period,
         )
+
+    def _below_trend_exit_decision(
+        self,
+        state: SymbolState,
+        position,
+        indicator_bars: list,
+        pos_state: _BPPositionState | None,
+        score: float,
+        trend_line: float,
+        hold_floor: float,
+        recovery_hold: bool,
+    ) -> ExitDecision | None:
+        if score >= trend_line:
+            if pos_state is not None:
+                pos_state.below_trend_hold_bar_end_ms = None
+            return None
+
+        if score < hold_floor:
+            self._clear_position_state(position.symbol)
+            return ExitDecision(f"BP below {hold_floor:.0f}")
+
+        if pos_state is None:
+            self._clear_position_state(position.symbol)
+            return ExitDecision(f"BP below {trend_line:.0f}")
+
+        completed = [bar for bar in indicator_bars if bar.end_ms > position.entry_ms]
+        latest_bar_end_ms = completed[-1].end_ms if completed else None
+        deferred_bar_end_ms = pos_state.below_trend_hold_bar_end_ms
+
+        if (
+            state.last_event_kind == "bar"
+            and latest_bar_end_ms is not None
+            and deferred_bar_end_ms is not None
+            and latest_bar_end_ms > deferred_bar_end_ms
+        ):
+            self._clear_position_state(position.symbol)
+            return ExitDecision(f"BP failed recovery below {trend_line:.0f}")
+
+        if recovery_hold:
+            if state.last_event_kind == "bar" and latest_bar_end_ms is not None and deferred_bar_end_ms is None:
+                pos_state.below_trend_hold_bar_end_ms = latest_bar_end_ms
+            return None
+
+        self._clear_position_state(position.symbol)
+        return ExitDecision(f"BP below {trend_line:.0f}")
 
     def _sync_position_bar_state(
         self,
@@ -520,7 +584,10 @@ class BreakoutPowerStrategy(Strategy):
         return bp.avg_momentums[-1] > bp.avg_momentums[-2]
 
     @staticmethod
-    def hold_supported(bp: BPSeries, *, trend_line: float) -> bool:
+    def hold_supported(bp: BPSeries, *, trend_line: float, hold_floor: float) -> bool:
         if not bp.scores or bp.scores[-1] is None:
             return False
-        return bp.scores[-1] >= trend_line
+        score = bp.scores[-1]
+        if score > trend_line:
+            return True
+        return score >= hold_floor and BreakoutPowerStrategy.avg_momentum_rising(bp)

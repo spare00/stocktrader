@@ -9739,11 +9739,19 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "BP below 50")
 
-    def test_breakout_power_exits_below_trend_even_with_rising_momentum(self):
+    def test_breakout_power_defers_exit_when_recovery_hold_supported(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
+        state.last_event_kind = "bar"
         position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
         with patch.object(
             strategy,
             "_compute_bp",
@@ -9755,8 +9763,66 @@ class CoreTradingTests(unittest.TestCase):
         ):
             decision = strategy.should_exit(state, position)
 
+        self.assertIsNone(decision)
+        self.assertIsNotNone(strategy._position_states["AAPL"].below_trend_hold_bar_end_ms)
+
+    def test_breakout_power_exits_after_recovery_hold_fails_on_next_bar(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.last_event_kind = "bar"
+        position = self._bp_position(entry_ms=market_ms(2026, 4, 24, 9, 30))
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.below_trend_hold_bar_end_ms = state.bars[1].end_ms
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 47.0],
+                momentums=[50.0, 0.0],
+                avg_momentums=[65.0, 70.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "BP below 50")
+        self.assertEqual(decision.reason, "BP failed recovery below 50")
+
+    def test_breakout_power_clears_recovery_hold_when_score_reclaims_trend_line(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.last_event_kind = "bar"
+        position = self._bp_position()
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.below_trend_hold_bar_end_ms = market_ms(2026, 4, 24, 9, 31)
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 52.0],
+                momentums=[50.0, 50.0],
+                avg_momentums=[65.0, 68.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+        self.assertIsNone(pos_state.below_trend_hold_bar_end_ms)
 
     def test_breakout_power_partial_on_first_decline_after_grace_bars(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"], bp_decline_grace_bars=2)
@@ -9786,7 +9852,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "BP first decline partial")
-        self.assertEqual(decision.shares, 7)
+        self.assertEqual(decision.shares, 5)
         self.assertTrue(decision.mark_partial)
 
     def test_breakout_power_ignores_partial_decline_within_grace_bars(self):
@@ -9846,11 +9912,15 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "BP double decline")
 
-    def test_breakout_power_hold_supported_only_when_score_at_or_above_trend_line(self):
-        above = BPSeries(scores=[48.0, 52.0], momentums=[0.0, 50.0], avg_momentums=[60.0, 65.0])
-        below = BPSeries(scores=[52.0, 48.0], momentums=[50.0, 50.0], avg_momentums=[60.0, 65.0])
-        self.assertTrue(BreakoutPowerStrategy.hold_supported(above, trend_line=50.0))
-        self.assertFalse(BreakoutPowerStrategy.hold_supported(below, trend_line=50.0))
+    def test_breakout_power_hold_supported_when_score_above_floor_and_avg_momentum_rising(self):
+        bp = BPSeries(
+            scores=[46.0, 47.0],
+            momentums=[0.0, 50.0],
+            avg_momentums=[40.0, 45.0],
+        )
+        self.assertTrue(
+            BreakoutPowerStrategy.hold_supported(bp, trend_line=50.0, hold_floor=45.0)
+        )
 
     def test_breakout_power_defers_max_hold_when_bp_constructive(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
