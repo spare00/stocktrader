@@ -285,6 +285,28 @@ def market_regime_from_reason(reason: str) -> str:
     return match.group(1) if match else "unknown"
 
 
+# Highest risk first. Core ladder from market_regime.py; strategy tags appended below.
+MARKET_REGIME_RISK_ORDER = {
+    "panic": 0,
+    "risk_off": 1,
+    "neutral_hardened": 2,  # stoch_macd / macd_early_impulse in weak neutral
+    "neutral": 3,
+    "risk_on": 4,
+    "bypassed": 5,
+    "disabled": 6,
+}
+_MARKET_REGIME_RISK_UNKNOWN_RANK = 99
+
+
+def market_regime_risk_sort_key(regime: str) -> tuple[int, str]:
+    name = (regime or "unknown").strip().lower()
+    return (MARKET_REGIME_RISK_ORDER.get(name, _MARKET_REGIME_RISK_UNKNOWN_RANK), name)
+
+
+def sort_market_regime_groups(groups: dict) -> list[tuple[str, dict]]:
+    return sorted(groups.items(), key=lambda pair: market_regime_risk_sort_key(pair[0]))
+
+
 def size_multiplier_from_reason(reason: str) -> float | None:
     match = SIZE_MULT_RE.search(str(reason or ""))
     return float(match.group(1)) if match else None
@@ -632,9 +654,7 @@ def print_text(summary: dict) -> None:
                 )
         if positions.get("by_entry_market_regime"):
             print("\nPosition Entry Market Regime")
-            for regime, item in sorted(
-                positions["by_entry_market_regime"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True
-            ):
+            for regime, item in sort_market_regime_groups(positions["by_entry_market_regime"]):
                 print(
                     f"- {regime}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
                     f"win rate {item['win_rate']:.1%}"
@@ -661,9 +681,7 @@ def print_text(summary: dict) -> None:
 
     if summary.get("by_entry_market_regime"):
         print("\nEntry Market Regime")
-        for regime, item in sorted(
-            summary["by_entry_market_regime"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True
-        ):
+        for regime, item in sort_market_regime_groups(summary["by_entry_market_regime"]):
             print(f"- {regime}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
 
     if summary.get("by_entry_time_et"):
