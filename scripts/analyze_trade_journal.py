@@ -617,113 +617,289 @@ def format_timestamp(timestamp_ms: int) -> str:
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=TRADING_TZ).isoformat(timespec="seconds")
 
 
+DETAIL_INDENT = "  "
+SUMMARY_RULE = "═" * 72
+
+
+def _format_pnl(value: float) -> str:
+    return f"{value:+.2f}"
+
+
+def _format_r(value: float) -> str:
+    return f"{value:+.2f}R"
+
+
+def _print_section(title: str) -> None:
+    print(f"\n{title}")
+    print("─" * min(max(len(title), 24), 72))
+
+
+def _column_widths(headers: list[str], rows: list[list[str]]) -> list[int]:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+    return widths
+
+
+def _print_table(headers: list[str], rows: list[list[str]], *, indent: str = DETAIL_INDENT) -> None:
+    if not rows:
+        return
+    widths = _column_widths(headers, rows)
+    header_line = indent + "  ".join(
+        f"{header:<{widths[index]}}" if index == 0 else f"{header:>{widths[index]}}"
+        for index, header in enumerate(headers)
+    )
+    print(header_line)
+    print(indent + "  ".join("─" * width for width in widths))
+    for row in rows:
+        print(
+            indent
+            + "  ".join(
+                f"{cell:<{widths[index]}}" if index == 0 else f"{cell:>{widths[index]}}"
+                for index, cell in enumerate(row)
+            )
+        )
+
+
+def _metric_cell(label: str, value: str, width: int) -> str:
+    value = str(value)
+    space = width - len(label) - len(value) - 1
+    if space < 1:
+        space = 1
+    return f"{label}{' ' * space}{value}"
+
+
+def _print_aligned_metric_rows(
+    rows: list[list[tuple[str, str]]],
+    *,
+    indent: str = "",
+    column_width: int = 22,
+    separator: str = " | ",
+) -> None:
+    for row in rows:
+        if not row:
+            continue
+        row_width = max(column_width, max(len(label) + len(value) + 2 for label, value in row))
+        cells = [_metric_cell(label, value, row_width) for label, value in row]
+        print(indent + separator.join(cells))
+
+
 def _print_text_details(summary: dict, positions: dict) -> None:
     if summary["by_exit_reason"]:
-        print("\nExit Reasons")
-        for reason, item in sorted(summary["by_exit_reason"].items(), key=lambda pair: pair[1]["trades"], reverse=True):
-            print(
-                f"- {reason}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, "
-                f"avg P/L% {item['average_pnl_pct']:.2%}, avg MFE {item['average_mfe_pct']:.2%}, "
-                f"avg hold {item['average_hold_seconds']:.1f}s, win rate {item['win_rate']:.1%}"
-            )
+        _print_section("Exit Reasons")
+        rows = [
+            [
+                reason,
+                str(item["trades"]),
+                _format_pnl(item["total_pnl"]),
+                f"{item['average_pnl_pct']:.2%}",
+                f"{item['average_mfe_pct']:.2%}",
+                f"{item['average_hold_seconds']:.0f}s",
+                f"{item['win_rate']:.1%}",
+            ]
+            for reason, item in sorted(summary["by_exit_reason"].items(), key=lambda pair: pair[1]["trades"], reverse=True)
+        ]
+        _print_table(["Reason", "Trades", "P/L", "Avg P/L%", "MFE", "Hold", "Win%"], rows)
 
     if summary["by_symbol"]:
-        print("\nSymbols")
-        for symbol, item in sorted(summary["by_symbol"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True):
-            print(f"- {symbol}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+        _print_section("Symbols")
+        rows = [
+            [
+                symbol,
+                str(item["trades"]),
+                _format_pnl(item["total_pnl"]),
+                f"{item['win_rate']:.1%}",
+            ]
+            for symbol, item in sorted(summary["by_symbol"].items(), key=lambda pair: pair[1]["total_pnl"], reverse=True)
+        ]
+        _print_table(["Symbol", "Trades", "P/L", "Win%"], rows)
 
     if summary["by_strategy"]:
-        print("\nStrategies")
-        for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[0]):
-            print(f"- {strategy}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+        _print_section("Strategies")
+        rows = [
+            [
+                strategy,
+                str(item["trades"]),
+                _format_pnl(item["total_pnl"]),
+                f"{item['win_rate']:.1%}",
+            ]
+            for strategy, item in sorted(summary["by_strategy"].items(), key=lambda pair: pair[0])
+        ]
+        _print_table(["Strategy", "Trades", "P/L", "Win%"], rows)
 
     if summary.get("by_entry_market_regime"):
-        print("\nEntry Market Regime")
-        for regime, item in sort_market_regime_groups(summary["by_entry_market_regime"]):
-            print(f"- {regime}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, win rate {item['win_rate']:.1%}")
+        _print_section("Entry Market Regime")
+        rows = [
+            [
+                regime,
+                str(item["trades"]),
+                _format_pnl(item["total_pnl"]),
+                f"{item['win_rate']:.1%}",
+            ]
+            for regime, item in sort_market_regime_groups(summary["by_entry_market_regime"])
+        ]
+        _print_table(["Regime", "Trades", "P/L", "Win%"], rows)
 
     if summary.get("by_entry_time_et"):
-        print("\nWin rate by entry time (America/New_York, hourly)")
-        for hour, item in summary["by_entry_time_et"].items():
-            print(
-                f"- {hour}: {item['trades']} trades, win rate {item['win_rate']:.1%}, "
-                f"P/L {item['total_pnl']:.2f} (wins {item['wins']}, losses {item['losses']})"
-            )
+        _print_section("Win Rate by Entry Hour (America/New_York)")
+        rows = [
+            [
+                hour,
+                str(item["trades"]),
+                f"{item['win_rate']:.1%}",
+                _format_pnl(item["total_pnl"]),
+                str(item["wins"]),
+                str(item["losses"]),
+            ]
+            for hour, item in summary["by_entry_time_et"].items()
+        ]
+        _print_table(["Hour", "Trades", "Win%", "P/L", "Wins", "Losses"], rows)
 
     if summary.get("by_day_entry_time_et"):
-        print("\nPer day - entry time vs 12:00 (America/New_York, entry date)")
+        _print_section("Entry Time vs 12:00 by Day (America/New_York)")
         for day, buckets in summary["by_day_entry_time_et"].items():
-            parts = [
-                f"{bucket} {item['trades']} @ {item['win_rate']:.1%} P/L {item['total_pnl']:.2f}"
+            bucket_rows = [
+                (bucket, str(item["trades"]), f"{item['win_rate']:.1%}", _format_pnl(item["total_pnl"]))
                 for bucket, item in buckets.items()
             ]
-            print(f"- {day}: {' | '.join(parts)}")
+            row_width = max(
+                22,
+                max(
+                    len(label) + len(f"{trades} @ {win}  {pnl}") + 2
+                    for label, trades, win, pnl in bucket_rows
+                ),
+            )
+            cells = [_metric_cell(label, f"{trades} @ {win}  {pnl}", row_width) for label, trades, win, pnl in bucket_rows]
+            print(f"{DETAIL_INDENT}{day}")
+            print(DETAIL_INDENT + "  " + " | ".join(cells))
 
     if summary["by_day"]:
-        print("\nTrading Days")
-        for day, item in sorted(summary["by_day"].items()):
-            print(
-                f"- {day}: {item['trades']} trades, P/L {item['total_pnl']:.2f}, "
-                f"expectancy {item['expectancy_r']:.2f}R, max DD {item['max_drawdown']:.2f}, "
-                f"win rate {item['win_rate']:.1%}"
-            )
+        _print_section("Trading Days")
+        rows = [
+            [
+                day,
+                str(item["trades"]),
+                _format_pnl(item["total_pnl"]),
+                _format_r(item["expectancy_r"]),
+                _format_pnl(-item["max_drawdown"]),
+                f"{item['win_rate']:.1%}",
+            ]
+            for day, item in sorted(summary["by_day"].items())
+        ]
+        _print_table(["Day", "Trades", "P/L", "Expect", "Max DD", "Win%"], rows)
 
     if positions.get("by_strategy"):
-        print("\nPosition Strategies")
-        for strategy, item in sorted(positions["by_strategy"].items(), key=lambda pair: pair[0]):
-            print(
-                f"- {strategy}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
-                f"win rate {item['win_rate']:.1%}, avg legs {item['average_legs']:.2f}"
-            )
-    if positions.get("by_entry_market_regime"):
-        print("\nPosition Entry Market Regime")
-        for regime, item in sort_market_regime_groups(positions["by_entry_market_regime"]):
-            print(
-                f"- {regime}: {item['positions']} positions, P/L {item['total_pnl']:.2f}, "
-                f"win rate {item['win_rate']:.1%}"
-            )
+        _print_section("Position Strategies")
+        rows = [
+            [
+                strategy,
+                str(item["positions"]),
+                _format_pnl(item["total_pnl"]),
+                f"{item['win_rate']:.1%}",
+                f"{item['average_legs']:.2f}",
+            ]
+            for strategy, item in sorted(positions["by_strategy"].items(), key=lambda pair: pair[0])
+        ]
+        _print_table(["Strategy", "Positions", "P/L", "Win%", "Avg legs"], rows)
 
-    if summary["best_trade"]:
-        print(f"\nBest: {summary['best_trade']['symbol']} P/L {summary['best_trade']['pnl']:.2f} via {summary['best_trade']['reason']}")
-    if summary["worst_trade"]:
-        print(f"Worst: {summary['worst_trade']['symbol']} P/L {summary['worst_trade']['pnl']:.2f} via {summary['worst_trade']['reason']}")
+    if positions.get("by_entry_market_regime"):
+        _print_section("Position Entry Market Regime")
+        rows = [
+            [
+                regime,
+                str(item["positions"]),
+                _format_pnl(item["total_pnl"]),
+                f"{item['win_rate']:.1%}",
+            ]
+            for regime, item in sort_market_regime_groups(positions["by_entry_market_regime"])
+        ]
+        _print_table(["Regime", "Positions", "P/L", "Win%"], rows)
+
+    highlight_rows: list[list[str]] = []
+    if summary.get("best_trade"):
+        trade = summary["best_trade"]
+        highlight_rows.append(["Best trade", trade["symbol"], _format_pnl(trade["pnl"]), trade["reason"]])
+    if summary.get("worst_trade"):
+        trade = summary["worst_trade"]
+        highlight_rows.append(["Worst trade", trade["symbol"], _format_pnl(trade["pnl"]), trade["reason"]])
     if positions.get("best_position"):
-        best = positions["best_position"]
-        print(f"Best position: {best['symbol']} P/L {best['pnl']:.2f} via {best['final_reason']}")
+        position = positions["best_position"]
+        highlight_rows.append(
+            ["Best position", position["symbol"], _format_pnl(position["pnl"]), position["final_reason"]]
+        )
     if positions.get("worst_position"):
-        worst = positions["worst_position"]
-        print(f"Worst position: {worst['symbol']} P/L {worst['pnl']:.2f} via {worst['final_reason']}")
+        position = positions["worst_position"]
+        highlight_rows.append(
+            ["Worst position", position["symbol"], _format_pnl(position["pnl"]), position["final_reason"]]
+        )
+    if highlight_rows:
+        _print_section("Highlights")
+        _print_table(["Type", "Symbol", "P/L", "Exit"], highlight_rows)
 
     if summary["unmatched_events"]:
-        print(f"\nUnmatched events: {len(summary['unmatched_events'])}")
+        _print_section("Diagnostics")
+        print(f"{DETAIL_INDENT}Unmatched events: {len(summary['unmatched_events'])}")
 
 
 def _print_text_summary(summary: dict, positions: dict) -> None:
-    print("\nTrade Journal Summary")
-    print(f"Trades: {summary['trades']} | Wins: {summary['wins']} | Losses: {summary['losses']} | Win rate: {summary['win_rate']:.1%}")
-    print(f"Total P/L: {summary['total_pnl']:.2f} | Avg P/L: {summary['average_pnl']:.2f} | Median P/L: {summary['median_pnl']:.2f}")
-    print(
-        f"Expectancy: {summary['expectancy_r']:.2f}R | "
-        f"Avg runner: {summary['average_runner_r_multiple']:.2f}R | "
-        f"Avg full trade: {summary['average_full_trade_r_multiple']:.2f}R"
+    print(f"\n{SUMMARY_RULE}")
+    print("Trade Journal Summary")
+    print("─" * len("Trade Journal Summary"))
+    _print_aligned_metric_rows(
+        [
+            [
+                ("Trades", str(summary["trades"])),
+                ("Wins", str(summary["wins"])),
+                ("Losses", str(summary["losses"])),
+                ("Win rate", f"{summary['win_rate']:.1%}"),
+            ],
+            [
+                ("Total P/L", _format_pnl(summary["total_pnl"])),
+                ("Avg P/L", _format_pnl(summary["average_pnl"])),
+                ("Median P/L", _format_pnl(summary["median_pnl"])),
+            ],
+            [
+                ("Expectancy", _format_r(summary["expectancy_r"])),
+                ("Avg runner", _format_r(summary["average_runner_r_multiple"])),
+                ("Avg full trade", _format_r(summary["average_full_trade_r_multiple"])),
+            ],
+            [
+                ("Avg P/L%", f"{summary['average_pnl_pct']:.2%}"),
+                ("Avg MFE", f"{summary['average_mfe_pct']:.2%}"),
+                ("Avg MAE", f"{summary['average_mae_pct']:.2%}"),
+                ("Avg missed", f"{summary['average_missed_profit_pct']:.2%}"),
+            ],
+            [
+                ("Avg hold", f"{summary['average_hold_seconds']:.1f}s"),
+                ("Median hold", f"{summary['median_hold_seconds']:.1f}s"),
+            ],
+        ],
+        indent=DETAIL_INDENT,
     )
-    print(
-        "Avg P/L%: "
-        f"{summary['average_pnl_pct']:.2%} | Avg MFE: {summary['average_mfe_pct']:.2%} | "
-        f"Avg MAE: {summary['average_mae_pct']:.2%} | Avg missed: {summary['average_missed_profit_pct']:.2%}"
-    )
-    print(f"Avg hold: {summary['average_hold_seconds']:.1f}s | Median hold: {summary['median_hold_seconds']:.1f}s")
 
     if positions:
-        print(
-            "\nPositions "
-            f"(partials/runners combined): {positions['count']} | Wins: {positions['wins']} | "
-            f"Losses: {positions['losses']} | Win rate: {positions['win_rate']:.1%}"
-        )
-        print(
-            f"Position P/L: {positions['total_pnl']:.2f} | Avg: {positions['average_pnl']:.2f} | "
-            f"Median: {positions['median_pnl']:.2f} | Expectancy full R: {positions['expectancy_full_r']:.2f}R | "
-            f"Avg legs: {positions['average_legs']:.2f}"
+        print(f"\n{DETAIL_INDENT}Positions (partials/runners combined)")
+        print(f"{DETAIL_INDENT}────────────────────────────")
+        _print_aligned_metric_rows(
+            [
+                [
+                    ("Count", str(positions["count"])),
+                    ("Wins", str(positions["wins"])),
+                    ("Losses", str(positions["losses"])),
+                    ("Win rate", f"{positions['win_rate']:.1%}"),
+                ],
+                [
+                    ("Total P/L", _format_pnl(positions["total_pnl"])),
+                    ("Avg P/L", _format_pnl(positions["average_pnl"])),
+                    ("Median P/L", _format_pnl(positions["median_pnl"])),
+                ],
+                [
+                    ("Expectancy", _format_r(positions["expectancy_full_r"])),
+                    ("Avg legs", f"{positions['average_legs']:.2f}"),
+                ],
+            ],
+            indent=DETAIL_INDENT,
         )
 
 

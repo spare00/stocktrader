@@ -757,9 +757,11 @@ class CoreTradingTests(unittest.TestCase):
             analyze_trade_journal.print_text(summary)
 
         text = out.getvalue()
-        self.assertLess(text.index("- macd_early_impulse:"), text.index("- steady_intraday:"))
-        self.assertLess(text.index("Position Strategies"), text.index("\nTrade Journal Summary"))
-        self.assertLess(text.rindex("- macd_early_impulse:"), text.rindex("- steady_intraday:"))
+        summary_anchor = text.index("Trade Journal Summary")
+        position_block = text[text.index("Position Strategies") : summary_anchor]
+        self.assertLess(position_block.index("macd_early_impulse"), position_block.index("steady_intraday"))
+        self.assertLess(text.index("Position Strategies"), summary_anchor)
+        self.assertIn("═" * 72, text)
 
     def test_trade_journal_analyzer_win_rate_by_entry_hour_et(self):
         day = 2026, 4, 28
