@@ -2890,7 +2890,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(macd_shares, 30)
         self.assertEqual(default_shares, 25)
 
-    def test_position_tracker_total_pnl_includes_unrealized_loss(self):
+    def test_daily_loss_limit_ignores_cumulative_unrealized_pnl(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], daily_max_loss=250.0)
         tracker = PositionTracker(settings)
         tracker.positions["AAPL"] = Position(
@@ -2908,8 +2908,35 @@ class CoreTradingTests(unittest.TestCase):
         decision = RiskManager(settings).check_entry(signal, set(), total_pnl)
 
         self.assertEqual(total_pnl, -300.0)
-        self.assertFalse(decision.allowed)
-        self.assertIn("daily loss", decision.reason)
+        self.assertTrue(decision.allowed)
+
+    def test_daily_loss_limit_resets_on_new_trading_day(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            daily_max_loss=250.0,
+        )
+        risk = RiskManager(settings)
+        day_one_ms = market_ms(2026, 4, 24, 10, 0)
+        day_two_ms = market_ms(2026, 4, 25, 10, 0)
+        risk.record_exit(-300.0, day_one_ms, "AAPL", "opening_impulse")
+        signal = Signal(
+            strategy="opening_impulse",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=day_two_ms,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="test",
+        )
+
+        decision = risk.check_entry(signal, set(), -300.0)
+
+        self.assertTrue(decision.allowed)
 
     def test_alpaca_partial_fill_is_kept_without_canceling_remainder(self):
         settings = Settings(

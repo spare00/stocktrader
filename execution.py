@@ -9,7 +9,7 @@ from pathlib import Path
 from requests.exceptions import RequestException
 
 from config import Settings
-from market_hours import is_regular_market_time, should_flatten_before_close
+from market_hours import is_regular_market_time, should_flatten_before_close, trading_day_key
 from models import Bar, Signal
 from order_prefixes import CLIENT_ORDER_ID_ROOT, strategy_order_prefix
 
@@ -215,7 +215,7 @@ class PositionTracker:
         self.realized_pnl += pnl
         prior_position_pnl = position.realized_pnl
         position.realized_pnl += pnl
-        day_key = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
+        day_key = trading_day_key(timestamp_ms)
         self.daily_realized_pnl[day_key] = self.daily_realized_pnl.get(day_key, 0.0) + pnl
         closing_position = shares >= position.shares
         was_partial = position.partial_exit_taken

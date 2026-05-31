@@ -9,6 +9,11 @@ REGULAR_OPEN_MINUTE = (9 * 60) + 30
 REGULAR_CLOSE_MINUTE = 16 * 60
 
 
+def trading_day_key(timestamp_ms: int) -> str:
+    """US/Eastern calendar date for daily risk and journal buckets."""
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=MARKET_TZ).date().isoformat()
+
+
 def is_regular_market_time(timestamp_ms: int | None) -> bool:
     if timestamp_ms is None:
         return False

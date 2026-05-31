@@ -1,9 +1,8 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from math import ceil
 
 from config import Settings
-from market_hours import is_regular_market_time, should_flatten_before_close
+from market_hours import is_regular_market_time, should_flatten_before_close, trading_day_key
 from models import Signal
 
 
@@ -55,7 +54,7 @@ class RiskManager:
 
         daily_limit = self._daily_loss_limit()
         daily_pnl = self.daily_realized_pnl.get(day_key, 0.0)
-        if total_pnl <= -daily_limit or daily_pnl <= -daily_limit:
+        if daily_pnl <= -daily_limit:
             return RiskDecision(False, "daily loss limit reached")
 
         if signal.side != "BUY":
@@ -300,4 +299,4 @@ class RiskManager:
 
     @staticmethod
     def _day_key(timestamp_ms: int) -> str:
-        return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
+        return trading_day_key(timestamp_ms)
