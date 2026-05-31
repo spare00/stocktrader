@@ -221,6 +221,7 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_max_spread_bps", "BP_MAX_SPREAD_BPS", float_env, 15.0),
         ("bp_supertrend_period", "BP_SUPERTREND_PERIOD", int_env, 10),
         ("bp_supertrend_multiplier", "BP_SUPERTREND_MULTIPLIER", float_env, 1.0),
+        ("bp_supertrend_exit_enabled", "BP_SUPERTREND_EXIT_ENABLED", bool_env, True),
         ("bp_stop_lookback_bars", "BP_STOP_LOOKBACK_BARS", int_env, 6),
         ("bp_stop_buffer_pct", "BP_STOP_BUFFER_PCT", float_env, 0.001),
         ("bp_stop_loss_pct", "BP_STOP_LOSS_PCT", float_env, 0.005),
@@ -252,6 +253,7 @@ class BreakoutPowerStrategy(Strategy):
             "max_spread_bps": settings.bp_max_spread_bps,
             "supertrend_period": settings.bp_supertrend_period,
             "supertrend_multiplier": settings.bp_supertrend_multiplier,
+            "supertrend_exit_enabled": bool(settings.bp_supertrend_exit_enabled),
             "stop_lookback_bars": settings.bp_stop_lookback_bars,
             "stop_buffer_pct": settings.bp_stop_buffer_pct,
             "stop_loss_pct": settings.bp_stop_loss_pct,
@@ -322,10 +324,10 @@ class BreakoutPowerStrategy(Strategy):
                 f"BP momentum not rising avg_momentum={avg_momentum:.1f} prev={prev_text}",
             )
 
-        st_period = self.settings.bp_supertrend_period
-        st_multiplier = self.settings.bp_supertrend_multiplier
-        supertrend = StochMACDReversalStrategy._compute_supertrend(indicator_bars, st_period, st_multiplier)
+        supertrend = self._latest_supertrend(indicator_bars)
         if supertrend is None:
+            st_period = self.settings.bp_supertrend_period
+            st_multiplier = self.settings.bp_supertrend_multiplier
             return self._reject(
                 state,
                 "supertrend",
@@ -333,6 +335,8 @@ class BreakoutPowerStrategy(Strategy):
             )
         supertrend_value, supertrend_bullish = supertrend
         if not supertrend_bullish:
+            st_period = self.settings.bp_supertrend_period
+            st_multiplier = self.settings.bp_supertrend_multiplier
             return self._reject(
                 state,
                 "supertrend",
@@ -342,6 +346,8 @@ class BreakoutPowerStrategy(Strategy):
                 ),
             )
 
+        st_period = self.settings.bp_supertrend_period
+        st_multiplier = self.settings.bp_supertrend_multiplier
         stop_price = self._entry_stop_price(indicator_bars, last.ask)
         return Signal(
             strategy=self.name,
@@ -390,11 +396,17 @@ class BreakoutPowerStrategy(Strategy):
             self._clear_position_state(position.symbol)
             return ExitDecision("stop loss")
 
+        indicator_bars = self._indicator_bars(state)
+
+        supertrend_exit = self._supertrend_bearish_exit_decision(indicator_bars)
+        if supertrend_exit is not None:
+            self._clear_position_state(position.symbol)
+            return supertrend_exit
+
         profit_partial = self._profit_partial_exit_decision(position, price)
         if profit_partial is not None:
             return profit_partial
 
-        indicator_bars = self._indicator_bars(state)
         bp = self._compute_bp(indicator_bars)
         if len(bp.scores) < 2:
             return None
@@ -446,6 +458,31 @@ class BreakoutPowerStrategy(Strategy):
             return self._partial_exit_decision(position, reason="BP first decline partial")
 
         return None
+
+    def _latest_supertrend(self, indicator_bars: list) -> tuple[float, bool] | None:
+        return StochMACDReversalStrategy._compute_supertrend(
+            indicator_bars,
+            self.settings.bp_supertrend_period,
+            self.settings.bp_supertrend_multiplier,
+        )
+
+    def _supertrend_bearish_exit_decision(self, indicator_bars: list) -> ExitDecision | None:
+        if not self.settings.bp_supertrend_exit_enabled:
+            return None
+
+        supertrend = self._latest_supertrend(indicator_bars)
+        if supertrend is None:
+            return None
+
+        supertrend_value, supertrend_bullish = supertrend
+        if supertrend_bullish:
+            return None
+
+        st_period = self.settings.bp_supertrend_period
+        st_multiplier = self.settings.bp_supertrend_multiplier
+        return ExitDecision(
+            f"SuperTrend bearish st_line={supertrend_value:.2f} st_cfg={st_period},{st_multiplier:.1f}"
+        )
 
     def _double_decline_exit_due(
         self,

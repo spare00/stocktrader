@@ -448,6 +448,7 @@ class Settings:
     bp_max_spread_bps: float = 15.0
     bp_supertrend_period: int = 10
     bp_supertrend_multiplier: float = 1.0
+    bp_supertrend_exit_enabled: bool = True
     bp_stop_lookback_bars: int = 6
     bp_stop_buffer_pct: float = 0.001
     bp_stop_loss_pct: float = 0.005

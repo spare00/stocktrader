@@ -9719,6 +9719,64 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("st=green", signal.reason)
         self.assertIn("st_cfg=10,1.0", signal.reason)
 
+    def test_breakout_power_exits_full_on_supertrend_bearish(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
+        with patch.object(
+            strategy,
+            "_latest_supertrend",
+            return_value=(100.25, False),
+        ), patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 56.0],
+                momentums=[50.0, 50.0],
+                avg_momentums=[70.0, 72.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertIn("SuperTrend bearish", decision.reason)
+        self.assertIn("st_cfg=10,1.0", decision.reason)
+
+    def test_breakout_power_skips_supertrend_exit_when_disabled(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_supertrend_exit_enabled=False,
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
+        with patch.object(
+            strategy,
+            "_latest_supertrend",
+            return_value=(100.25, False),
+        ), patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 55.0],
+                momentums=[50.0, 50.0],
+                avg_momentums=[70.0, 72.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
     def test_breakout_power_exits_full_when_score_below_trend_line(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
