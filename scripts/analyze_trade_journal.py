@@ -758,7 +758,7 @@ def _print_text_details(summary: dict, positions: dict) -> None:
 
     if summary.get("by_day_entry_time_et"):
         _print_section("Entry Time vs 12:00 by Day (America/New_York)")
-        for day, buckets in summary["by_day_entry_time_et"].items():
+        for day, buckets in sorted(summary["by_day_entry_time_et"].items()):
             bucket_rows = [
                 (bucket, str(item["trades"]), f"{item['win_rate']:.1%}", _format_pnl(item["total_pnl"]))
                 for bucket, item in buckets.items()
@@ -771,8 +771,7 @@ def _print_text_details(summary: dict, positions: dict) -> None:
                 ),
             )
             cells = [_metric_cell(label, f"{trades} @ {win}  {pnl}", row_width) for label, trades, win, pnl in bucket_rows]
-            print(f"{DETAIL_INDENT}{day}")
-            print(DETAIL_INDENT + "  " + " | ".join(cells))
+            print(f"{DETAIL_INDENT}{day}  " + " | ".join(cells))
 
     if summary["by_day"]:
         _print_section("Trading Days")
