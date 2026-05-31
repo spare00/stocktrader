@@ -707,6 +707,57 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(summary["positions"]["by_entry_market_regime"]["neutral_hardened"]["positions"], 1)
         self.assertAlmostEqual(round_trips[0].entry_size_multiplier, 0.5)
 
+    def test_normalize_exit_reason_collapses_supertrend_variants(self):
+        self.assertEqual(
+            analyze_trade_journal.normalize_exit_reason("SuperTrend bearish st_line=7.62 st_cfg=10,2.0"),
+            "SuperTrend bearish",
+        )
+        self.assertEqual(
+            analyze_trade_journal.normalize_exit_reason(
+                "SuperTrend bearish period=10 mult=2.0 line=50.00 | alpaca_order_id=x"
+            ),
+            "SuperTrend bearish",
+        )
+        self.assertEqual(analyze_trade_journal.normalize_exit_reason("stop loss"), "stop loss")
+
+    def test_trade_journal_analyzer_groups_supertrend_exit_reasons(self):
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy", "AAPL", 1_000, 10, 100.0, 0.0, "breakout_power", "entry", "buy-1"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "AAPL",
+                6_000,
+                10,
+                101.0,
+                10.0,
+                "breakout_power",
+                "SuperTrend bearish st_line=16.12 st_cfg=10,2.0",
+                "sell-1",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy", "MSFT", 10_000, 5, 200.0, 0.0, "breakout_power", "entry", "buy-2"
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "MSFT",
+                16_000,
+                5,
+                198.0,
+                -10.0,
+                "breakout_power",
+                "SuperTrend bearish st_line=20.57 st_cfg=10,2.0 | alpaca_order_id=sell-2",
+                "sell-2",
+            ),
+        ]
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+
+        self.assertEqual(summary["by_exit_reason"]["SuperTrend bearish"]["trades"], 2)
+        self.assertEqual(summary["exit_reason_counts"]["SuperTrend bearish"], 2)
+        self.assertEqual(summary["positions"]["by_final_exit_reason"]["SuperTrend bearish"]["positions"], 2)
+
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
         events = [
             analyze_trade_journal.TradeEvent(

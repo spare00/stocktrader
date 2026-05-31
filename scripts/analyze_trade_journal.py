@@ -276,6 +276,13 @@ def clean_reason(reason: str) -> str:
     return str(reason or "").split(" | ")[0]
 
 
+def normalize_exit_reason(reason: str) -> str:
+    text = clean_reason(reason)
+    if text.startswith("SuperTrend bearish"):
+        return "SuperTrend bearish"
+    return text
+
+
 def market_regime_from_reason(reason: str) -> str:
     reason_text = str(reason or "")
     match = MARKET_REGIME_RE.search(reason_text)
@@ -353,7 +360,7 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
     by_entry_market_regime = defaultdict(list)
     for trade in round_trips:
         by_symbol[trade.symbol].append(trade)
-        by_reason[trade.reason or "unknown"].append(trade)
+        by_reason[normalize_exit_reason(trade.reason or "unknown")].append(trade)
         by_strategy[trade.strategy or "unknown"].append(trade)
         by_entry_market_regime[trade.entry_market_regime or "unknown"].append(trade)
         day = trade_day(trade)
@@ -389,7 +396,9 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "by_day_strategy": summarize_nested_groups(by_day_strategy),
         "by_entry_time_et": summarize_entry_time_hour_et(round_trips),
         "by_day_entry_time_et": summarize_entry_time_hour_et_by_entry_day(round_trips),
-        "exit_reason_counts": dict(Counter(trade.reason or "unknown" for trade in round_trips)),
+        "exit_reason_counts": dict(
+            Counter(normalize_exit_reason(trade.reason or "unknown") for trade in round_trips)
+        ),
         "unmatched_events": unmatched,
     }
 
@@ -405,7 +414,7 @@ def summarize_positions(positions: list[PositionRoundTrip]) -> dict:
     by_entry_market_regime = defaultdict(list)
     for position in positions:
         by_strategy[position.strategy or "unknown"].append(position)
-        by_final_reason[position.final_reason or "unknown"].append(position)
+        by_final_reason[normalize_exit_reason(position.final_reason or "unknown")].append(position)
         by_entry_market_regime[position.entry_market_regime or "unknown"].append(position)
     return {
         "count": len(positions),
@@ -558,7 +567,7 @@ def trade_summary(trade: RoundTrip) -> dict:
         "mfe_pct": round(trade.mfe_pct, 6),
         "mae_pct": round(trade.mae_pct, 6),
         "missed_profit_pct": round(trade.mfe_pct - trade.pnl_pct, 6),
-        "reason": trade.reason,
+        "reason": normalize_exit_reason(trade.reason),
         "hold_seconds": round(trade.hold_seconds, 2),
         "r_multiple": round(trade.r_multiple, 4) if trade.r_multiple is not None else None,
         "exit_stage": trade.exit_stage,
@@ -581,8 +590,8 @@ def position_summary(position: PositionRoundTrip) -> dict:
         "pnl_pct": round(position.pnl_pct, 6),
         "mfe_pct": round(position.mfe_pct, 6),
         "mae_pct": round(position.mae_pct, 6),
-        "final_reason": position.final_reason,
-        "exit_reasons": list(position.exit_reasons),
+        "final_reason": normalize_exit_reason(position.final_reason),
+        "exit_reasons": [normalize_exit_reason(reason) for reason in position.exit_reasons],
         "exit_stages": list(position.exit_stages),
         "hold_seconds": round(position.hold_seconds, 2),
         "legs": position.legs,
