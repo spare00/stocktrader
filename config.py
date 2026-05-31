@@ -437,9 +437,8 @@ class Settings:
     bp_warmup_bars: int = 40
     bp_green_threshold: float = 65.0
     bp_trend_line: float = 50.0
-    bp_hold_floor: float = 45.0
     bp_decline_grace_bars: int = 2
-    bp_partial_size: float = 0.5
+    bp_partial_size: float = 0.75
     bp_momentum_ema_period: int = 4
     bp_max_spread_bps: float = 15.0
     bp_supertrend_period: int = 10
