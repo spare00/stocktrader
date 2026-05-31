@@ -9673,6 +9673,50 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_breakout_power_rejects_entry_on_bearish_supertrend(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 55.0],
+                momentums=[0.0, 100.0],
+                avg_momentums=[50.0, 70.0],
+            ),
+        ), patch.object(
+            StochMACDReversalStrategy,
+            "_compute_supertrend",
+            return_value=(101.0, False),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_breakout_power_emits_buy_with_bullish_supertrend(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 55.0],
+                momentums=[0.0, 100.0],
+                avg_momentums=[50.0, 70.0],
+            ),
+        ), patch.object(
+            StochMACDReversalStrategy,
+            "_compute_supertrend",
+            return_value=(100.5, True),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("st=green", signal.reason)
+        self.assertIn("st_cfg=10,1.0", signal.reason)
+
     def test_breakout_power_exits_full_when_score_below_trend_line(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)

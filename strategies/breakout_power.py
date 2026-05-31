@@ -14,6 +14,7 @@ from modules.indicator_history import continuous_indicator_bars
 from strategy_selectors.select_gap_and_go import latest_valid_quote
 from strategies.base import Strategy
 from strategies.macd_early_impulse import _ema_series
+from strategies.stoch_macd_reversal import StochMACDReversalStrategy
 
 
 LOG = logging.getLogger(__name__)
@@ -214,6 +215,8 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_partial_size", "BP_PARTIAL_SIZE", float_env, 0.5),
         ("bp_momentum_ema_period", "BP_MOMENTUM_EMA_PERIOD", int_env, 4),
         ("bp_max_spread_bps", "BP_MAX_SPREAD_BPS", float_env, 15.0),
+        ("bp_supertrend_period", "BP_SUPERTREND_PERIOD", int_env, 10),
+        ("bp_supertrend_multiplier", "BP_SUPERTREND_MULTIPLIER", float_env, 1.0),
         ("bp_stop_lookback_bars", "BP_STOP_LOOKBACK_BARS", int_env, 6),
         ("bp_stop_buffer_pct", "BP_STOP_BUFFER_PCT", float_env, 0.001),
         ("bp_stop_loss_pct", "BP_STOP_LOSS_PCT", float_env, 0.005),
@@ -239,6 +242,8 @@ class BreakoutPowerStrategy(Strategy):
             "partial_size": settings.bp_partial_size,
             "momentum_ema_period": settings.bp_momentum_ema_period,
             "max_spread_bps": settings.bp_max_spread_bps,
+            "supertrend_period": settings.bp_supertrend_period,
+            "supertrend_multiplier": settings.bp_supertrend_multiplier,
             "stop_lookback_bars": settings.bp_stop_lookback_bars,
             "stop_buffer_pct": settings.bp_stop_buffer_pct,
             "stop_loss_pct": settings.bp_stop_loss_pct,
@@ -309,6 +314,26 @@ class BreakoutPowerStrategy(Strategy):
                 f"BP momentum not rising avg_momentum={avg_momentum:.1f} prev={prev_text}",
             )
 
+        st_period = self.settings.bp_supertrend_period
+        st_multiplier = self.settings.bp_supertrend_multiplier
+        supertrend = StochMACDReversalStrategy._compute_supertrend(indicator_bars, st_period, st_multiplier)
+        if supertrend is None:
+            return self._reject(
+                state,
+                "supertrend",
+                f"could not compute SuperTrend period={st_period} mult={st_multiplier:.1f}",
+            )
+        supertrend_value, supertrend_bullish = supertrend
+        if not supertrend_bullish:
+            return self._reject(
+                state,
+                "supertrend",
+                (
+                    f"SuperTrend bearish period={st_period} mult={st_multiplier:.1f} "
+                    f"line={supertrend_value:.2f}"
+                ),
+            )
+
         stop_price = self._entry_stop_price(indicator_bars, last.ask)
         return Signal(
             strategy=self.name,
@@ -321,7 +346,8 @@ class BreakoutPowerStrategy(Strategy):
             spread_bps=last.spread_bps,
             reason=(
                 f"breakout_power cross score={score:.0f} "
-                f"avg_momentum={avg_momentum:.1f} green>={green_threshold:.0f}"
+                f"avg_momentum={avg_momentum:.1f} green>={green_threshold:.0f} "
+                f"st=green st_line={supertrend_value:.2f} st_cfg={st_period},{st_multiplier:.1f}"
             ),
             stop_price=stop_price,
         )
