@@ -212,6 +212,8 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_trend_line", "BP_TREND_LINE", float_env, 50.0),
         ("bp_hold_floor", "BP_HOLD_FLOOR", float_env, 45.0),
         ("bp_decline_grace_bars", "BP_DECLINE_GRACE_BARS", int_env, 2),
+        ("bp_double_decline_enabled", "BP_DOUBLE_DECLINE_ENABLED", bool_env, True),
+        ("bp_double_decline_count", "BP_DOUBLE_DECLINE_COUNT", int_env, 2),
         ("bp_partial_r", "BP_PARTIAL_R", float_env, 1.0),
         ("bp_partial_profit_pct", "BP_PARTIAL_PROFIT_PCT", float_env, 0.01),
         ("bp_partial_size", "BP_PARTIAL_SIZE", float_env, 0.5),
@@ -241,6 +243,8 @@ class BreakoutPowerStrategy(Strategy):
             "trend_line": settings.bp_trend_line,
             "hold_floor": settings.bp_hold_floor,
             "decline_grace_bars": settings.bp_decline_grace_bars,
+            "double_decline_enabled": bool(settings.bp_double_decline_enabled),
+            "double_decline_count": settings.bp_double_decline_count,
             "partial_r": settings.bp_partial_r,
             "partial_profit_pct": settings.bp_partial_profit_pct,
             "partial_size": settings.bp_partial_size,
@@ -427,11 +431,7 @@ class BreakoutPowerStrategy(Strategy):
         if recovery_hold and score < trend_line:
             return None
 
-        if (
-            score >= trend_line
-            and pos_state is not None
-            and pos_state.declines_without_rise >= 2
-        ):
+        if self._double_decline_exit_due(score, trend_line, pos_state):
             self._clear_position_state(position.symbol)
             return ExitDecision("BP double decline")
 
@@ -446,6 +446,19 @@ class BreakoutPowerStrategy(Strategy):
             return self._partial_exit_decision(position, reason="BP first decline partial")
 
         return None
+
+    def _double_decline_exit_due(
+        self,
+        score: float,
+        trend_line: float,
+        pos_state: _BPPositionState | None,
+    ) -> bool:
+        if not self.settings.bp_double_decline_enabled:
+            return False
+        required = int(self.settings.bp_double_decline_count)
+        if required <= 0 or pos_state is None:
+            return False
+        return score >= trend_line and pos_state.declines_without_rise >= required
 
     def _profit_partial_exit_decision(self, position, price: float) -> ExitDecision | None:
         if position.partial_exit_taken or position.shares <= 1:

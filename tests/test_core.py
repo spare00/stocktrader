@@ -9927,10 +9927,16 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(decision)
 
     def test_breakout_power_exits_on_double_decline_without_intervening_rise(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
-        position = self._bp_position()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
         strategy.on_entry_fill(
             types.SimpleNamespace(
                 strategy="breakout_power",
@@ -9942,6 +9948,127 @@ class CoreTradingTests(unittest.TestCase):
         pos_state.bars_since_entry = 5
         pos_state.declines_without_rise = 2
         state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[54.0, 52.0],
+                momentums=[0.0, 0.0],
+                avg_momentums=[60.0, 58.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "BP double decline")
+
+    def test_breakout_power_skips_double_decline_when_disabled(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_double_decline_enabled=False,
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.bars_since_entry = 5
+        pos_state.declines_without_rise = 2
+        state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 55.0],
+                momentums=[0.0, 0.0],
+                avg_momentums=[60.0, 60.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+        self.assertNotEqual(getattr(decision, "reason", None), "BP double decline")
+
+    def test_breakout_power_skips_double_decline_when_count_zero(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_double_decline_count=0,
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        strategy._position_states["AAPL"].declines_without_rise = 2
+        state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 55.0],
+                momentums=[0.0, 0.0],
+                avg_momentums=[60.0, 60.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
+    def test_breakout_power_double_decline_respects_custom_count(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_double_decline_count=3,
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
+        strategy.on_entry_fill(
+            types.SimpleNamespace(
+                strategy="breakout_power",
+                symbol="AAPL",
+                timestamp_ms=position.entry_ms,
+            )
+        )
+        pos_state = strategy._position_states["AAPL"]
+        pos_state.bars_since_entry = 5
+        pos_state.declines_without_rise = 2
+        state.last_event_kind = "quote"
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[56.0, 56.0],
+                momentums=[0.0, 0.0],
+                avg_momentums=[62.0, 62.0],
+            ),
+        ):
+            self.assertIsNone(strategy.should_exit(state, position))
+
+        pos_state.declines_without_rise = 3
+        position.partial_exit_taken = True
         with patch.object(
             strategy,
             "_compute_bp",
