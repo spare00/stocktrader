@@ -758,6 +758,52 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(summary["exit_reason_counts"]["SuperTrend bearish"], 2)
         self.assertEqual(summary["positions"]["by_final_exit_reason"]["SuperTrend bearish"]["positions"], 2)
 
+    def test_trade_journal_exit_reasons_sorted_alphabetically(self):
+        events = []
+        for index, (symbol, reason) in enumerate(
+            [
+                ("AAA", "zeta exit"),
+                ("BBB", "alpha exit"),
+                ("CCC", "beta exit"),
+            ],
+            start=1,
+        ):
+            buy_ms = index * 1_000
+            sell_ms = buy_ms + 5_000
+            events.extend(
+                [
+                    analyze_trade_journal.TradeEvent(
+                        "buy", symbol, buy_ms, 10, 100.0, 0.0, "breakout_power", "entry", f"buy-{index}"
+                    ),
+                    analyze_trade_journal.TradeEvent(
+                        "sell",
+                        symbol,
+                        sell_ms,
+                        10,
+                        101.0,
+                        1.0,
+                        "breakout_power",
+                        reason,
+                        f"sell-{index}",
+                    ),
+                ]
+            )
+
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+
+        self.assertEqual(list(summary["by_exit_reason"].keys()), ["alpha exit", "beta exit", "zeta exit"])
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            analyze_trade_journal.print_text(summary)
+        exit_block = out.getvalue().split("Exit Reasons", 1)[1].split("\n\n", 1)[0]
+        alpha_index = exit_block.index("alpha exit")
+        beta_index = exit_block.index("beta exit")
+        zeta_index = exit_block.index("zeta exit")
+        self.assertLess(alpha_index, beta_index)
+        self.assertLess(beta_index, zeta_index)
+
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
         events = [
             analyze_trade_journal.TradeEvent(

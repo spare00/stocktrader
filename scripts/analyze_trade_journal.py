@@ -314,6 +314,10 @@ def sort_market_regime_groups(groups: dict) -> list[tuple[str, dict]]:
     return sorted(groups.items(), key=lambda pair: market_regime_risk_sort_key(pair[0]))
 
 
+def sort_by_name_groups(groups: dict) -> list[tuple[str, dict]]:
+    return sorted(groups.items(), key=lambda pair: pair[0].lower())
+
+
 def size_multiplier_from_reason(reason: str) -> float | None:
     match = SIZE_MULT_RE.search(str(reason or ""))
     return float(match.group(1)) if match else None
@@ -745,7 +749,7 @@ def _print_text_details(summary: dict, positions: dict) -> None:
                 f"{item['average_hold_seconds']:.0f}s",
                 f"{item['win_rate']:.1%}",
             ]
-            for reason, item in sorted(summary["by_exit_reason"].items(), key=lambda pair: pair[1]["trades"], reverse=True)
+            for reason, item in sort_by_name_groups(summary["by_exit_reason"])
         ]
         _print_table(["Reason", "Trades", "P/L", "Avg P/L%", "MFE", "Hold", "Win%"], rows)
 
