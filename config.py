@@ -367,8 +367,8 @@ class Settings:
     stoch_macd_supertrend_buffer_pct: float = 0.0005
     stoch_macd_supertrend_period: int = 7
     stoch_macd_supertrend_multiplier: float = 3.0
-    stoch_macd_min_volume_ratio: float = 0.80
-    stoch_macd_max_spread_bps: float = 15.0
+    stoch_macd_min_volume_ratio: float = 0.20
+    stoch_macd_max_spread_bps: float = 20.0
     stoch_macd_vwap_enabled: bool = True
     stoch_macd_vwap_buffer_pct: float = 0.0005
     stoch_macd_require_vwap_rising: bool = True
@@ -379,7 +379,7 @@ class Settings:
     stoch_macd_max_k: float = 88.0
     stoch_macd_allow_overbought_expansion: bool = False
     stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
-    stoch_macd_ao_filter_enabled: bool = False
+    stoch_macd_ao_filter_enabled: bool = True
     stoch_macd_ao_fast_period: int = 5
     stoch_macd_ao_slow_period: int = 34
     stoch_macd_ao_rise_bars: int = 2

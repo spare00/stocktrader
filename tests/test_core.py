@@ -2692,6 +2692,7 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             regular_market_only=False,
             max_hold_seconds=60,
+            stoch_macd_max_hold_seconds=60,
             stoch_macd_min_hold_seconds=0,
         )
         broker = LocalPaperExecutor(PositionTracker(settings))
@@ -9258,7 +9259,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_stoch_macd_reversal_allows_green_supertrend_when_ema_is_below_line_by_default(self):
-        settings = self._stoch_macd_legacy_settings(stoch_macd_vwap_enabled=False)
+        settings = self._stoch_macd_legacy_settings(
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_ao_filter_enabled=False,
+        )
         strategy = StochMACDReversalStrategy(settings)
 
         with patch.object(
@@ -9444,6 +9448,7 @@ class CoreTradingTests(unittest.TestCase):
         settings = self._stoch_macd_legacy_settings(
             stoch_macd_supertrend_enabled=False,
             stoch_macd_vwap_enabled=False,
+            stoch_macd_ao_filter_enabled=False,
         )
         strategy = StochMACDReversalStrategy(settings)
         closes = [100.0 - index * 0.35 for index in range(36)] + [87.6, 87.9, 88.1, 88.3]
