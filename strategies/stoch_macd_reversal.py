@@ -86,9 +86,15 @@ class StochMACDReversalStrategy(Strategy):
             "stoch_macd_max_trades_per_symbol_per_session",
             "STOCH_MACD_MAX_TRADES_PER_SYMBOL_PER_SESSION",
             int_env,
-            2,
+            3,
         ),
-        ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
+        ("stoch_macd_symbol_loss_lock_count", "STOCH_MACD_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
+        (
+            "stoch_macd_hardening_max_spread_bps",
+            "STOCH_MACD_HARDENING_MAX_SPREAD_BPS",
+            float_env,
+            15.0,
+        ),
         ("stoch_macd_macd_warmup_bars", "STOCH_MACD_MACD_WARMUP_BARS", int_env, 35),
         (
             "stoch_macd_risk_off_stoch_cross_lookback_bars",
@@ -105,8 +111,8 @@ class StochMACDReversalStrategy(Strategy):
             1.5,
         ),
         ("stoch_macd_risk_off_max_r_multiplier", "STOCH_MACD_RISK_OFF_MAX_R_MULTIPLIER", float_env, 0.8),
-        ("stoch_macd_neutral_hist_multiplier", "STOCH_MACD_NEUTRAL_HIST_MULTIPLIER", float_env, 1.15),
-        ("stoch_macd_neutral_volume_add", "STOCH_MACD_NEUTRAL_VOLUME_ADD", float_env, 0.10),
+        ("stoch_macd_neutral_hist_multiplier", "STOCH_MACD_NEUTRAL_HIST_MULTIPLIER", float_env, 1.60),
+        ("stoch_macd_neutral_volume_add", "STOCH_MACD_NEUTRAL_VOLUME_ADD", float_env, 0.15),
         (
             "stoch_macd_neutral_vwap_buffer_multiplier",
             "STOCH_MACD_NEUTRAL_VWAP_BUFFER_MULTIPLIER",
@@ -223,6 +229,7 @@ class StochMACDReversalStrategy(Strategy):
                 "vwap_buffer_multiplier": settings.stoch_macd_neutral_vwap_buffer_multiplier,
                 "max_r_multiplier": settings.stoch_macd_neutral_max_r_multiplier,
             },
+            "hardening_max_spread_bps": settings.stoch_macd_hardening_max_spread_bps,
             "reentry_freshness": {
                 "enabled": settings.stoch_macd_reentry_fresh_enabled,
                 "lookback_bars": settings.stoch_macd_reentry_fresh_lookback_bars,
@@ -270,10 +277,12 @@ class StochMACDReversalStrategy(Strategy):
         early_window = self._in_early_window(state.last_event_ms)
         risk_off = self._risk_off_market_regime()
         neutral_hardening = self._neutral_market_regime_hardening()
+        hardening_level = self._entry_hardening_level()
         reentry_freshness = self._requires_reentry_freshness(state)
-        max_spread_bps = self.settings.stoch_macd_max_spread_bps
-        if early_window:
-            max_spread_bps = min(max_spread_bps, self.settings.stoch_macd_early_max_spread_bps)
+        max_spread_bps = self._effective_entry_max_spread_bps(
+            early_window=early_window,
+            hardening_level=hardening_level,
+        )
         if last.spread_bps > max_spread_bps:
             return self._reject(state, "spread", f"spread {last.spread_bps:.1f}bps too wide")
 
@@ -681,6 +690,22 @@ class StochMACDReversalStrategy(Strategy):
         span = max(1, risk_on_score - risk_off_score)
         score = getattr(regime, "score", 0)
         return min(1.0, max(0.0, (risk_on_score - score) / span))
+
+    def _entry_hardening_level(self) -> float:
+        if self._risk_off_market_regime():
+            return 1.0
+        return self._neutral_market_regime_hardening()
+
+    def _effective_entry_max_spread_bps(self, *, early_window: bool, hardening_level: float) -> float:
+        max_spread_bps = self.settings.stoch_macd_max_spread_bps
+        if early_window:
+            max_spread_bps = min(max_spread_bps, self.settings.stoch_macd_early_max_spread_bps)
+        if hardening_level <= 0:
+            return max_spread_bps
+        floor = max(0.0, self.settings.stoch_macd_hardening_max_spread_bps)
+        if floor >= max_spread_bps:
+            return max_spread_bps
+        return max_spread_bps - hardening_level * (max_spread_bps - floor)
 
     def _reentry_chase_reject_reason(
         self,

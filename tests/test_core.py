@@ -9076,6 +9076,102 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(base_signal)
         self.assertIsNone(hardened_signal)
 
+    def test_stoch_macd_entry_hardening_level(self):
+        settings = self._stoch_macd_legacy_settings()
+        strategy = StochMACDReversalStrategy(settings)
+
+        strategy.set_market_regime(types.SimpleNamespace(name="risk_on", score=6, max_score=9))
+        self.assertEqual(strategy._entry_hardening_level(), 0.0)
+
+        strategy.set_market_regime(types.SimpleNamespace(name="neutral", score=-1, max_score=9))
+        self.assertGreater(strategy._entry_hardening_level(), 0.0)
+        self.assertLess(strategy._entry_hardening_level(), 1.0)
+
+        strategy.set_market_regime(types.SimpleNamespace(name="risk_off", score=-5, max_score=9))
+        self.assertEqual(strategy._entry_hardening_level(), 1.0)
+
+    def test_stoch_macd_effective_entry_max_spread_bps_scales_with_hardening(self):
+        settings = self._stoch_macd_legacy_settings(
+            stoch_macd_max_spread_bps=20.0,
+            stoch_macd_hardening_max_spread_bps=15.0,
+            stoch_macd_early_max_spread_bps=12.0,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+
+        self.assertEqual(
+            strategy._effective_entry_max_spread_bps(early_window=False, hardening_level=0.0),
+            20.0,
+        )
+        self.assertEqual(
+            strategy._effective_entry_max_spread_bps(early_window=False, hardening_level=1.0),
+            15.0,
+        )
+        self.assertEqual(
+            strategy._effective_entry_max_spread_bps(early_window=True, hardening_level=0.0),
+            12.0,
+        )
+        self.assertEqual(
+            strategy._effective_entry_max_spread_bps(early_window=True, hardening_level=1.0),
+            12.0,
+        )
+
+    def test_stoch_macd_reversal_rejects_wide_spread_when_hardening_active(self):
+        settings = self._stoch_macd_legacy_settings(
+            stoch_macd_vwap_enabled=False,
+            stoch_macd_early_window_minutes=0,
+            stoch_macd_ao_filter_enabled=False,
+            stoch_macd_max_spread_bps=20.0,
+            stoch_macd_hardening_max_spread_bps=15.0,
+        )
+        strategy = StochMACDReversalStrategy(settings)
+        state = self._stoch_macd_state()
+        mid = state.bars[-1].close
+        state.update_quote(
+            Quote(
+                state.symbol,
+                mid - 0.085,
+                mid + 0.085,
+                100,
+                100,
+                state.last_event_ms or 0,
+            )
+        )
+        spread_bps = state.quote.spread_bps
+        self.assertGreater(spread_bps, 15.0)
+        self.assertLess(spread_bps, 20.0)
+
+        with patch.object(
+            strategy,
+            "_compute_stoch",
+            return_value=([74.0, 80.0, 86.0], [76.0, 78.0, 82.0]),
+        ), patch.object(
+            strategy,
+            "_compute_macd",
+            return_value=(
+                [-0.05, -0.035, -0.015],
+                [-0.06, -0.045, -0.030],
+                [0.006, 0.012, 0.024],
+            ),
+        ), patch.object(
+            strategy,
+            "_compute_supertrend",
+            return_value=(60.80, True),
+        ), patch.object(
+            strategy,
+            "_fast_ema",
+            return_value=60.92,
+        ), patch.object(
+            strategy, "_volume_ratio", return_value=2.0
+        ), patch.object(
+            strategy, "_entry_stop_price", return_value=94.55
+        ):
+            risk_on_signal = strategy.evaluate(state)
+            strategy.set_market_regime(types.SimpleNamespace(name="risk_off", score=-5, max_score=9))
+            risk_off_signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(risk_on_signal)
+        self.assertIsNone(risk_off_signal)
+
     def test_stoch_macd_reversal_repeat_entry_requires_fresh_impulse_after_fill(self):
         settings = self._stoch_macd_legacy_settings(
             stoch_macd_vwap_enabled=False,
