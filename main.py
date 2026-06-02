@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -22,7 +23,7 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca_client import get_bars_between, get_latest_quotes, get_recent_bars, make_clients
 from candle import SymbolState
 from config import Settings, load_settings
-from execution import build_executor
+from execution import build_executor, set_source_commit
 from market_hours import MARKET_TZ, is_regular_market_time
 from market_regime import MarketRegimeMonitor
 from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
@@ -499,6 +500,47 @@ def credential_fingerprint(value: str | None) -> str | None:
     return f"{digest}:{suffix}"
 
 
+def resolve_source_revision(
+    repo_root: Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, str | bool | None]:
+    root = repo_root or Path(__file__).resolve().parent
+    environment = env if env is not None else os.environ
+
+    def git(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
+    commit_full = git("rev-parse", "HEAD")
+    if commit_full:
+        return {
+            "commit": git("rev-parse", "--short", "HEAD") or commit_full,
+            "commit_full": commit_full,
+            "dirty": bool(git("status", "--porcelain")),
+        }
+
+    override = (environment.get("SOURCE_COMMIT") or environment.get("GIT_COMMIT") or "").strip()
+    if override:
+        return {
+            "commit": override[:12],
+            "commit_full": override,
+            "dirty": None,
+        }
+    return {"commit": None, "commit_full": None, "dirty": None}
+
+
 def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] | None = None) -> dict:
     snapshot = {
         "execution_mode": settings.execution_mode,
@@ -614,6 +656,7 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
         },
     }
     snapshot.update(merge_strategy_runtime_snapshots(settings))
+    snapshot["source_revision"] = resolve_source_revision()
     return snapshot
 
 
@@ -970,6 +1013,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
         min_impact=settings.news_listener_min_impact,
         positive_only=settings.news_listener_positive_only,
     )
+    set_source_commit((settings_snapshot.get("source_revision") or {}).get("commit"))
     executor = build_executor(stream_settings)
     risk = RiskManager(settings, strategy_symbol_counts=effective_symbol_counts)
     reviewer = SignalReviewer(settings)

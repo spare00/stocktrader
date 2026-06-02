@@ -19,6 +19,7 @@ TRADING_TZ = ZoneInfo("America/New_York")
 MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+([a-z_]+)\b")
 STRATEGY_REGIME_RE = re.compile(r"\bregime=([a-z_]+)(?::[0-9]+(?:\.[0-9]+)?)?\b")
 SIZE_MULT_RE = re.compile(r"\bsize_mult=([0-9]+(?:\.[0-9]+)?)\b")
+RUNTIME_SETTINGS_MARKER = "Runtime settings "
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class TradeEvent:
     runner_r_multiple: float | None = None
     full_trade_r_multiple: float | None = None
     cumulative_daily_pnl: float | None = None
+    source_commit: str = ""
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,7 @@ class RoundTrip:
     runner_r_multiple: float | None = None
     full_trade_r_multiple: float | None = None
     cumulative_daily_pnl: float | None = None
+    source_commit: str = ""
     buy_order_id: str = ""
     sell_order_id: str = ""
     entry_reason: str = ""
@@ -110,6 +113,7 @@ def parse_event(row: dict) -> TradeEvent:
         runner_r_multiple=optional_float(row.get("runner_r_multiple")),
         full_trade_r_multiple=optional_float(row.get("full_trade_r_multiple")),
         cumulative_daily_pnl=optional_float(row.get("cumulative_daily_pnl")),
+        source_commit=str(row.get("source_commit") or "").strip(),
     )
 
 
@@ -189,6 +193,7 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
                     entry_reason=clean_reason(buy.reason),
                     entry_market_regime=market_regime_from_reason(buy.reason),
                     entry_size_multiplier=size_multiplier_from_reason(buy.reason),
+                    source_commit=buy.source_commit,
                 )
             )
             remaining_shares -= matched_shares
@@ -211,6 +216,7 @@ def build_round_trips(events: list[TradeEvent]) -> tuple[list[RoundTrip], list[d
                     runner_r_multiple=buy.runner_r_multiple,
                     full_trade_r_multiple=buy.full_trade_r_multiple,
                     cumulative_daily_pnl=buy.cumulative_daily_pnl,
+                    source_commit=buy.source_commit,
                 )
 
         if remaining_shares > 0:
@@ -341,7 +347,57 @@ def excursion_prices(
     return max(prices), min(prices)
 
 
-def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
+def default_trader_log_path(journal_path: Path) -> Path:
+    return journal_path.parent / "trader.log"
+
+
+def load_commits_from_trader_log(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+
+    commits: list[str] = []
+    seen: set[str] = set()
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        marker_idx = line.find(RUNTIME_SETTINGS_MARKER)
+        if marker_idx < 0:
+            continue
+        try:
+            payload = json.loads(line[marker_idx + len(RUNTIME_SETTINGS_MARKER) :])
+        except json.JSONDecodeError:
+            continue
+        commit = str((payload.get("source_revision") or {}).get("commit") or "").strip()
+        if commit and commit not in seen:
+            seen.add(commit)
+            commits.append(commit)
+    return commits
+
+
+def commits_by_trading_day(round_trips: list[RoundTrip]) -> dict[str, list[str]]:
+    by_day: dict[str, set[str]] = defaultdict(set)
+    for trade in round_trips:
+        if trade.source_commit:
+            by_day[trade_day(trade)].add(trade.source_commit)
+    return {day: sorted(commits) for day, commits in by_day.items()}
+
+
+def apply_trader_log_commit_fallback(by_day_summary: dict, round_trips: list[RoundTrip], trader_log: Path | None) -> None:
+    if any(item.get("commits") for item in by_day_summary.values()):
+        return
+    if trader_log is None:
+        return
+    commits = load_commits_from_trader_log(trader_log)
+    if len(commits) != 1:
+        return
+    for day in by_day_summary:
+        if any(trade_day(trade) == day for trade in round_trips):
+            by_day_summary[day]["commits"] = commits
+
+
+def format_day_commits(commits: list[str]) -> str:
+    return ", ".join(commits)
+
+
+def summarize(round_trips: list[RoundTrip], unmatched: list[dict], trader_log: Path | None = None) -> dict:
     positions = build_position_round_trips(round_trips)
     wins = [trade for trade in round_trips if trade.pnl > 0]
     losses = [trade for trade in round_trips if trade.pnl < 0]
@@ -371,6 +427,12 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         by_day[day].append(trade)
         by_day_strategy[day][trade.strategy or "unknown"].append(trade)
 
+    by_day_summary = summarize_groups(by_day)
+    day_commits = commits_by_trading_day(round_trips)
+    for day, item in by_day_summary.items():
+        item["commits"] = day_commits.get(day, [])
+    apply_trader_log_commit_fallback(by_day_summary, round_trips, trader_log)
+
     return {
         "positions": summarize_positions(positions),
         "trades": len(round_trips),
@@ -396,7 +458,7 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict]) -> dict:
         "by_exit_reason": summarize_groups(by_reason),
         "by_strategy": summarize_groups(by_strategy),
         "by_entry_market_regime": summarize_groups(by_entry_market_regime),
-        "by_day": summarize_groups(by_day),
+        "by_day": by_day_summary,
         "by_day_strategy": summarize_nested_groups(by_day_strategy),
         "by_entry_time_et": summarize_entry_time_hour_et(round_trips),
         "by_day_entry_time_et": summarize_entry_time_hour_et_by_entry_day(round_trips),
@@ -820,10 +882,11 @@ def _print_text_details(summary: dict, positions: dict) -> None:
                 _format_r(item["expectancy_r"]),
                 _format_pnl(-item["max_drawdown"]),
                 f"{item['win_rate']:.1%}",
+                format_day_commits(item.get("commits", [])),
             ]
             for day, item in sorted(summary["by_day"].items())
         ]
-        _print_table(["Day", "Trades", "P/L", "Expect", "Max DD", "Win%"], rows)
+        _print_table(["Day", "Trades", "P/L", "Expect", "Max DD", "Win%", "Commit"], rows)
 
     if positions.get("by_strategy"):
         _print_section("Position Strategies")
@@ -945,7 +1008,12 @@ def print_text(summary: dict) -> None:
     _print_text_summary(summary, positions)
 
 
-def analyze(path: Path, strategy: str | None = None, target_date: str | None = None) -> dict:
+def analyze(
+    path: Path,
+    strategy: str | None = None,
+    target_date: str | None = None,
+    trader_log: Path | None = None,
+) -> dict:
     events = load_events(path)
     if target_date:
         events = [event for event in events if event_day(event) == target_date]
@@ -953,7 +1021,8 @@ def analyze(path: Path, strategy: str | None = None, target_date: str | None = N
     if strategy:
         needle = strategy.strip().lower()
         round_trips = [t for t in round_trips if (t.strategy or "").lower() == needle]
-    return summarize(round_trips, unmatched)
+    log_path = trader_log if trader_log is not None else default_trader_log_path(path)
+    return summarize(round_trips, unmatched, log_path)
 
 
 def parse_target_date(value: str) -> str:
@@ -978,13 +1047,19 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Only include round-trips for this strategy (e.g. opening_impulse). Matches journal strategy name.",
     )
+    parser.add_argument(
+        "--trader-log",
+        type=Path,
+        default=None,
+        help="Path to trader.log for source commit fallback (default: logs/trader.log next to the journal).",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON summary.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    summary = analyze(args.journal, strategy=args.strategy or None, target_date=args.date or None)
+    summary = analyze(args.journal, strategy=args.strategy or None, target_date=args.date or None, trader_log=args.trader_log)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:

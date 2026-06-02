@@ -16,8 +16,15 @@ from order_prefixes import CLIENT_ORDER_ID_ROOT, strategy_order_prefix
 
 LOG = logging.getLogger(__name__)
 TRADE_JOURNAL_FILE = Path("logs") / "trade_journal.jsonl"
+SOURCE_COMMIT: str | None = None
 FILLED_ORDER_STATUSES = {"filled"}
 FINAL_ORDER_STATUSES = {"canceled", "done_for_day", "expired", "rejected", "suspended"}
+
+
+def set_source_commit(commit: str | None) -> None:
+    global SOURCE_COMMIT
+    value = str(commit or "").strip()
+    SOURCE_COMMIT = value or None
 
 
 @dataclass
@@ -310,6 +317,8 @@ class PositionTracker:
             entry["exit_stage"] = fill.exit_stage
         if fill.order_id:
             entry["order_id"] = fill.order_id
+        if SOURCE_COMMIT:
+            entry["source_commit"] = SOURCE_COMMIT
 
         try:
             TRADE_JOURNAL_FILE.parent.mkdir(parents=True, exist_ok=True)

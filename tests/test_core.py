@@ -804,6 +804,94 @@ class CoreTradingTests(unittest.TestCase):
         self.assertLess(alpha_index, beta_index)
         self.assertLess(beta_index, zeta_index)
 
+    def test_trade_journal_trading_days_include_source_commits(self):
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy",
+                "AAPL",
+                market_ms(2026, 5, 4, 10, 0),
+                10,
+                100.0,
+                0.0,
+                "breakout_power",
+                "entry",
+                "buy-1",
+                source_commit="aaa1111",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "AAPL",
+                market_ms(2026, 5, 4, 10, 5),
+                10,
+                101.0,
+                10.0,
+                "breakout_power",
+                "target",
+                "sell-1",
+                source_commit="aaa1111",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy",
+                "MSFT",
+                market_ms(2026, 5, 5, 10, 0),
+                5,
+                200.0,
+                0.0,
+                "breakout_power",
+                "entry",
+                "buy-2",
+                source_commit="bbb2222",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "MSFT",
+                market_ms(2026, 5, 5, 10, 5),
+                5,
+                199.0,
+                -5.0,
+                "breakout_power",
+                "stop loss",
+                "sell-2",
+                source_commit="bbb2222",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "buy",
+                "NVDA",
+                market_ms(2026, 5, 5, 11, 0),
+                2,
+                500.0,
+                0.0,
+                "breakout_power",
+                "entry",
+                "buy-3",
+                source_commit="ccc3333",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "NVDA",
+                market_ms(2026, 5, 5, 11, 5),
+                2,
+                501.0,
+                2.0,
+                "breakout_power",
+                "target",
+                "sell-3",
+                source_commit="ccc3333",
+            ),
+        ]
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(round_trips, unmatched)
+
+        self.assertEqual(summary["by_day"]["2026-05-04"]["commits"], ["aaa1111"])
+        self.assertEqual(summary["by_day"]["2026-05-05"]["commits"], ["bbb2222", "ccc3333"])
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            analyze_trade_journal.print_text(summary)
+        trading_days = out.getvalue().split("Trading Days", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("aaa1111", trading_days)
+        self.assertIn("bbb2222, ccc3333", trading_days)
+
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
         events = [
             analyze_trade_journal.TradeEvent(
@@ -2925,6 +3013,42 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertAlmostEqual(rows[1]["cumulative_daily_pnl"], 3.3)
         finally:
             execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
+
+    def test_position_tracker_writes_source_commit_to_trade_journal(self):
+        old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
+        old_source_commit = execution_module.SOURCE_COMMIT
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                execution_module.TRADE_JOURNAL_FILE = Path(tmpdir) / "logs" / "trade_journal.jsonl"
+                execution_module.set_source_commit("abc1234")
+                settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+                tracker = PositionTracker(settings)
+                signal = Signal(
+                    strategy="opening_impulse",
+                    symbol="AAPL",
+                    side="BUY",
+                    price=100.0,
+                    timestamp_ms=market_ms(2026, 4, 24, 9, 35),
+                    change_pct=0.004,
+                    volume_ratio=3.0,
+                    spread_bps=4.0,
+                    reason="test impulse",
+                )
+                tracker.record_entry(signal, shares=1, fill_price=100.0, reason="test impulse", order_id="buy-1")
+                tracker.record_exit(
+                    "AAPL",
+                    shares=1,
+                    price=101.0,
+                    timestamp_ms=market_ms(2026, 4, 24, 9, 40),
+                    reason="target profit",
+                    order_id="sell-1",
+                )
+                rows = [json.loads(line) for line in execution_module.TRADE_JOURNAL_FILE.read_text().splitlines()]
+                self.assertEqual(rows[0]["source_commit"], "abc1234")
+                self.assertEqual(rows[1]["source_commit"], "abc1234")
+        finally:
+            execution_module.TRADE_JOURNAL_FILE = old_trade_journal_file
+            execution_module.set_source_commit(old_source_commit)
 
     def test_position_tracker_logs_runner_effectiveness_metrics(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
@@ -6901,6 +7025,30 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(snapshot["spike"]["start_minute"], settings.spike_start_minute)
         self.assertEqual(snapshot["spike"]["end_minute"], settings.spike_end_minute)
         self.assertEqual(snapshot["spike"]["lookback_seconds"], settings.spike_lookback_seconds)
+
+    def test_resolve_source_revision_uses_env_fallback_when_git_unavailable(self):
+        with patch.object(
+            trading_main,
+            "resolve_source_revision",
+            wraps=trading_main.resolve_source_revision,
+        ) as wrapped:
+            with patch.object(trading_main.subprocess, "run", side_effect=FileNotFoundError):
+                revision = trading_main.resolve_source_revision(env={"SOURCE_COMMIT": "abc123def456"})
+        self.assertEqual(revision["commit"], "abc123def456")
+        self.assertEqual(revision["commit_full"], "abc123def456")
+        self.assertIsNone(revision["dirty"])
+
+    def test_runtime_settings_snapshot_includes_source_revision(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+        )
+        expected = {"commit": "597a2f4", "commit_full": "597a2f4abc", "dirty": False}
+        with patch.object(trading_main, "resolve_source_revision", return_value=expected):
+            snapshot = trading_main.runtime_settings_snapshot(settings)
+        self.assertEqual(snapshot["source_revision"], expected)
 
     def test_replay_market_data_skips_heartbeat_exit_clock(self):
         replay_settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", replay_market_data=True)
