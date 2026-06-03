@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from uuid import uuid4
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ TRADE_JOURNAL_FILE = Path("logs") / "trade_journal.jsonl"
 SOURCE_COMMIT: str | None = None
 FILLED_ORDER_STATUSES = {"filled"}
 FINAL_ORDER_STATUSES = {"canceled", "done_for_day", "expired", "rejected", "suspended"}
+INSUFFICIENT_QTY_CODE = 40310000
+SELL_REJECT_LOG_COOLDOWN_SECONDS = 30.0
 
 
 def set_source_commit(commit: str | None) -> None:
@@ -525,6 +528,7 @@ class AlpacaPaperExecutor:
     _market_clock_cache_monotonic: float = field(init=False, default=0.0)
     _market_clock_cache_ttl_seconds: float = field(init=False, default=15.0)
     _market_clock_failure_grace_seconds: float = field(init=False, default=300.0)
+    _sell_reject_warning_at: dict[str, float] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         from alpaca_client import make_clients
@@ -646,10 +650,6 @@ class AlpacaPaperExecutor:
         return fill
 
     def manage_exit(self, state, strategies_by_name, now_ms: int | None = None) -> Fill | None:
-        from alpaca.common.exceptions import APIError
-        from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading.requests import MarketOrderRequest
-
         position = self.tracker.positions.get(state.symbol)
         if not position:
             return None
@@ -735,26 +735,92 @@ class AlpacaPaperExecutor:
         if not reason:
             return None
 
+        shares_to_sell = self._resolve_sell_shares(state.symbol, position, shares_to_sell)
+        if shares_to_sell <= 0:
+            return None
+
+        return self._submit_alpaca_sell(
+            state.symbol,
+            position,
+            shares_to_sell,
+            reason,
+            event_ms,
+            mark_partial,
+            allow_retry=True,
+        )
+
+    def _submit_alpaca_sell(
+        self,
+        symbol: str,
+        position: Position,
+        shares_to_sell: int,
+        reason: str,
+        event_ms: int,
+        mark_partial: bool,
+        *,
+        allow_retry: bool,
+    ) -> Fill | None:
+        from alpaca.common.exceptions import APIError
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest
+
         request = MarketOrderRequest(
-            symbol=state.symbol,
+            symbol=symbol,
             qty=shares_to_sell,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
-            client_order_id=self._new_client_order_id(state.symbol, position.strategy, "sell", event_ms),
+            client_order_id=self._new_client_order_id(symbol, position.strategy, "sell", event_ms),
         )
         try:
             order = self.clients.trading.submit_order(order_data=request)
         except APIError as exc:
-            LOG.warning("Keeping %s open: Alpaca sell order rejected: %s", state.symbol, exc)
+            if allow_retry and self._is_insufficient_qty_error(exc):
+                available = self._available_qty_from_error(exc)
+                if available is None:
+                    available = self._alpaca_available_shares(symbol)
+                if available is not None:
+                    if available <= 0:
+                        self.tracker.positions.pop(symbol, None)
+                        self._log_sell_rejection_throttled(
+                            symbol,
+                            "Cleared local %s position after Alpaca reported no sellable shares",
+                            symbol,
+                        )
+                        return None
+                    if available != position.shares:
+                        LOG.info(
+                            "Synced %s local shares %s -> %s after Alpaca insufficient-qty reject",
+                            symbol,
+                            position.shares,
+                            available,
+                        )
+                        position.shares = available
+                    retry_qty = min(shares_to_sell, available)
+                    if retry_qty > 0 and retry_qty != shares_to_sell:
+                        return self._submit_alpaca_sell(
+                            symbol,
+                            position,
+                            retry_qty,
+                            reason,
+                            event_ms,
+                            mark_partial,
+                            allow_retry=False,
+                        )
+            self._log_sell_rejection_throttled(
+                symbol,
+                "Keeping %s open: Alpaca sell order rejected: %s",
+                symbol,
+                exc,
+            )
             return None
         settled = self._settled_fill(order)
         if settled is None:
-            LOG.info("Keeping %s open: Alpaca sell order was not confirmed filled | order=%s", state.symbol, order.id)
+            LOG.info("Keeping %s open: Alpaca sell order was not confirmed filled | order=%s", symbol, order.id)
             return None
 
         filled_shares, fill_price, order = settled
         fill = self.tracker.record_exit(
-            state.symbol,
+            symbol,
             filled_shares,
             fill_price,
             event_ms,
@@ -765,6 +831,82 @@ class AlpacaPaperExecutor:
         if fill:
             LOG.info("ALPACA PAPER SELL %s %s @ %.2f | order=%s | %s", fill.shares, fill.symbol, fill.price, order.id, reason)
         return fill
+
+    def _resolve_sell_shares(self, symbol: str, position: Position, requested: int) -> int:
+        available = self._alpaca_available_shares(symbol)
+        if available is None:
+            return requested
+
+        if available <= 0:
+            LOG.info("Clearing local %s position; Alpaca reports no open shares", symbol)
+            self.tracker.positions.pop(symbol, None)
+            return 0
+
+        if available != position.shares:
+            LOG.info(
+                "Adjusting local %s shares %s -> %s to match Alpaca available qty before sell",
+                symbol,
+                position.shares,
+                available,
+            )
+            position.shares = available
+
+        return min(requested, available)
+
+    def _alpaca_available_shares(self, symbol: str) -> int | None:
+        try:
+            positions = self.clients.trading.get_all_positions()
+        except Exception:
+            LOG.debug("Could not fetch Alpaca positions for %s before sell", symbol, exc_info=True)
+            return None
+
+        needle = symbol.upper()
+        for alpaca_position in positions:
+            if str(getattr(alpaca_position, "symbol", "")).upper() == needle:
+                return max(0, self._position_shares(alpaca_position))
+        return 0
+
+    @staticmethod
+    def _alpaca_error_payload(exc: Exception) -> dict | None:
+        text = str(exc)
+        match = re.search(r"\{.*\}", text)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _is_insufficient_qty_error(self, exc: Exception) -> bool:
+        payload = self._alpaca_error_payload(exc)
+        if payload is not None:
+            if payload.get("code") == INSUFFICIENT_QTY_CODE:
+                return True
+            message = str(payload.get("message", "")).lower()
+            if "insufficient qty" in message:
+                return True
+        return "insufficient qty" in str(exc).lower()
+
+    def _available_qty_from_error(self, exc: Exception) -> int | None:
+        payload = self._alpaca_error_payload(exc)
+        if payload is None:
+            return None
+        available = payload.get("available")
+        if available is None:
+            return None
+        try:
+            return max(0, int(float(available)))
+        except (TypeError, ValueError):
+            return None
+
+    def _log_sell_rejection_throttled(self, symbol: str, message: str, *args) -> None:
+        now = time.monotonic()
+        last_logged = self._sell_reject_warning_at.get(symbol, 0.0)
+        if now - last_logged < SELL_REJECT_LOG_COOLDOWN_SECONDS:
+            return
+        self._sell_reject_warning_at[symbol] = now
+        LOG.warning(message, *args)
 
     def _market_is_open(self) -> bool:
         now = time.monotonic()

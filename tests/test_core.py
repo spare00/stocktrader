@@ -3311,7 +3311,8 @@ class CoreTradingTests(unittest.TestCase):
             executor.clients = FakeClients(
                 [
                     FakeOrder("sell-1", status="filled", filled_qty="5", filled_avg_price="100.10"),
-                ]
+                ],
+                positions=[FakePosition("AAPL", "5", "100.0")],
             )
             state = SymbolState("AAPL")
 
@@ -3320,6 +3321,91 @@ class CoreTradingTests(unittest.TestCase):
             self.assertIsNotNone(fill)
             self.assertEqual(fill.reason.split(" | ")[0], "end-of-day flatten")
             self.assertEqual(executor.clients.trading.submitted_orders[0].symbol, "AAPL")
+        finally:
+            remove_fake_alpaca_modules()
+
+    def test_alpaca_manage_exit_clamps_sell_qty_to_alpaca_available(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["SOFI"],
+                flatten_before_close_minutes=5,
+                alpaca_fill_timeout_seconds=0.0,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor._sell_reject_warning_at = {}
+            executor.tracker.positions["SOFI"] = Position(
+                symbol="SOFI",
+                strategy="breakout_power",
+                shares=17,
+                entry_price=16.87,
+                entry_ms=market_ms(2026, 6, 4, 10, 0),
+                target_price=17.0,
+                stop_price=16.5,
+            )
+            executor.clients = FakeClients(
+                [
+                    FakeOrder("sell-1", status="filled", filled_qty="16", filled_avg_price="16.80", symbol="SOFI"),
+                ],
+                positions=[FakePosition("SOFI", "16", "16.87")],
+            )
+            state = SymbolState("SOFI")
+
+            fill = executor.manage_exit(state, {}, now_ms=market_ms(2026, 6, 4, 15, 55))
+
+            self.assertIsNotNone(fill)
+            self.assertEqual(fill.shares, 16)
+            self.assertEqual(executor.clients.trading.submitted_orders[0].qty, 16)
+            self.assertNotIn("SOFI", executor.tracker.positions)
+        finally:
+            remove_fake_alpaca_modules()
+
+    def test_alpaca_manage_exit_recovers_from_insufficient_qty_reject(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["SOFI"],
+                flatten_before_close_minutes=5,
+                alpaca_fill_timeout_seconds=0.0,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor._sell_reject_warning_at = {}
+            executor.tracker.positions["SOFI"] = Position(
+                symbol="SOFI",
+                strategy="breakout_power",
+                shares=17,
+                entry_price=16.87,
+                entry_ms=market_ms(2026, 6, 4, 10, 0),
+                target_price=17.0,
+                stop_price=16.5,
+            )
+            insufficient = FakeAPIError(
+                '{"available":"16","code":40310000,"existing_qty":"16","held_for_orders":"0",'
+                '"message":"insufficient qty available for order (requested: 17, available: 16)","symbol":"SOFI"}'
+            )
+            executor.clients = FakeClients(
+                [
+                    FakeOrder("sell-2", status="filled", filled_qty="16", filled_avg_price="16.80", symbol="SOFI"),
+                ],
+            )
+            executor.clients.trading.get_all_positions = lambda: (_ for _ in ()).throw(OSError("offline"))
+            executor.clients.trading.submit_errors = [insufficient, None]
+            state = SymbolState("SOFI")
+
+            fill = executor.manage_exit(state, {}, now_ms=market_ms(2026, 6, 4, 15, 55))
+
+            self.assertIsNotNone(fill)
+            self.assertEqual(fill.shares, 16)
+            self.assertEqual([order.qty for order in executor.clients.trading.submitted_orders], [17, 16])
+            self.assertNotIn("SOFI", executor.tracker.positions)
         finally:
             remove_fake_alpaca_modules()
 
@@ -3348,7 +3434,8 @@ class CoreTradingTests(unittest.TestCase):
             executor.clients = FakeClients(
                 [
                     FakeOrder("sell-1", status="filled", filled_qty="5", filled_avg_price="99.40"),
-                ]
+                ],
+                positions=[FakePosition("AAPL", "5", "100.0")],
             )
             executor._market_clock_cache_is_open = True
             executor._market_clock_cache_monotonic = time.monotonic() - 30
@@ -10864,6 +10951,7 @@ class FakeTrading:
         self.cash = cash
         self.submit_error = submit_error
         self.cancel_error = cancel_error
+        self.submit_errors = []
         self.cancel_called = False
         self.canceled_order_ids = []
         self.submitted_orders = []
@@ -10882,6 +10970,10 @@ class FakeTrading:
 
     def submit_order(self, order_data):
         self.submitted_orders.append(order_data)
+        if self.submit_errors:
+            error = self.submit_errors.pop(0)
+            if error is not None:
+                raise error
         if self.submit_error is not None:
             raise self.submit_error
         return self.orders.pop(0)
