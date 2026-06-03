@@ -222,6 +222,7 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_supertrend_period", "BP_SUPERTREND_PERIOD", int_env, 10),
         ("bp_supertrend_multiplier", "BP_SUPERTREND_MULTIPLIER", float_env, 2.0),
         ("bp_supertrend_exit_enabled", "BP_SUPERTREND_EXIT_ENABLED", bool_env, True),
+        ("bp_ema_bearish_exit_enabled", "BP_EMA_BEARISH_EXIT_ENABLED", bool_env, False),
         ("bp_stop_lookback_bars", "BP_STOP_LOOKBACK_BARS", int_env, 6),
         ("bp_stop_buffer_pct", "BP_STOP_BUFFER_PCT", float_env, 0.001),
         ("bp_stop_loss_pct", "BP_STOP_LOSS_PCT", float_env, 0.0042),
@@ -254,6 +255,7 @@ class BreakoutPowerStrategy(Strategy):
             "supertrend_period": settings.bp_supertrend_period,
             "supertrend_multiplier": settings.bp_supertrend_multiplier,
             "supertrend_exit_enabled": bool(settings.bp_supertrend_exit_enabled),
+            "ema_bearish_exit_enabled": bool(settings.bp_ema_bearish_exit_enabled),
             "stop_lookback_bars": settings.bp_stop_lookback_bars,
             "stop_buffer_pct": settings.bp_stop_buffer_pct,
             "stop_loss_pct": settings.bp_stop_loss_pct,
@@ -386,6 +388,13 @@ class BreakoutPowerStrategy(Strategy):
         if price is None or position.entry_price <= 0:
             return None
 
+        indicator_bars = self._indicator_bars(state)
+
+        ema_exit = self._ema_bearish_exit_decision(indicator_bars)
+        if ema_exit is not None:
+            self._clear_position_state(position.symbol)
+            return ema_exit
+
         event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
         if age_seconds < self.settings.bp_min_hold_seconds:
@@ -395,8 +404,6 @@ class BreakoutPowerStrategy(Strategy):
         if pnl_pct <= -self.settings.bp_stop_loss_pct:
             self._clear_position_state(position.symbol)
             return ExitDecision("stop loss")
-
-        indicator_bars = self._indicator_bars(state)
 
         supertrend_exit = self._supertrend_bearish_exit_decision(indicator_bars)
         if supertrend_exit is not None:
@@ -465,6 +472,19 @@ class BreakoutPowerStrategy(Strategy):
             self.settings.bp_supertrend_period,
             self.settings.bp_supertrend_multiplier,
         )
+
+    def _ema_bearish_exit_decision(self, indicator_bars: list) -> ExitDecision | None:
+        if not self.settings.bp_ema_bearish_exit_enabled:
+            return None
+
+        details = latest_breakout_power_details(
+            indicator_bars,
+            momentum_ema_period=self.settings.bp_momentum_ema_period,
+        )
+        if details is None or details.ema5_above_ema20:
+            return None
+
+        return ExitDecision("EMA5 below EMA20")
 
     def _supertrend_bearish_exit_decision(self, indicator_bars: list) -> ExitDecision | None:
         if not self.settings.bp_supertrend_exit_enabled:

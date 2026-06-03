@@ -73,7 +73,7 @@ import strategy_selectors.select_steady_intraday as select_steady_intraday
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
-from strategies.breakout_power import BreakoutPowerStrategy, BPSeries, compute_breakout_power_series
+from strategies.breakout_power import BreakoutPowerStrategy, BPBarDetails, BPSeries, compute_breakout_power_series
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
@@ -10094,6 +10094,122 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertIn("SuperTrend bearish", decision.reason)
         self.assertIn("st_cfg=10,1.0", decision.reason)
+
+    def test_breakout_power_exits_full_on_ema5_below_ema20_when_enabled(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_ema_bearish_exit_enabled=True,
+            bp_min_hold_seconds=600,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(
+            entry_price=100.0,
+            entry_ms=state.last_event_ms or market_ms(2026, 4, 24, 10, 14),
+        )
+        bearish_details = BPBarDetails(
+            score=55.0,
+            prev_score=50.0,
+            momentum=50.0,
+            avg_momentum=70.0,
+            prev_avg_momentum=68.0,
+            macd_above_signal=True,
+            macd_positive=True,
+            ao_positive=True,
+            ema5_above_ema20=False,
+            breakout_high=True,
+        )
+        with patch.object(
+            strategy,
+            "_latest_supertrend",
+            return_value=(100.5, True),
+        ), patch(
+            "strategies.breakout_power.latest_breakout_power_details",
+            return_value=bearish_details,
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "EMA5 below EMA20")
+
+    def test_breakout_power_skips_ema_bearish_exit_when_disabled(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_ema_bearish_exit_enabled=False,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_price=100.0, stop_price=99.0, initial_stop_price=99.0)
+        bearish_details = BPBarDetails(
+            score=55.0,
+            prev_score=50.0,
+            momentum=50.0,
+            avg_momentum=70.0,
+            prev_avg_momentum=68.0,
+            macd_above_signal=True,
+            macd_positive=True,
+            ao_positive=True,
+            ema5_above_ema20=False,
+            breakout_high=True,
+        )
+        with patch(
+            "strategies.breakout_power.latest_breakout_power_details",
+            return_value=bearish_details,
+        ), patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[55.0, 56.0],
+                momentums=[50.0, 50.0],
+                avg_momentums=[70.0, 72.0],
+            ),
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
+    def test_breakout_power_ema_bearish_exit_before_supertrend_and_min_hold(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_ema_bearish_exit_enabled=True,
+            bp_min_hold_seconds=600,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(
+            entry_price=100.0,
+            entry_ms=state.last_event_ms or market_ms(2026, 4, 24, 10, 14),
+        )
+        bearish_details = BPBarDetails(
+            score=55.0,
+            prev_score=50.0,
+            momentum=50.0,
+            avg_momentum=70.0,
+            prev_avg_momentum=68.0,
+            macd_above_signal=True,
+            macd_positive=True,
+            ao_positive=True,
+            ema5_above_ema20=False,
+            breakout_high=True,
+        )
+        with patch.object(
+            strategy,
+            "_latest_supertrend",
+            return_value=(100.25, False),
+        ), patch(
+            "strategies.breakout_power.latest_breakout_power_details",
+            return_value=bearish_details,
+        ):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "EMA5 below EMA20")
 
     def test_breakout_power_skips_supertrend_exit_when_disabled(self):
         settings = Settings(
