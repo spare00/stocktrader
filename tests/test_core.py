@@ -932,7 +932,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertAlmostEqual(market["returns"]["SPY"], 0.0082)
         self.assertEqual(
             analyze_trade_journal.format_day_market_context(market),
-            "risk_off | SPY +0.82%, QQQ -0.31%, IWM +0.05%",
+            "weak | SPY +0.82%, QQQ -0.31%, IWM +0.05%",
         )
 
         out = io.StringIO()
@@ -940,7 +940,7 @@ class CoreTradingTests(unittest.TestCase):
             analyze_trade_journal.print_text(summary)
         trading_days = out.getvalue().split("Trading Days", 1)[1].split("\n\n", 1)[0]
         self.assertIn("Market", trading_days)
-        self.assertIn("risk_off | SPY +0.82%", trading_days)
+        self.assertIn("weak | SPY +0.82%", trading_days)
 
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
         events = [

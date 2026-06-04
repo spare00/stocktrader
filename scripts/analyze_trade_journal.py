@@ -309,7 +309,21 @@ MARKET_REGIME_RISK_ORDER = {
     "bypassed": 5,
     "disabled": 6,
 }
+MARKET_REGIME_DISPLAY_LABELS = {
+    "panic": "panic",
+    "risk_off": "weak",
+    "neutral_hardened": "mixed_strict",
+    "neutral": "mixed",
+    "risk_on": "strong",
+}
 _MARKET_REGIME_RISK_UNKNOWN_RANK = 99
+
+
+def format_market_regime_label(regime: str | None) -> str:
+    name = (regime or "unknown").strip().lower()
+    if name == "unknown":
+        return "unknown"
+    return MARKET_REGIME_DISPLAY_LABELS.get(name, name)
 
 
 def market_regime_risk_sort_key(regime: str) -> tuple[int, str]:
@@ -487,10 +501,11 @@ def format_day_market_context(market: dict | None) -> str:
         if symbol in returns
     ]
     ret_text = ", ".join(ret_parts)
-    if regime and ret_text:
-        return f"{regime} | {ret_text}"
-    if regime:
-        return regime
+    regime_text = format_market_regime_label(regime) if regime else None
+    if regime_text and ret_text:
+        return f"{regime_text} | {ret_text}"
+    if regime_text:
+        return regime_text
     if ret_text:
         return ret_text
     return "-"
@@ -957,7 +972,7 @@ def _print_text_details(summary: dict, positions: dict) -> None:
         _print_section("Entry Market Regime")
         rows = [
             [
-                regime,
+                format_market_regime_label(regime),
                 str(item["trades"]),
                 _format_pnl(item["total_pnl"]),
                 f"{item['win_rate']:.1%}",
@@ -1019,7 +1034,7 @@ def _print_text_details(summary: dict, positions: dict) -> None:
         _print_section("Position Entry Market Regime")
         rows = [
             [
-                regime,
+                format_market_regime_label(regime),
                 str(item["positions"]),
                 _format_pnl(item["total_pnl"]),
                 f"{item['win_rate']:.1%}",
