@@ -4,7 +4,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, median
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+([a-z_]+)\b")
 STRATEGY_REGIME_RE = re.compile(r"\bregime=([a-z_]+)(?::[0-9]+(?:\.[0-9]+)?)?\b")
 SIZE_MULT_RE = re.compile(r"\bsize_mult=([0-9]+(?:\.[0-9]+)?)\b")
 RUNTIME_SETTINGS_MARKER = "Runtime settings "
+MARKET_BENCHMARK_SYMBOLS = ("SPY", "QQQ", "IWM")
 
 
 @dataclass(frozen=True)
@@ -397,7 +398,112 @@ def format_day_commits(commits: list[str]) -> str:
     return ", ".join(commits)
 
 
-def summarize(round_trips: list[RoundTrip], unmatched: list[dict], trader_log: Path | None = None) -> dict:
+def dominant_entry_regime(trades: list[RoundTrip]) -> str | None:
+    counts = Counter(
+        trade.entry_market_regime
+        for trade in trades
+        if trade.entry_market_regime and trade.entry_market_regime != "unknown"
+    )
+    if not counts:
+        return None
+    return counts.most_common(1)[0][0]
+
+
+def bar_trading_day(bar) -> str:
+    return datetime.fromtimestamp(bar.start_ms / 1000, tz=TRADING_TZ).date().isoformat()
+
+
+def fetch_daily_market_returns(trading_days: list[str]) -> dict[str, dict[str, float]]:
+    if not trading_days:
+        return {}
+    try:
+        from alpaca.data.timeframe import TimeFrame
+
+        from alpaca_client import get_bars_between, make_clients
+        from config import load_settings
+    except ImportError:
+        return {}
+
+    try:
+        settings = load_settings()
+    except Exception:
+        return {}
+    if not getattr(settings, "alpaca_api_key", None):
+        return {}
+
+    try:
+        clients = make_clients(settings)
+        start_date = date.fromisoformat(min(trading_days)) - timedelta(days=14)
+        end_date = date.fromisoformat(max(trading_days)) + timedelta(days=2)
+        start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=TRADING_TZ)
+        end_dt = datetime.combine(end_date, datetime.min.time(), tzinfo=TRADING_TZ)
+        bars_by_symbol = get_bars_between(clients, MARKET_BENCHMARK_SYMBOLS, TimeFrame.Day, start_dt, end_dt)
+    except Exception:
+        return {}
+
+    result: dict[str, dict[str, float]] = {day: {} for day in trading_days}
+    for symbol in MARKET_BENCHMARK_SYMBOLS:
+        bars = sorted(bars_by_symbol.get(symbol, []), key=lambda bar: bar.start_ms)
+        prev_close: float | None = None
+        for bar in bars:
+            day = bar_trading_day(bar)
+            if prev_close is not None and prev_close > 0 and day in result:
+                result[day][symbol] = round((bar.close - prev_close) / prev_close, 6)
+            prev_close = bar.close
+    return {day: returns for day, returns in result.items() if returns}
+
+
+def build_day_market_context(trades: list[RoundTrip], returns: dict[str, float]) -> dict:
+    return {
+        "regime": dominant_entry_regime(trades),
+        "returns": returns,
+    }
+
+
+def apply_market_context_to_by_day(
+    by_day: dict[str, list[RoundTrip]],
+    by_day_summary: dict,
+    *,
+    fetch_market_data: bool,
+    market_returns_by_day: dict[str, dict[str, float]] | None,
+) -> None:
+    days = sorted(by_day_summary)
+    if market_returns_by_day is None and fetch_market_data and days:
+        market_returns_by_day = fetch_daily_market_returns(days)
+    elif market_returns_by_day is None:
+        market_returns_by_day = {}
+    for day, item in by_day_summary.items():
+        item["market"] = build_day_market_context(by_day.get(day, []), market_returns_by_day.get(day, {}))
+
+
+def format_day_market_context(market: dict | None) -> str:
+    if not market:
+        return "-"
+    regime = market.get("regime")
+    returns = market.get("returns") or {}
+    ret_parts = [
+        f"{symbol} {'+' if returns[symbol] >= 0 else ''}{returns[symbol] * 100:.2f}%"
+        for symbol in MARKET_BENCHMARK_SYMBOLS
+        if symbol in returns
+    ]
+    ret_text = ", ".join(ret_parts)
+    if regime and ret_text:
+        return f"{regime} | {ret_text}"
+    if regime:
+        return regime
+    if ret_text:
+        return ret_text
+    return "-"
+
+
+def summarize(
+    round_trips: list[RoundTrip],
+    unmatched: list[dict],
+    trader_log: Path | None = None,
+    *,
+    fetch_market_data: bool = False,
+    market_returns_by_day: dict[str, dict[str, float]] | None = None,
+) -> dict:
     positions = build_position_round_trips(round_trips)
     wins = [trade for trade in round_trips if trade.pnl > 0]
     losses = [trade for trade in round_trips if trade.pnl < 0]
@@ -432,6 +538,12 @@ def summarize(round_trips: list[RoundTrip], unmatched: list[dict], trader_log: P
     for day, item in by_day_summary.items():
         item["commits"] = day_commits.get(day, [])
     apply_trader_log_commit_fallback(by_day_summary, round_trips, trader_log)
+    apply_market_context_to_by_day(
+        by_day,
+        by_day_summary,
+        fetch_market_data=fetch_market_data,
+        market_returns_by_day=market_returns_by_day,
+    )
 
     return {
         "positions": summarize_positions(positions),
@@ -882,11 +994,12 @@ def _print_text_details(summary: dict, positions: dict) -> None:
                 _format_r(item["expectancy_r"]),
                 _format_pnl(-item["max_drawdown"]),
                 f"{item['win_rate']:.1%}",
+                format_day_market_context(item.get("market")),
                 format_day_commits(item.get("commits", [])),
             ]
             for day, item in sorted(summary["by_day"].items())
         ]
-        _print_table(["Day", "Trades", "P/L", "Expect", "Max DD", "Win%", "Commit"], rows)
+        _print_table(["Day", "Trades", "P/L", "Expect", "Max DD", "Win%", "Market", "Commit"], rows)
 
     if positions.get("by_strategy"):
         _print_section("Position Strategies")
@@ -1013,6 +1126,9 @@ def analyze(
     strategy: str | None = None,
     target_date: str | None = None,
     trader_log: Path | None = None,
+    *,
+    fetch_market_data: bool = True,
+    market_returns_by_day: dict[str, dict[str, float]] | None = None,
 ) -> dict:
     events = load_events(path)
     if target_date:
@@ -1022,7 +1138,13 @@ def analyze(
         needle = strategy.strip().lower()
         round_trips = [t for t in round_trips if (t.strategy or "").lower() == needle]
     log_path = trader_log if trader_log is not None else default_trader_log_path(path)
-    return summarize(round_trips, unmatched, log_path)
+    return summarize(
+        round_trips,
+        unmatched,
+        log_path,
+        fetch_market_data=fetch_market_data,
+        market_returns_by_day=market_returns_by_day,
+    )
 
 
 def parse_target_date(value: str) -> str:
@@ -1054,12 +1176,23 @@ def parse_args() -> argparse.Namespace:
         help="Path to trader.log for source commit fallback (default: logs/trader.log next to the journal).",
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON summary.")
+    parser.add_argument(
+        "--no-market-data",
+        action="store_true",
+        help="Skip Alpaca daily bar fetch for SPY/QQQ/IWM context in Trading Days.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    summary = analyze(args.journal, strategy=args.strategy or None, target_date=args.date or None, trader_log=args.trader_log)
+    summary = analyze(
+        args.journal,
+        strategy=args.strategy or None,
+        target_date=args.date or None,
+        trader_log=args.trader_log,
+        fetch_market_data=not args.no_market_data,
+    )
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:

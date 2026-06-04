@@ -892,6 +892,56 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("aaa1111", trading_days)
         self.assertIn("bbb2222, ccc3333", trading_days)
 
+    def test_trade_journal_trading_days_include_market_context(self):
+        regime_reason = "entry | market_regime risk_off score=-3.75/11.25 SPY:-6.25 QQQ:4.5 IWM:-2 size_mult=0.50"
+        events = [
+            analyze_trade_journal.TradeEvent(
+                "buy",
+                "AAPL",
+                market_ms(2026, 5, 4, 10, 0),
+                10,
+                100.0,
+                0.0,
+                "breakout_power",
+                regime_reason,
+                "buy-1",
+            ),
+            analyze_trade_journal.TradeEvent(
+                "sell",
+                "AAPL",
+                market_ms(2026, 5, 4, 10, 5),
+                10,
+                101.0,
+                10.0,
+                "breakout_power",
+                "target",
+                "sell-1",
+            ),
+        ]
+        round_trips, unmatched = analyze_trade_journal.build_round_trips(events)
+        summary = analyze_trade_journal.summarize(
+            round_trips,
+            unmatched,
+            market_returns_by_day={
+                "2026-05-04": {"SPY": 0.0082, "QQQ": -0.0031, "IWM": 0.0005},
+            },
+        )
+
+        market = summary["by_day"]["2026-05-04"]["market"]
+        self.assertEqual(market["regime"], "risk_off")
+        self.assertAlmostEqual(market["returns"]["SPY"], 0.0082)
+        self.assertEqual(
+            analyze_trade_journal.format_day_market_context(market),
+            "risk_off | SPY +0.82%, QQQ -0.31%, IWM +0.05%",
+        )
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            analyze_trade_journal.print_text(summary)
+        trading_days = out.getvalue().split("Trading Days", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Market", trading_days)
+        self.assertIn("risk_off | SPY +0.82%", trading_days)
+
     def test_trade_journal_analyzer_groups_by_strategy_and_day(self):
         events = [
             analyze_trade_journal.TradeEvent(
