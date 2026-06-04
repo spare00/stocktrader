@@ -466,6 +466,19 @@ class Settings:
     bp_consecutive_loss_pause_minutes: int | None = None
     bp_consecutive_loss_stop_count: int | None = None
 
+    egc_start_minute: int = 0
+    egc_end_minute: int = 360
+    egc_warmup_bars: int = 25
+    egc_max_spread_bps: float = 8.0
+    egc_partial_size: float = 0.5
+    egc_stop_lookback_bars: int = 6
+    egc_stop_buffer_pct: float = 0.001
+    egc_stop_loss_pct: float = 0.004
+    egc_require_ema5_above_ema10: bool = True
+    egc_max_trades_per_symbol_per_session: int = 2
+    egc_symbol_loss_lock_count: int = 1
+    egc_respect_consecutive_loss_limits: bool = True
+
     ai_review: bool = False
     news_hot_positive_only: bool = True
     news_hot_min_sentiment_score: float = 0.5

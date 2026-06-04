@@ -38,6 +38,7 @@ _SELECTOR_COMMAND_HINTS: dict[str, str] = {
     "macd_early_impulse": ".venv/bin/python strategy_selectors/select_macd_early_impulse.py --top 12",
     "stoch_macd_reversal": ".venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12",
     "breakout_power": ".venv/bin/python strategy_selectors/select_breakout_power.py --top 12",
+    "ema_gap_cross": ".venv/bin/python strategy_selectors/select_ema_gap_cross.py --top 12",
 }
 
 

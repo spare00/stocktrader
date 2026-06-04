@@ -74,6 +74,14 @@ from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_ga
 from strategies import available_strategy_names, build_strategies
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.breakout_power import BreakoutPowerStrategy, BPBarDetails, BPSeries, compute_breakout_power_series
+from strategies.ema_gap_cross import (
+    EmaGapCrossStrategy,
+    ema20_first_decline_from_peak,
+    ema_crossed_above,
+    ema_crossed_below,
+    recent_ema_cross_above,
+)
+import strategy_selectors.select_ema_gap_cross as select_ema_gap_cross
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
@@ -489,6 +497,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(
             selector_command_for_strategy("breakout_power"),
             ".venv/bin/python strategy_selectors/select_breakout_power.py --top 12",
+        )
+        self.assertEqual(
+            selector_command_for_strategy("ema_gap_cross"),
+            ".venv/bin/python strategy_selectors/select_ema_gap_cross.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -7511,6 +7523,8 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(
             available_strategy_names(),
             [
+                "breakout_power",
+                "ema_gap_cross",
                 "gap_and_go",
                 "macd_early_impulse",
                 "stoch_macd_reversal",
@@ -10348,6 +10362,72 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "EMA5 below EMA20")
 
+    def test_ema_cross_helpers_detect_cross_and_peak_decline(self):
+        fast = [1.0, 1.0, 2.0]
+        slow = [2.0, 1.5, 1.5]
+        self.assertTrue(ema_crossed_above(fast, slow))
+        self.assertFalse(ema_crossed_below(fast, slow))
+        self.assertTrue(ema_crossed_below([2.0, 2.0, 1.0], [1.0, 1.5, 1.5]))
+        crossed, bars_since = recent_ema_cross_above([8.0, 8.2, 8.4, 9.0, 9.5], [9.0, 8.9, 8.8, 8.7, 9.2], lookback=5)
+        self.assertTrue(crossed)
+        self.assertEqual(bars_since, 1)
+        declined, peak = ema20_first_decline_from_peak([10.0, 10.5, 10.3], 10.5)
+        self.assertTrue(declined)
+        self.assertEqual(peak, 10.5)
+        declined, peak = ema20_first_decline_from_peak([10.0, 10.2], None)
+        self.assertFalse(declined)
+        self.assertEqual(peak, 10.2)
+
+    def test_ema_gap_cross_emits_buy_on_golden_cross(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"])
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        ema5 = [9.0] * 43 + [9.5, 10.5]
+        ema10 = [8.5] * 44 + [10.0]
+        ema20 = [10.0] * 44 + [10.0]
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "ema_gap_cross")
+        self.assertIn("golden", signal.reason)
+
+    def test_ema_gap_cross_partial_exit_on_ema20_peak_decline(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_partial_size=0.5)
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        state.last_event_kind = "bar"
+        position = self._bp_position(strategy="ema_gap_cross", shares=10)
+        strategy.on_entry_fill(
+            types.SimpleNamespace(strategy="ema_gap_cross", symbol="AAPL", timestamp_ms=position.entry_ms)
+        )
+        strategy._position_states["AAPL"].ema20_peak = 10.5
+        ema5 = [10.6] * 45
+        ema10 = [10.2] * 45
+        ema20 = [10.0] * 44 + [10.3]
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "EMA20 first decline from peak")
+        self.assertEqual(decision.shares, 5)
+        self.assertTrue(decision.mark_partial)
+
+    def test_ema_gap_cross_full_exit_on_death_cross(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"])
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position(strategy="ema_gap_cross", partial_exit_taken=True)
+        ema5 = [10.5] * 44 + [9.5]
+        ema10 = [10.0] * 45
+        ema20 = [10.0] * 45
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "EMA5 death cross below EMA20")
+        self.assertIsNone(decision.shares)
+
     def test_breakout_power_skips_supertrend_exit_when_disabled(self):
         settings = Settings(
             symbols=["AAPL"],
@@ -10809,6 +10889,46 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(series.scores[-1])
         self.assertGreaterEqual(series.scores[-1], 0.0)
         self.assertLessEqual(series.scores[-1], 100.0)
+
+    def test_ema_gap_cross_selector_requires_recent_daily_golden_cross(self):
+        def daily_bars_from_closes(symbol: str, closes: list[float]) -> list[Bar]:
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars: list[Bar] = []
+            for index, close in enumerate(closes):
+                previous = closes[index - 1] if index else close
+                high = max(close, previous) * 1.02
+                low = min(close, previous) * 0.98
+                volume = 2_000_000 if index == len(closes) - 1 else 1_000_000
+                bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
+            return bars
+
+        fresh_cross = [90.0] * 30 + [88, 89, 92, 98, 105, 112, 120]
+        stale = fresh_cross + [121, 122, 123, 124, 125, 126]
+
+        candidates, rejected, stage_counts = select_ema_gap_cross.rank_candidates(
+            ["FRESH", "STALE"],
+            {
+                "FRESH": daily_bars_from_closes("FRESH", fresh_cross),
+                "STALE": daily_bars_from_closes("STALE", stale),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        reject_codes = {item.symbol: item.code for item in rejected}
+        self.assertIn("FRESH", selected)
+        self.assertEqual(reject_codes.get("STALE"), "golden_cross")
+        self.assertLessEqual(selected["FRESH"].bars_since_cross, select_ema_gap_cross.DAILY_CROSS_LOOKBACK)
+        self.assertGreaterEqual(stage_counts["passed_recent_golden_cross"], 1)
+
+        plan = select_ema_gap_cross.deterministic_plan(
+            candidates,
+            rejected,
+            "ema_gap_cross",
+            1,
+            filter_stage_counts=stage_counts,
+        )
+        self.assertEqual(plan["symbols"][0], "FRESH")
+        self.assertEqual(plan["settings"]["filter_thresholds"]["daily_cross_lookback"], 5)
 
     def test_breakout_power_selector_prefers_green_above_trend_candidate(self):
         def daily_bars_from_closes(symbol: str, closes: list[float], *, volume_scale: float = 1.0) -> list[Bar]:
