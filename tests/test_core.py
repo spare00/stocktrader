@@ -80,6 +80,7 @@ from strategies.ema_gap_cross import (
     ema_crossed_above,
     ema_crossed_above_after_bars_below,
     ema_fast_below_slow_for_bars,
+    find_golden_cross_after_below,
     recent_ema_cross_above,
 )
 import strategy_selectors.select_ema_gap_cross as select_ema_gap_cross
@@ -10385,13 +10386,56 @@ class CoreTradingTests(unittest.TestCase):
         state = self._bp_state()
         ema5 = [9.0] * 42 + [9.7, 9.8, 10.5]
         ema10 = [9.0] * 42 + [10.0, 10.1, 10.2]
-        ema20 = [9.0] * 42 + [10.0, 9.9, 10.0]
+        ema20 = [9.0] * 42 + [10.0, 9.9, 10.1]
         with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
             signal = strategy.evaluate(state)
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal.strategy, "ema_gap_cross")
         self.assertIn("golden", signal.reason)
+
+    def test_find_golden_cross_after_below_uses_recent_cross_window(self):
+        ema5 = [9.0, 9.1, 9.2, 9.3, 10.0, 10.2, 10.4]
+        ema20 = [10.0, 9.9, 9.8, 9.7, 9.6, 10.1, 10.0]
+        found, bars_since, cross_index = find_golden_cross_after_below(
+            ema5,
+            ema20,
+            bars_below=2,
+            lookback=3,
+        )
+        self.assertTrue(found)
+        self.assertEqual(bars_since, 2)
+        self.assertEqual(cross_index, 4)
+
+    def test_ema_gap_cross_emits_buy_when_cross_was_one_bar_ago(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_cross_lookback_bars=3,
+            egc_require_ema20_rising=False,
+        )
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        ema5 = [9.0] * 42 + [9.7, 9.8, 10.5, 10.6]
+        ema10 = [9.0] * 42 + [10.0, 10.1, 10.2, 10.3]
+        ema20 = [9.0] * 42 + [10.0, 9.9, 10.0, 10.1]
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertIn("cross 1 bar(s) ago", signal.reason)
+
+    def test_ema_gap_cross_rejects_falling_ema20_bounce(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_require_ema20_rising=True)
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        ema5 = [9.0] * 42 + [9.7, 9.8, 10.5]
+        ema10 = [9.0] * 42 + [10.0, 10.1, 10.2]
+        ema20 = [9.0] * 42 + [10.2, 10.1, 10.0]
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
 
     def test_ema_gap_cross_rejects_thin_gap(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_min_gap_pct=0.001)

@@ -70,7 +70,7 @@ def ema_crossed_above_after_bars_below(
     bars_below: int = 2,
     index: int = -1,
 ) -> bool:
-    """True when fast crosses above slow right after staying below slow for `bars_below` bars."""
+    """True when fast crosses above slow right after staying at/below slow for `bars_below` bars."""
     if not ema_crossed_above(fast, slow, index=index):
         return False
     if bars_below <= 0:
@@ -78,7 +78,35 @@ def ema_crossed_above_after_bars_below(
     i = index if index >= 0 else len(fast) + index
     if i < bars_below:
         return False
-    return all(fast[i - 1 - offset] < slow[i - 1 - offset] for offset in range(bars_below))
+    return all(fast[i - 1 - offset] <= slow[i - 1 - offset] for offset in range(bars_below))
+
+
+def find_golden_cross_after_below(
+    fast: list[float],
+    slow: list[float],
+    *,
+    bars_below: int = 2,
+    lookback: int = 3,
+) -> tuple[bool, int | None, int | None]:
+    """Return (found, bars_since_cross, cross_index) for the freshest qualifying golden cross."""
+    if len(fast) < 2 or len(slow) < 2 or len(fast) != len(slow):
+        return False, None, None
+    if fast[-1] <= slow[-1]:
+        return False, None, None
+    window = max(1, lookback)
+    start = max(1, len(fast) - window)
+    best_bars_since: int | None = None
+    best_index: int | None = None
+    for index in range(len(fast) - 1, start - 1, -1):
+        if not ema_crossed_above_after_bars_below(fast, slow, bars_below=bars_below, index=index):
+            continue
+        bars_since = len(fast) - 1 - index
+        if best_bars_since is None or bars_since < best_bars_since:
+            best_bars_since = bars_since
+            best_index = index
+    if best_bars_since is None or best_index is None:
+        return False, None, None
+    return True, best_bars_since, best_index
 
 
 def ema_fast_below_slow_for_bars(fast: list[float], slow: list[float], bars: int) -> bool:
@@ -111,19 +139,21 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_start_minute", "EGC_START_MINUTE", int_env, 0),
         ("egc_end_minute", "EGC_END_MINUTE", int_env, 360),
         ("egc_warmup_bars", "EGC_WARMUP_BARS", int_env, _MIN_WARMUP_BARS),
-        ("egc_max_spread_bps", "EGC_MAX_SPREAD_BPS", float_env, 8.0),
-        ("egc_min_gap_pct", "EGC_MIN_GAP_PCT", float_env, 0.0005),
+        ("egc_max_spread_bps", "EGC_MAX_SPREAD_BPS", float_env, 12.0),
+        ("egc_min_gap_pct", "EGC_MIN_GAP_PCT", float_env, 0.0003),
         ("egc_partial_size", "EGC_PARTIAL_SIZE", float_env, 0.5),
         ("egc_min_hold_seconds", "EGC_MIN_HOLD_SECONDS", int_env, 180),
         ("egc_partial_grace_bars", "EGC_PARTIAL_GRACE_BARS", int_env, 3),
         ("egc_entry_below_bars", "EGC_ENTRY_BELOW_BARS", int_env, 2),
+        ("egc_cross_lookback_bars", "EGC_CROSS_LOOKBACK_BARS", int_env, 3),
+        ("egc_require_ema20_rising", "EGC_REQUIRE_EMA20_RISING", bool_env, True),
         ("egc_death_cross_confirm_bars", "EGC_DEATH_CROSS_CONFIRM_BARS", int_env, 2),
         ("egc_stop_lookback_bars", "EGC_STOP_LOOKBACK_BARS", int_env, 6),
         ("egc_stop_buffer_pct", "EGC_STOP_BUFFER_PCT", float_env, 0.001),
         ("egc_stop_loss_pct", "EGC_STOP_LOSS_PCT", float_env, 0.004),
         ("egc_require_ema_stack", "EGC_REQUIRE_EMA_STACK", bool_env, True),
-        ("egc_max_trades_per_symbol_per_session", "EGC_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 2),
-        ("egc_symbol_loss_lock_count", "EGC_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
+        ("egc_max_trades_per_symbol_per_session", "EGC_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 3),
+        ("egc_symbol_loss_lock_count", "EGC_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
         ("egc_respect_consecutive_loss_limits", "EGC_RESPECT_CONSECUTIVE_LOSS_LIMITS", bool_env, True),
         ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", int_env, 0),
     )
@@ -143,6 +173,8 @@ class EmaGapCrossStrategy(Strategy):
             "min_hold_seconds": settings.egc_min_hold_seconds,
             "partial_grace_bars": settings.egc_partial_grace_bars,
             "entry_below_bars": settings.egc_entry_below_bars,
+            "cross_lookback_bars": settings.egc_cross_lookback_bars,
+            "require_ema20_rising": bool(settings.egc_require_ema20_rising),
             "death_cross_confirm_bars": settings.egc_death_cross_confirm_bars,
             "stop_lookback_bars": settings.egc_stop_lookback_bars,
             "stop_buffer_pct": settings.egc_stop_buffer_pct,
@@ -159,6 +191,7 @@ class EmaGapCrossStrategy(Strategy):
         self.market_tz = MARKET_TZ
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
         self._position_states: dict[str, _EGCPositionState] = {}
+        self._last_signaled_cross_index: dict[str, int] = {}
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "bar":
@@ -188,14 +221,33 @@ class EmaGapCrossStrategy(Strategy):
 
         ema5, ema10, ema20 = ema
         below_bars = max(0, self.settings.egc_entry_below_bars)
-        if not ema_crossed_above_after_bars_below(ema5, ema20, bars_below=below_bars):
+        lookback = max(1, self.settings.egc_cross_lookback_bars)
+        found, bars_since, cross_index = find_golden_cross_after_below(
+            ema5,
+            ema20,
+            bars_below=below_bars,
+            lookback=lookback,
+        )
+        if not found or cross_index is None:
             return self._reject(
                 state,
                 "cross",
                 (
-                    f"no EMA5 golden cross right after {below_bars} bars below EMA20 "
+                    f"no EMA5 golden cross within {lookback} bars after "
+                    f"{below_bars} bars at/below EMA20 "
                     f"({ema5[-2]:.4f}<={ema20[-2]:.4f} -> {ema5[-1]:.4f}>{ema20[-1]:.4f})"
                 ),
+            )
+
+        symbol = state.symbol.strip().upper()
+        if self._last_signaled_cross_index.get(symbol) == cross_index:
+            return self._reject(state, "cross", f"golden cross at bar {cross_index} already signaled")
+
+        if self.settings.egc_require_ema20_rising and ema20[-1] < ema20[-2]:
+            return self._reject(
+                state,
+                "trend",
+                f"EMA20 not rising ({ema20[-2]:.4f} -> {ema20[-1]:.4f})",
             )
 
         gap = ema5[-1] - ema20[-1]
@@ -217,6 +269,7 @@ class EmaGapCrossStrategy(Strategy):
             )
 
         stop_price = self._entry_stop_price(indicator_bars, last.ask)
+        self._last_signaled_cross_index[symbol] = cross_index
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -228,7 +281,7 @@ class EmaGapCrossStrategy(Strategy):
             spread_bps=last.spread_bps,
             reason=(
                 f"ema_gap_cross golden: EMA5 {ema5[-1]:.4f} > EMA10 {ema10[-1]:.4f} > EMA20 {ema20[-1]:.4f}, "
-                f"gap {gap_pct:.4%}"
+                f"gap {gap_pct:.4%}, cross {bars_since} bar(s) ago"
             ),
             stop_price=stop_price,
         )
