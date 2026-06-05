@@ -31,7 +31,7 @@ DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("ema_gap_cross")
 DEFAULT_DAILY_LOOKBACK_DAYS = 120
 MIN_DAILY_BAR_COUNT = 30
-DAILY_CROSS_LOOKBACK = 5
+DAILY_CROSS_LOOKBACK = 10
 DAILY_EMA_FAST = 5
 DAILY_EMA_MID = 10
 DAILY_EMA_SLOW = 20
@@ -40,7 +40,7 @@ DAILY_VOLUME_RATIO_TARGET = 1.0
 DAILY_ATR_PERIOD = 14
 DAILY_RANGE_LOOKBACK = 20
 DAILY_MEDIAN_DOLLAR_VOLUME_LOOKBACK = 20
-DAILY_MIN_MEDIAN_DOLLAR_VOLUME = 2_000_000.0
+DAILY_MIN_MEDIAN_DOLLAR_VOLUME = 1_000_000.0
 DAILY_MIDCAP_SWEET_MIN = 5_000_000.0
 DAILY_MIDCAP_SWEET_MAX = 80_000_000.0
 DAILY_MEGA_CAP_PENALTY_START = 150_000_000.0
@@ -73,6 +73,8 @@ class EmaGapCrossCandidate:
     ema20: float
     ema_gap_pct: float
     bars_since_cross: int
+    has_recent_golden_cross: bool
+    ema5_above_ema20: bool
     ema20_slope_pct: float
     ema5_above_ema10: bool
     daily_volume_ratio: float
@@ -214,10 +216,19 @@ def _bounded(value: float, *, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def _setup_stage(*, bars_since_cross: int, ema5_above_ema10: bool, ema20_slope_pct: float) -> str:
+def _setup_stage(
+    *,
+    has_recent_golden_cross: bool,
+    bars_since_cross: int,
+    ema5_above_ema10: bool,
+    ema20_slope_pct: float,
+    cross_lookback: int,
+) -> str:
+    if not has_recent_golden_cross:
+        return "no_golden_cross"
     if bars_since_cross <= 1 and ema5_above_ema10 and ema20_slope_pct > 0:
         return "fresh_cross"
-    if bars_since_cross <= DAILY_CROSS_LOOKBACK and ema5_above_ema10:
+    if bars_since_cross <= cross_lookback and ema5_above_ema10:
         return "recent_cross"
     return "holding"
 
@@ -252,6 +263,7 @@ def evaluate_symbol(
     symbol: str,
     bars: list[Bar],
     *,
+    cross_lookback: int = DAILY_CROSS_LOOKBACK,
     stage_counts: dict[str, int] | None = None,
 ) -> tuple[EmaGapCrossCandidate | None, CandidateReject | None]:
     def _bump(key: str) -> None:
@@ -272,54 +284,51 @@ def evaluate_symbol(
 
     _bump("passed_indicator_data")
 
-    recent_cross, bars_since_cross = recent_ema_cross_above(
+    lookback = max(1, cross_lookback)
+    recent_cross, bars_since = recent_ema_cross_above(
         ema5,
         ema20,
-        lookback=DAILY_CROSS_LOOKBACK,
+        lookback=lookback,
     )
-    if not recent_cross or bars_since_cross is None:
-        return None, CandidateReject(
-            symbol,
-            "golden_cross",
-            f"no daily EMA{DAILY_EMA_FAST}/EMA{DAILY_EMA_SLOW} cross in last {DAILY_CROSS_LOOKBACK} bars",
-        )
-    _bump("passed_recent_golden_cross")
+    has_recent_golden_cross = bool(recent_cross and bars_since is not None)
+    bars_since_cross = bars_since if has_recent_golden_cross else lookback + 1
 
     ema5_now = ema5[-1]
     ema10_now = ema10[-1]
     ema20_now = ema20[-1]
-    if ema5_now <= ema20_now:
-        return None, CandidateReject(
-            symbol,
-            "alignment",
-            f"EMA{DAILY_EMA_FAST} {ema5_now:.4f} not above EMA{DAILY_EMA_SLOW} {ema20_now:.4f}",
-        )
-    _bump("passed_ema5_above_ema20")
-
+    ema5_above_ema20 = ema5_now > ema20_now
     ema5_above_ema10 = ema5_now > ema10_now
     ema20_prev = ema20[-2]
     ema20_slope_pct = (ema20_now - ema20_prev) / ema20_prev if ema20_prev > 0 else 0.0
     ema_gap_pct = (ema5_now - ema20_now) / ema20_now if ema20_now > 0 else 0.0
     daily_volume_ratio = _daily_volume_ratio(ordered)
-    cross_index = len(ordered) - 1 - bars_since_cross
-    cross_day_volume_ratio = _volume_ratio_at_index(ordered, cross_index)
+    cross_day_volume_ratio = (
+        _volume_ratio_at_index(ordered, len(ordered) - 1 - bars_since_cross)
+        if has_recent_golden_cross
+        else 0.0
+    )
     daily_atr_pct = _atr_pct(ordered)
     daily_range_pct = _range_pct(ordered)
     median_dollar_volume = _median_dollar_volume(ordered)
     last_daily_change_pct = _latest_daily_change_pct(closes)
 
-    if median_dollar_volume < DAILY_MIN_MEDIAN_DOLLAR_VOLUME:
-        return None, CandidateReject(
-            symbol,
-            "liquidity",
-            (
-                f"median dollar volume {median_dollar_volume:.0f} "
-                f"< {DAILY_MIN_MEDIAN_DOLLAR_VOLUME:.0f}"
-            ),
-        )
-    _bump("passed_liquidity_floor")
-
     quality_flags: list[str] = []
+    if has_recent_golden_cross:
+        _bump("passed_recent_golden_cross")
+    else:
+        quality_flags.append(f"no daily EMA{DAILY_EMA_FAST}/EMA{DAILY_EMA_SLOW} cross in last {lookback} bars")
+    if ema5_above_ema20:
+        _bump("passed_ema5_above_ema20")
+    else:
+        quality_flags.append(
+            f"EMA{DAILY_EMA_FAST} {ema5_now:.4f} not above EMA{DAILY_EMA_SLOW} {ema20_now:.4f}"
+        )
+    if median_dollar_volume >= DAILY_MIN_MEDIAN_DOLLAR_VOLUME:
+        _bump("passed_liquidity_floor")
+    else:
+        quality_flags.append(
+            f"median dollar volume {median_dollar_volume:.0f} < {DAILY_MIN_MEDIAN_DOLLAR_VOLUME:.0f}"
+        )
     if ema5_above_ema10:
         _bump("passed_ema5_above_ema10")
     else:
@@ -364,10 +373,12 @@ def evaluate_symbol(
     else:
         quality_flags.append(f"EMA gap {ema_gap_pct:.2%} > {DAILY_MAX_GAP_EXTENSION_PCT:.2%}")
 
-    recency_score = max(0.0, 24.0 - (bars_since_cross * 4.0))
+    recency_score = max(0.0, 24.0 - (bars_since_cross * 4.0)) if has_recent_golden_cross else 0.0
+    golden_cross_bonus = 42.0 if has_recent_golden_cross else 0.0
+    ema20_alignment_score = 16.0 if ema5_above_ema20 else -14.0
     alignment_score = 10.0 if ema5_above_ema10 else -8.0
     slope_score = _bounded(ema20_slope_pct * 400.0, low=-6.0, high=10.0)
-    gap_score = _bounded(ema_gap_pct * 160.0, low=0.0, high=14.0)
+    gap_score = _bounded(ema_gap_pct * 160.0, low=0.0, high=14.0) if ema5_above_ema20 else 0.0
     volume_component = _volume_score(daily_volume_ratio, cross_day_volume_ratio)
     volatility_component = _volatility_score(daily_atr_pct, daily_range_pct)
     momentum_score = _bounded(last_daily_change_pct * 2.0, low=-8.0, high=14.0)
@@ -379,7 +390,9 @@ def evaluate_symbol(
         ) * 18.0
     extension_penalty = max(0.0, ema_gap_pct - DAILY_MAX_GAP_EXTENSION_PCT) * 120.0
     score = (
-        recency_score
+        golden_cross_bonus
+        + recency_score
+        + ema20_alignment_score
         + alignment_score
         + slope_score
         + gap_score
@@ -392,9 +405,11 @@ def evaluate_symbol(
     )
 
     setup_stage = _setup_stage(
+        has_recent_golden_cross=has_recent_golden_cross,
         bars_since_cross=bars_since_cross,
         ema5_above_ema10=ema5_above_ema10,
         ema20_slope_pct=ema20_slope_pct,
+        cross_lookback=lookback,
     )
 
     candidate = EmaGapCrossCandidate(
@@ -406,6 +421,8 @@ def evaluate_symbol(
         ema20=round(ema20_now, 4),
         ema_gap_pct=round(ema_gap_pct, 6),
         bars_since_cross=bars_since_cross,
+        has_recent_golden_cross=has_recent_golden_cross,
+        ema5_above_ema20=ema5_above_ema20,
         ema20_slope_pct=round(ema20_slope_pct, 6),
         ema5_above_ema10=ema5_above_ema10,
         daily_volume_ratio=round(daily_volume_ratio, 4),
@@ -424,12 +441,15 @@ def evaluate_symbol(
 def rank_candidates(
     symbols: list[str],
     bars_by_symbol: dict[str, list[Bar]],
+    *,
+    cross_lookback: int = DAILY_CROSS_LOOKBACK,
 ) -> tuple[list[EmaGapCrossCandidate], list[CandidateReject], dict[str, int]]:
     ranked: list[EmaGapCrossCandidate] = []
     rejected: list[CandidateReject] = []
     stage_counts: dict[str, int] = {
         "universe_symbols": len(symbols),
         "passed_indicator_data": 0,
+        "scored_candidates": 0,
         "passed_recent_golden_cross": 0,
         "passed_ema5_above_ema20": 0,
         "passed_ema5_above_ema10": 0,
@@ -445,13 +465,19 @@ def rank_candidates(
         "ranked_candidates": 0,
     }
     for symbol in symbols:
-        candidate, reject = evaluate_symbol(symbol, bars_by_symbol.get(symbol, []), stage_counts=stage_counts)
+        candidate, reject = evaluate_symbol(
+            symbol,
+            bars_by_symbol.get(symbol, []),
+            cross_lookback=cross_lookback,
+            stage_counts=stage_counts,
+        )
         if candidate is not None:
             ranked.append(candidate)
         elif reject is not None:
             rejected.append(reject)
     ranked.sort(key=lambda row: row.score, reverse=True)
     if stage_counts is not None:
+        stage_counts["scored_candidates"] = len(ranked)
         stage_counts["ranked_candidates"] = len(ranked)
     return ranked, rejected, stage_counts
 
@@ -462,6 +488,7 @@ def deterministic_plan(
     strategy: str,
     limit: int,
     *,
+    cross_lookback: int = DAILY_CROSS_LOOKBACK,
     filter_stage_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     top = candidates[:limit]
@@ -470,11 +497,11 @@ def deterministic_plan(
         settings["filter_stage_counts"] = dict(filter_stage_counts)
         settings["filter_thresholds"] = {
             "min_daily_bar_count": MIN_DAILY_BAR_COUNT,
-            "daily_cross_lookback": DAILY_CROSS_LOOKBACK,
+            "daily_cross_lookback": cross_lookback,
             "ema_fast": DAILY_EMA_FAST,
             "ema_mid": DAILY_EMA_MID,
             "ema_slow": DAILY_EMA_SLOW,
-            "selection_mode": "score_ranked_top_n",
+            "selection_mode": "watchlist_top_n_by_score",
             "daily_volume_ratio_target": DAILY_VOLUME_RATIO_TARGET,
             "daily_range_lookback": DAILY_RANGE_LOOKBACK,
             "daily_min_median_dollar_volume": DAILY_MIN_MEDIAN_DOLLAR_VOLUME,
@@ -488,18 +515,18 @@ def deterministic_plan(
         "strategy": strategy,
         "selection_stage": "ranked",
         "note": (
-            "Daily EMA gap ranker: requires EMA5 golden cross above EMA20 within the last "
-            f"{DAILY_CROSS_LOOKBACK} sessions and EMA5 still above EMA20, then ranks all "
-            "passers by score. Favors mid/small-cap liquidity, high ATR/range, cross-day volume, "
-            "fresh crosses, and positive daily change; penalizes mega-cap names and overextension."
+            "Daily EMA gap watchlist: scores every symbol with usable daily bars, favors recent "
+            f"EMA5/EMA20 golden crosses within {cross_lookback} sessions, mid/small-cap liquidity, "
+            "high ATR/range, and volume, then returns the top N symbols. Entry filters remain in "
+            "the live ema_gap_cross strategy."
         ),
         "symbols": [row.symbol for row in top],
         "ranked": [asdict(row) for row in top],
         "rejected": [asdict(row) for row in rejected],
         "settings": settings,
         "risk_note": (
-            "Selector uses daily EMA alignment for the watchlist; ema_gap_cross still waits for "
-            "minute-bar EMA5 golden cross right after two bars below EMA20 before entry."
+            "Selector only builds the watchlist by score. ema_gap_cross still requires minute-bar "
+            "EMA5 golden cross after two bars below EMA20, minimum gap, and EMA stack before buying."
         ),
     }
 
@@ -581,6 +608,12 @@ def main() -> int:
     )
     parser.add_argument("--symbols", default="", help="Comma-separated symbols; overrides universe file.")
     parser.add_argument("--top", type=int, default=12, help="Max symbols to include.")
+    parser.add_argument(
+        "--cross-lookback",
+        type=int,
+        default=DAILY_CROSS_LOOKBACK,
+        help="Golden-cross lookback in trading days (default 10).",
+    )
     parser.add_argument("--daily-lookback-days", type=int, default=DEFAULT_DAILY_LOOKBACK_DAYS)
     parser.add_argument(
         "--plan-output",
@@ -595,21 +628,48 @@ def main() -> int:
     settings = _selector_settings()
     if args.daily_lookback_days < MIN_DAILY_BAR_COUNT:
         raise ValueError(f"--daily-lookback-days must be at least {MIN_DAILY_BAR_COUNT}")
+    if args.cross_lookback < 1:
+        raise ValueError("--cross-lookback must be at least 1")
     bars_by_symbol = load_market_data(settings, symbols, args.daily_lookback_days)
-    candidates, rejected, stage_counts = rank_candidates(symbols, bars_by_symbol)
-    plan = deterministic_plan(candidates, rejected, "ema_gap_cross", args.top, filter_stage_counts=stage_counts)
+    candidates, rejected, stage_counts = rank_candidates(
+        symbols,
+        bars_by_symbol,
+        cross_lookback=args.cross_lookback,
+    )
+    plan = deterministic_plan(
+        candidates,
+        rejected,
+        "ema_gap_cross",
+        args.top,
+        cross_lookback=args.cross_lookback,
+        filter_stage_counts=stage_counts,
+    )
+    scored_count = stage_counts.get("scored_candidates", len(candidates))
+    selected_count = len(plan["symbols"])
     result: dict[str, Any] = {
         "strategy": "ema_gap_cross",
         "selected_symbols": list(plan["symbols"]),
         "symbols_env_line": format_symbols_env_line(plan["symbols"]),
         "selection_plan": plan,
         "filter_stage_counts": stage_counts,
-        "ranked_candidates": stage_counts.get("ranked_candidates", len(candidates)),
-        "selected_count": len(plan["symbols"]),
+        "scored_candidates": scored_count,
+        "ranked_candidates": scored_count,
+        "selected_count": selected_count,
         "requested_top": args.top,
+        "universe_symbols": len(symbols),
         "ai_enabled": args.use_ai,
         "plan_output": str(args.plan_output),
     }
+    if selected_count < args.top:
+        result["selection_shortfall"] = {
+            "reason": "universe has fewer scoreable symbols than requested --top",
+            "scored_candidates": scored_count,
+            "requested_top": args.top,
+            "universe_symbols": len(symbols),
+            "hints": [
+                "Expand --universe-file with select_market_universe.py output",
+            ],
+        }
     args.plan_output.parent.mkdir(parents=True, exist_ok=True)
     args.plan_output.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     if args.use_ai:
