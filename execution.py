@@ -132,6 +132,8 @@ class PositionTracker:
             return "macd"
         if strategy == "breakout_power":
             return "bp"
+        if strategy == "ema_gap_cross":
+            return "egc"
         return strategy
 
     def total_pnl(self, mark_prices: dict[str, float]) -> float:

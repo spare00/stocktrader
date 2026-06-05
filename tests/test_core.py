@@ -10457,6 +10457,17 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(decision)
 
+    def test_ema_gap_cross_max_hold_overrides_global_max_hold(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            max_hold_seconds=420,
+            egc_max_hold_seconds=1200,
+        )
+        tracker = PositionTracker(settings)
+        self.assertEqual(tracker.max_hold_seconds_for_strategy("ema_gap_cross"), 1200)
+        self.assertEqual(tracker.max_hold_seconds_for_strategy("breakout_power"), 420)
+
     def test_ema_gap_cross_full_exit_on_death_cross(self):
         settings = Settings(
             symbols=["AAPL"],

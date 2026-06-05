@@ -106,6 +106,7 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_max_trades_per_symbol_per_session", "EGC_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 2),
         ("egc_symbol_loss_lock_count", "EGC_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("egc_respect_consecutive_loss_limits", "EGC_RESPECT_CONSECUTIVE_LOSS_LIMITS", bool_env, True),
+        ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", int_env, 0),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.ema_gap_cross",)
 
@@ -130,6 +131,7 @@ class EmaGapCrossStrategy(Strategy):
             "max_trades_per_symbol_per_session": settings.egc_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.egc_symbol_loss_lock_count,
             "respect_consecutive_loss_limits": bool(settings.egc_respect_consecutive_loss_limits),
+            "max_hold_seconds": settings.egc_max_hold_seconds,
         }
 
     def __init__(self, settings: Settings):

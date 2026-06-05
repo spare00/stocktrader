@@ -482,6 +482,7 @@ class Settings:
     egc_max_trades_per_symbol_per_session: int = 2
     egc_symbol_loss_lock_count: int = 1
     egc_respect_consecutive_loss_limits: bool = True
+    egc_max_hold_seconds: int = 0
 
     ai_review: bool = False
     news_hot_positive_only: bool = True
@@ -613,6 +614,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
     ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),
     ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", _int_env, 0),
     ("bp_consecutive_loss_pause_count", "BP_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
     ("bp_consecutive_loss_pause_minutes", "BP_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
     ("bp_consecutive_loss_stop_count", "BP_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),

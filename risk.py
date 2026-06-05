@@ -285,6 +285,8 @@ class RiskManager:
             return "stoch_macd"
         if strategy == "breakout_power":
             return "bp"
+        if strategy == "ema_gap_cross":
+            return "egc"
         return strategy
 
     @staticmethod
@@ -295,6 +297,8 @@ class RiskManager:
             return "macd"
         if strategy == "breakout_power":
             return "bp"
+        if strategy == "ema_gap_cross":
+            return "egc"
         return strategy
 
     @staticmethod

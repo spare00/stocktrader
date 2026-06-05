@@ -629,6 +629,9 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
                     "max_hold_seconds": settings.bp_max_hold_seconds,
                     "trade_cooldown_seconds": settings.bp_trade_cooldown_seconds,
                 },
+                "ema_gap_cross": {
+                    "max_hold_seconds": settings.egc_max_hold_seconds,
+                },
             },
             "daily_max_loss": settings.daily_max_loss,
             "daily_max_loss_pct": settings.daily_max_loss_pct,
