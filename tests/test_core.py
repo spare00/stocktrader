@@ -78,7 +78,7 @@ from strategies.ema_gap_cross import (
     EmaGapCrossStrategy,
     ema20_first_decline_from_peak,
     ema_crossed_above,
-    ema_crossed_below,
+    ema_fast_below_slow_for_bars,
     recent_ema_cross_above,
 )
 import strategy_selectors.select_ema_gap_cross as select_ema_gap_cross
@@ -10366,8 +10366,8 @@ class CoreTradingTests(unittest.TestCase):
         fast = [1.0, 1.0, 2.0]
         slow = [2.0, 1.5, 1.5]
         self.assertTrue(ema_crossed_above(fast, slow))
-        self.assertFalse(ema_crossed_below(fast, slow))
-        self.assertTrue(ema_crossed_below([2.0, 2.0, 1.0], [1.0, 1.5, 1.5]))
+        self.assertFalse(ema_fast_below_slow_for_bars(fast, slow, 2))
+        self.assertTrue(ema_fast_below_slow_for_bars([2.0, 2.0, 1.0, 0.9], [1.0, 1.5, 1.5, 1.5], 2))
         crossed, bars_since = recent_ema_cross_above([8.0, 8.2, 8.4, 9.0, 9.5], [9.0, 8.9, 8.8, 8.7, 9.2], lookback=5)
         self.assertTrue(crossed)
         self.assertEqual(bars_since, 1)
@@ -10382,9 +10382,9 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"])
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
-        ema5 = [9.0] * 43 + [9.5, 10.5]
-        ema10 = [8.5] * 44 + [10.0]
-        ema20 = [10.0] * 44 + [10.0]
+        ema5 = [9.0] * 43 + [9.8, 10.5]
+        ema10 = [9.0] * 43 + [10.1, 10.2]
+        ema20 = [9.0] * 43 + [9.9, 10.0]
         with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
             signal = strategy.evaluate(state)
 
@@ -10392,16 +10392,39 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.strategy, "ema_gap_cross")
         self.assertIn("golden", signal.reason)
 
+    def test_ema_gap_cross_rejects_thin_gap(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_min_gap_pct=0.001)
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        ema5 = [9.9] * 44 + [10.0006]
+        ema10 = [9.95] * 45
+        ema20 = [10.0] * 45
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_ema_gap_cross_partial_exit_on_ema20_peak_decline(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_partial_size=0.5)
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_partial_size=0.5,
+            egc_min_hold_seconds=0,
+            egc_partial_grace_bars=0,
+        )
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
         state.last_event_kind = "bar"
-        position = self._bp_position(strategy="ema_gap_cross", shares=10)
+        position = self._bp_position(
+            strategy="ema_gap_cross",
+            shares=10,
+            entry_ms=state.last_event_ms or market_ms(2026, 4, 24, 10, 14),
+        )
         strategy.on_entry_fill(
             types.SimpleNamespace(strategy="ema_gap_cross", symbol="AAPL", timestamp_ms=position.entry_ms)
         )
         strategy._position_states["AAPL"].ema20_peak = 10.5
+        strategy._position_states["AAPL"].bars_since_entry = 4
         ema5 = [10.6] * 45
         ema10 = [10.2] * 45
         ema20 = [10.0] * 44 + [10.3]
@@ -10413,19 +10436,49 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(decision.shares, 5)
         self.assertTrue(decision.mark_partial)
 
-    def test_ema_gap_cross_full_exit_on_death_cross(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"])
+    def test_ema_gap_cross_skips_death_cross_until_confirmed(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_min_hold_seconds=0,
+            egc_death_cross_confirm_bars=2,
+        )
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
-        position = self._bp_position(strategy="ema_gap_cross", partial_exit_taken=True)
-        ema5 = [10.5] * 44 + [9.5]
-        ema10 = [10.0] * 45
+        position = self._bp_position(
+            strategy="ema_gap_cross",
+            entry_ms=state.last_event_ms or market_ms(2026, 4, 24, 10, 14),
+        )
+        ema5 = [10.6] * 44 + [9.9]
+        ema10 = [10.2] * 45
+        ema20 = [10.0] * 45
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNone(decision)
+
+    def test_ema_gap_cross_full_exit_on_death_cross(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_min_hold_seconds=0,
+            egc_death_cross_confirm_bars=2,
+        )
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position(
+            strategy="ema_gap_cross",
+            partial_exit_taken=True,
+            entry_ms=state.last_event_ms or market_ms(2026, 4, 24, 10, 14),
+        )
+        ema5 = [10.6] * 43 + [9.9, 9.8]
+        ema10 = [10.2] * 45
         ema20 = [10.0] * 45
         with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
             decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "EMA5 death cross below EMA20")
+        self.assertEqual(decision.reason, "EMA5 below EMA20 for 2 bars")
         self.assertIsNone(decision.shares)
 
     def test_breakout_power_skips_supertrend_exit_when_disabled(self):

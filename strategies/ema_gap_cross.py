@@ -28,6 +28,8 @@ _MIN_WARMUP_BARS = 25
 class _EGCPositionState:
     entry_ms: int
     ema20_peak: float | None = None
+    bars_since_entry: int = 0
+    last_processed_bar_end_ms: int | None = None
 
 
 def ema_crossed_above(fast: list[float], slow: list[float], *, index: int = -1) -> bool:
@@ -61,14 +63,11 @@ def recent_ema_cross_above(
     return True, bars_since
 
 
-def ema_crossed_below(fast: list[float], slow: list[float], *, index: int = -1) -> bool:
-    """True when fast crosses below slow between index-1 and index."""
-    if len(fast) < 2 or len(slow) < 2 or len(fast) != len(slow):
+def ema_fast_below_slow_for_bars(fast: list[float], slow: list[float], bars: int) -> bool:
+    """True when fast has stayed below slow for the last `bars` completed values."""
+    if bars <= 0 or len(fast) < bars or len(slow) < bars:
         return False
-    i = index if index >= 0 else len(fast) + index
-    if i < 1:
-        return False
-    return fast[i - 1] >= slow[i - 1] and fast[i] < slow[i]
+    return all(fast[index] < slow[index] for index in range(-bars, 0))
 
 
 def ema20_first_decline_from_peak(ema20: list[float], peak: float | None) -> tuple[bool, float | None]:
@@ -95,11 +94,15 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_end_minute", "EGC_END_MINUTE", int_env, 360),
         ("egc_warmup_bars", "EGC_WARMUP_BARS", int_env, _MIN_WARMUP_BARS),
         ("egc_max_spread_bps", "EGC_MAX_SPREAD_BPS", float_env, 8.0),
+        ("egc_min_gap_pct", "EGC_MIN_GAP_PCT", float_env, 0.0005),
         ("egc_partial_size", "EGC_PARTIAL_SIZE", float_env, 0.5),
+        ("egc_min_hold_seconds", "EGC_MIN_HOLD_SECONDS", int_env, 180),
+        ("egc_partial_grace_bars", "EGC_PARTIAL_GRACE_BARS", int_env, 3),
+        ("egc_death_cross_confirm_bars", "EGC_DEATH_CROSS_CONFIRM_BARS", int_env, 2),
         ("egc_stop_lookback_bars", "EGC_STOP_LOOKBACK_BARS", int_env, 6),
         ("egc_stop_buffer_pct", "EGC_STOP_BUFFER_PCT", float_env, 0.001),
         ("egc_stop_loss_pct", "EGC_STOP_LOSS_PCT", float_env, 0.004),
-        ("egc_require_ema5_above_ema10", "EGC_REQUIRE_EMA5_ABOVE_EMA10", bool_env, True),
+        ("egc_require_ema_stack", "EGC_REQUIRE_EMA_STACK", bool_env, True),
         ("egc_max_trades_per_symbol_per_session", "EGC_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 2),
         ("egc_symbol_loss_lock_count", "EGC_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("egc_respect_consecutive_loss_limits", "EGC_RESPECT_CONSECUTIVE_LOSS_LIMITS", bool_env, True),
@@ -115,11 +118,15 @@ class EmaGapCrossStrategy(Strategy):
             "end_minute": settings.egc_end_minute,
             "warmup_bars": settings.egc_warmup_bars,
             "max_spread_bps": settings.egc_max_spread_bps,
+            "min_gap_pct": settings.egc_min_gap_pct,
             "partial_size": settings.egc_partial_size,
+            "min_hold_seconds": settings.egc_min_hold_seconds,
+            "partial_grace_bars": settings.egc_partial_grace_bars,
+            "death_cross_confirm_bars": settings.egc_death_cross_confirm_bars,
             "stop_lookback_bars": settings.egc_stop_lookback_bars,
             "stop_buffer_pct": settings.egc_stop_buffer_pct,
             "stop_loss_pct": settings.egc_stop_loss_pct,
-            "require_ema5_above_ema10": bool(settings.egc_require_ema5_above_ema10),
+            "require_ema_stack": bool(settings.egc_require_ema_stack),
             "max_trades_per_symbol_per_session": settings.egc_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.egc_symbol_loss_lock_count,
             "respect_consecutive_loss_limits": bool(settings.egc_respect_consecutive_loss_limits),
@@ -165,27 +172,37 @@ class EmaGapCrossStrategy(Strategy):
                 f"no EMA5 cross above EMA20 ({ema5[-2]:.4f}<={ema20[-2]:.4f} -> {ema5[-1]:.4f}>{ema20[-1]:.4f})",
             )
 
-        if self.settings.egc_require_ema5_above_ema10 and ema5[-1] <= ema10[-1]:
+        gap = ema5[-1] - ema20[-1]
+        gap_pct = gap / ema20[-1] if ema20[-1] > 0 else 0.0
+        if gap_pct < self.settings.egc_min_gap_pct:
             return self._reject(
                 state,
-                "ema10",
-                f"EMA5 not above EMA10 ({ema5[-1]:.4f} <= {ema10[-1]:.4f})",
+                "gap",
+                f"EMA gap {gap_pct:.4%} < min {self.settings.egc_min_gap_pct:.4%}",
+            )
+
+        if self.settings.egc_require_ema_stack and not (ema5[-1] > ema10[-1] > ema20[-1]):
+            return self._reject(
+                state,
+                "stack",
+                (
+                    f"EMA stack not bullish ({ema5[-1]:.4f} > {ema10[-1]:.4f} > {ema20[-1]:.4f} required)"
+                ),
             )
 
         stop_price = self._entry_stop_price(indicator_bars, last.ask)
-        gap = ema5[-1] - ema20[-1]
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
             side="BUY",
             price=last.ask,
             timestamp_ms=state.last_event_ms,
-            change_pct=gap,
+            change_pct=gap_pct,
             volume_ratio=0.0,
             spread_bps=last.spread_bps,
             reason=(
-                f"ema_gap_cross golden: EMA5 {ema5[-1]:.4f} > EMA20 {ema20[-1]:.4f}, "
-                f"EMA10 {ema10[-1]:.4f}, gap {gap:.4f}"
+                f"ema_gap_cross golden: EMA5 {ema5[-1]:.4f} > EMA10 {ema10[-1]:.4f} > EMA20 {ema20[-1]:.4f}, "
+                f"gap {gap_pct:.4%}"
             ),
             stop_price=stop_price,
         )
@@ -199,6 +216,12 @@ class EmaGapCrossStrategy(Strategy):
             self._position_states[symbol] = _EGCPositionState(entry_ms=int(timestamp_ms))
 
     def use_fixed_target_exit(self, position) -> bool:
+        return False
+
+    def exit_activation_delay_seconds(self, position) -> int:
+        return max(0, self.settings.egc_min_hold_seconds)
+
+    def delay_stop_loss_until_exit_activation(self, position) -> bool:
         return False
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
@@ -219,16 +242,27 @@ class EmaGapCrossStrategy(Strategy):
         symbol = position.symbol.strip().upper()
         pos_state = self._position_states.get(symbol)
 
-        if ema_crossed_below(ema5, ema20):
-            self._clear_position_state(symbol)
-            return ExitDecision("EMA5 death cross below EMA20")
-
         pnl_pct = (price - position.entry_price) / position.entry_price
         if pnl_pct <= -self.settings.egc_stop_loss_pct:
             self._clear_position_state(symbol)
             return ExitDecision("stop loss")
 
+        event_ms = state.last_event_ms or (quote.timestamp_ms if quote else position.entry_ms)
+        age_seconds = (event_ms - position.entry_ms) / 1000
+        if age_seconds < self.settings.egc_min_hold_seconds:
+            return None
+
+        confirm_bars = max(1, self.settings.egc_death_cross_confirm_bars)
+        if ema_fast_below_slow_for_bars(ema5, ema20, confirm_bars):
+            self._clear_position_state(symbol)
+            return ExitDecision(f"EMA5 below EMA20 for {confirm_bars} bars")
+
         if state.last_event_kind == "bar" and pos_state is not None:
+            self._sync_position_bar_state(state, pos_state)
+            grace_bars = max(0, self.settings.egc_partial_grace_bars)
+            if pos_state.bars_since_entry <= grace_bars:
+                return None
+
             declined, updated_peak = ema20_first_decline_from_peak(ema20, pos_state.ema20_peak)
             pos_state.ema20_peak = updated_peak
             if (
@@ -239,6 +273,15 @@ class EmaGapCrossStrategy(Strategy):
                 return self._partial_exit_decision(position, reason="EMA20 first decline from peak")
 
         return None
+
+    def _sync_position_bar_state(self, state: SymbolState, pos_state: _EGCPositionState) -> None:
+        if not state.bars:
+            return
+        bar_end_ms = state.bars[-1].end_ms
+        if bar_end_ms == pos_state.last_processed_bar_end_ms:
+            return
+        pos_state.last_processed_bar_end_ms = bar_end_ms
+        pos_state.bars_since_entry += 1
 
     def _ema_triple(self, bars: list) -> tuple[list[float], list[float], list[float]] | None:
         if len(bars) < _EMA_SLOW:

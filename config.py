@@ -470,11 +470,15 @@ class Settings:
     egc_end_minute: int = 360
     egc_warmup_bars: int = 25
     egc_max_spread_bps: float = 8.0
+    egc_min_gap_pct: float = 0.0005
     egc_partial_size: float = 0.5
+    egc_min_hold_seconds: int = 180
+    egc_partial_grace_bars: int = 3
+    egc_death_cross_confirm_bars: int = 2
     egc_stop_lookback_bars: int = 6
     egc_stop_buffer_pct: float = 0.001
     egc_stop_loss_pct: float = 0.004
-    egc_require_ema5_above_ema10: bool = True
+    egc_require_ema_stack: bool = True
     egc_max_trades_per_symbol_per_session: int = 2
     egc_symbol_loss_lock_count: int = 1
     egc_respect_consecutive_loss_limits: bool = True
