@@ -30,7 +30,7 @@ DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("ema_gap_cross")
 DEFAULT_DAILY_LOOKBACK_DAYS = 120
 MIN_DAILY_BAR_COUNT = 30
-DAILY_CROSS_LOOKBACK = 5
+DAILY_CROSS_LOOKBACK = 2
 DAILY_EMA_FAST = 5
 DAILY_EMA_MID = 10
 DAILY_EMA_SLOW = 20
@@ -325,7 +325,7 @@ def deterministic_plan(
         "settings": settings,
         "risk_note": (
             "Selector uses daily EMA alignment for the watchlist; ema_gap_cross still waits for "
-            "minute-bar EMA5 cross above EMA20 before entry."
+            "minute-bar EMA5 golden cross right after two bars below EMA20 before entry."
         ),
     }
 

@@ -474,6 +474,7 @@ class Settings:
     egc_partial_size: float = 0.5
     egc_min_hold_seconds: int = 180
     egc_partial_grace_bars: int = 3
+    egc_entry_below_bars: int = 2
     egc_death_cross_confirm_bars: int = 2
     egc_stop_lookback_bars: int = 6
     egc_stop_buffer_pct: float = 0.001

@@ -78,6 +78,7 @@ from strategies.ema_gap_cross import (
     EmaGapCrossStrategy,
     ema20_first_decline_from_peak,
     ema_crossed_above,
+    ema_crossed_above_after_bars_below,
     ema_fast_below_slow_for_bars,
     recent_ema_cross_above,
 )
@@ -10382,9 +10383,9 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"])
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
-        ema5 = [9.0] * 43 + [9.8, 10.5]
-        ema10 = [9.0] * 43 + [10.1, 10.2]
-        ema20 = [9.0] * 43 + [9.9, 10.0]
+        ema5 = [9.0] * 42 + [9.7, 9.8, 10.5]
+        ema10 = [9.0] * 42 + [10.0, 10.1, 10.2]
+        ema20 = [9.0] * 42 + [10.0, 9.9, 10.0]
         with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
             signal = strategy.evaluate(state)
 
@@ -10396,7 +10397,7 @@ class CoreTradingTests(unittest.TestCase):
         settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_min_gap_pct=0.001)
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
-        ema5 = [9.9] * 44 + [10.0006]
+        ema5 = [9.9] * 43 + [9.95, 10.0006]
         ema10 = [9.95] * 45
         ema20 = [10.0] * 45
         with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
@@ -10966,8 +10967,8 @@ class CoreTradingTests(unittest.TestCase):
                 bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
             return bars
 
-        fresh_cross = [90.0] * 30 + [88, 89, 92, 98, 105, 112, 120]
-        stale = fresh_cross + [121, 122, 123, 124, 125, 126]
+        fresh_cross = [100.0] * 35 + [98, 97, 96, 108, 115]
+        stale = fresh_cross + [116, 117, 118, 119, 120]
 
         candidates, rejected, stage_counts = select_ema_gap_cross.rank_candidates(
             ["FRESH", "STALE"],
@@ -10992,7 +10993,7 @@ class CoreTradingTests(unittest.TestCase):
             filter_stage_counts=stage_counts,
         )
         self.assertEqual(plan["symbols"][0], "FRESH")
-        self.assertEqual(plan["settings"]["filter_thresholds"]["daily_cross_lookback"], 5)
+        self.assertEqual(plan["settings"]["filter_thresholds"]["daily_cross_lookback"], 2)
 
     def test_breakout_power_selector_prefers_green_above_trend_candidate(self):
         def daily_bars_from_closes(symbol: str, closes: list[float], *, volume_scale: float = 1.0) -> list[Bar]:

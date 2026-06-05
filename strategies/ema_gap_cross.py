@@ -63,6 +63,24 @@ def recent_ema_cross_above(
     return True, bars_since
 
 
+def ema_crossed_above_after_bars_below(
+    fast: list[float],
+    slow: list[float],
+    *,
+    bars_below: int = 2,
+    index: int = -1,
+) -> bool:
+    """True when fast crosses above slow right after staying below slow for `bars_below` bars."""
+    if not ema_crossed_above(fast, slow, index=index):
+        return False
+    if bars_below <= 0:
+        return True
+    i = index if index >= 0 else len(fast) + index
+    if i < bars_below:
+        return False
+    return all(fast[i - 1 - offset] < slow[i - 1 - offset] for offset in range(bars_below))
+
+
 def ema_fast_below_slow_for_bars(fast: list[float], slow: list[float], bars: int) -> bool:
     """True when fast has stayed below slow for the last `bars` completed values."""
     if bars <= 0 or len(fast) < bars or len(slow) < bars:
@@ -98,6 +116,7 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_partial_size", "EGC_PARTIAL_SIZE", float_env, 0.5),
         ("egc_min_hold_seconds", "EGC_MIN_HOLD_SECONDS", int_env, 180),
         ("egc_partial_grace_bars", "EGC_PARTIAL_GRACE_BARS", int_env, 3),
+        ("egc_entry_below_bars", "EGC_ENTRY_BELOW_BARS", int_env, 2),
         ("egc_death_cross_confirm_bars", "EGC_DEATH_CROSS_CONFIRM_BARS", int_env, 2),
         ("egc_stop_lookback_bars", "EGC_STOP_LOOKBACK_BARS", int_env, 6),
         ("egc_stop_buffer_pct", "EGC_STOP_BUFFER_PCT", float_env, 0.001),
@@ -123,6 +142,7 @@ class EmaGapCrossStrategy(Strategy):
             "partial_size": settings.egc_partial_size,
             "min_hold_seconds": settings.egc_min_hold_seconds,
             "partial_grace_bars": settings.egc_partial_grace_bars,
+            "entry_below_bars": settings.egc_entry_below_bars,
             "death_cross_confirm_bars": settings.egc_death_cross_confirm_bars,
             "stop_lookback_bars": settings.egc_stop_lookback_bars,
             "stop_buffer_pct": settings.egc_stop_buffer_pct,
@@ -167,11 +187,15 @@ class EmaGapCrossStrategy(Strategy):
             return self._reject(state, "ema", "insufficient EMA history")
 
         ema5, ema10, ema20 = ema
-        if not ema_crossed_above(ema5, ema20):
+        below_bars = max(0, self.settings.egc_entry_below_bars)
+        if not ema_crossed_above_after_bars_below(ema5, ema20, bars_below=below_bars):
             return self._reject(
                 state,
                 "cross",
-                f"no EMA5 cross above EMA20 ({ema5[-2]:.4f}<={ema20[-2]:.4f} -> {ema5[-1]:.4f}>{ema20[-1]:.4f})",
+                (
+                    f"no EMA5 golden cross right after {below_bars} bars below EMA20 "
+                    f"({ema5[-2]:.4f}<={ema20[-2]:.4f} -> {ema5[-1]:.4f}>{ema20[-1]:.4f})"
+                ),
             )
 
         gap = ema5[-1] - ema20[-1]
