@@ -10993,10 +10993,43 @@ class CoreTradingTests(unittest.TestCase):
             filter_stage_counts=stage_counts,
         )
         self.assertEqual(plan["symbols"][0], "FRESH")
-        self.assertEqual(plan["settings"]["filter_thresholds"]["daily_cross_lookback"], 2)
-        self.assertGreaterEqual(selected["FRESH"].daily_volume_ratio, select_ema_gap_cross.DAILY_VOLUME_RATIO_MIN)
-        self.assertGreaterEqual(selected["FRESH"].daily_atr_pct, select_ema_gap_cross.DAILY_MIN_ATR_PCT)
-        self.assertGreaterEqual(selected["FRESH"].daily_range_pct, select_ema_gap_cross.DAILY_MIN_RANGE_PCT)
+        self.assertEqual(plan["settings"]["filter_thresholds"]["daily_cross_lookback"], 5)
+
+    def test_ema_gap_cross_selector_ranks_multiple_candidates_by_score(self):
+        def daily_bars_from_closes(
+            symbol: str,
+            closes: list[float],
+            *,
+            volume: int = 1_000_000,
+            range_scale: float = 0.02,
+        ) -> list[Bar]:
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars: list[Bar] = []
+            for index, close in enumerate(closes):
+                previous = closes[index - 1] if index else close
+                high = max(close, previous) * (1.0 + range_scale)
+                low = min(close, previous) * (1.0 - range_scale)
+                bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
+            return bars
+
+        fresh_cross = [100.0] * 35 + [98, 97, 96, 108, 115]
+        low_vol_cross = [50.0] * 35 + [49, 48.5, 48, 50.5, 51.2]
+
+        candidates, rejected, stage_counts = select_ema_gap_cross.rank_candidates(
+            ["FRESH", "LOWVOL"],
+            {
+                "FRESH": daily_bars_from_closes("FRESH", fresh_cross, volume=2_000_000),
+                "LOWVOL": daily_bars_from_closes("LOWVOL", low_vol_cross, volume=1_500_000, range_scale=0.004),
+            },
+        )
+
+        self.assertEqual(len(candidates), 2)
+        self.assertGreater(candidates[0].score, candidates[1].score)
+        self.assertEqual(candidates[0].symbol, "FRESH")
+        self.assertGreaterEqual(stage_counts["ranked_candidates"], 2)
+
+        plan = select_ema_gap_cross.deterministic_plan(candidates, rejected, "ema_gap_cross", 1)
+        self.assertEqual(plan["symbols"], ["FRESH"])
 
     def test_ema_gap_cross_selector_rejects_low_volatility_candidate(self):
         def daily_bars_from_closes(
@@ -11029,7 +11062,7 @@ class CoreTradingTests(unittest.TestCase):
         selected = {candidate.symbol: candidate for candidate in candidates}
         reject_codes = {item.symbol: item.code for item in rejected}
         self.assertIn("FRESH", selected)
-        self.assertIn(reject_codes.get("QUIET"), {"golden_cross", "atr", "range", "volume"})
+        self.assertEqual(reject_codes.get("QUIET"), "golden_cross")
 
     def test_breakout_power_selector_prefers_green_above_trend_candidate(self):
         def daily_bars_from_closes(symbol: str, closes: list[float], *, volume_scale: float = 1.0) -> list[Bar]:

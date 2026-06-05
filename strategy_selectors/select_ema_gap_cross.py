@@ -31,21 +31,19 @@ DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("ema_gap_cross")
 DEFAULT_DAILY_LOOKBACK_DAYS = 120
 MIN_DAILY_BAR_COUNT = 30
-DAILY_CROSS_LOOKBACK = 2
+DAILY_CROSS_LOOKBACK = 5
 DAILY_EMA_FAST = 5
 DAILY_EMA_MID = 10
 DAILY_EMA_SLOW = 20
 DAILY_VOLUME_LOOKBACK = 20
-DAILY_VOLUME_RATIO_MIN = 1.0
+DAILY_VOLUME_RATIO_TARGET = 1.0
 DAILY_ATR_PERIOD = 14
-DAILY_MIN_ATR_PCT = 0.025
-DAILY_MAX_ATR_PCT = 0.15
 DAILY_RANGE_LOOKBACK = 20
-DAILY_MIN_RANGE_PCT = 0.04
 DAILY_MEDIAN_DOLLAR_VOLUME_LOOKBACK = 20
-DAILY_MIN_MEDIAN_DOLLAR_VOLUME = 3_000_000.0
-DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME = 120_000_000.0
-DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME = 350_000_000.0
+DAILY_MIN_MEDIAN_DOLLAR_VOLUME = 2_000_000.0
+DAILY_MIDCAP_SWEET_MIN = 5_000_000.0
+DAILY_MIDCAP_SWEET_MAX = 80_000_000.0
+DAILY_MEGA_CAP_PENALTY_START = 150_000_000.0
 DAILY_MAX_GAP_EXTENSION_PCT = 0.12
 AI_SCORE_DELTA_LIMIT = 12.0
 DEFAULT_UNIVERSE = [
@@ -183,11 +181,33 @@ def _median_dollar_volume(bars: list[Bar], lookback: int = DAILY_MEDIAN_DOLLAR_V
     return float(median(dollar_volumes)) if dollar_volumes else 0.0
 
 
-def _liquidity_tier_score(median_dollar_volume: float) -> float:
-    if median_dollar_volume <= DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME:
-        return min(12.0, math.log10(median_dollar_volume / DAILY_MIN_MEDIAN_DOLLAR_VOLUME + 1.0) * 5.0)
-    excess = (median_dollar_volume - DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME) / DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME
-    return max(-12.0, 8.0 - excess * 18.0)
+def _midcap_liquidity_score(median_dollar_volume: float) -> float:
+    """Reward mid/small-cap turnover; penalize mega-cap liquidity."""
+    if median_dollar_volume < DAILY_MIN_MEDIAN_DOLLAR_VOLUME:
+        return -25.0
+    if DAILY_MIDCAP_SWEET_MIN <= median_dollar_volume <= DAILY_MIDCAP_SWEET_MAX:
+        center = math.sqrt(DAILY_MIDCAP_SWEET_MIN * DAILY_MIDCAP_SWEET_MAX)
+        distance = abs(math.log10(max(median_dollar_volume, 1.0) / center))
+        return max(10.0, 28.0 - distance * 14.0)
+    if median_dollar_volume < DAILY_MIDCAP_SWEET_MIN:
+        return _bounded((median_dollar_volume / DAILY_MIDCAP_SWEET_MIN) * 12.0, low=0.0, high=12.0)
+    excess = (median_dollar_volume - DAILY_MIDCAP_SWEET_MAX) / DAILY_MIDCAP_SWEET_MAX
+    return max(-20.0, 8.0 - excess * 22.0)
+
+
+def _volatility_score(atr_pct: float, range_pct: float) -> float:
+    """Higher daily ATR and range earn more points."""
+    atr_component = _bounded(atr_pct * 520.0, low=0.0, high=28.0)
+    range_component = _bounded(range_pct * 140.0, low=0.0, high=22.0)
+    return atr_component + range_component
+
+
+def _volume_score(daily_volume_ratio: float, cross_day_volume_ratio: float) -> float:
+    latest = min(max(daily_volume_ratio, 0.0), 4.0) * 5.0
+    cross_day = min(max(cross_day_volume_ratio, 0.0), 4.0) * 6.0
+    target_bonus = 4.0 if daily_volume_ratio >= DAILY_VOLUME_RATIO_TARGET else 0.0
+    cross_bonus = 4.0 if cross_day_volume_ratio >= DAILY_VOLUME_RATIO_TARGET else 0.0
+    return latest + cross_day + target_bonus + cross_bonus
 
 
 def _bounded(value: float, *, low: float, high: float) -> float:
@@ -288,36 +308,6 @@ def evaluate_symbol(
     median_dollar_volume = _median_dollar_volume(ordered)
     last_daily_change_pct = _latest_daily_change_pct(closes)
 
-    if daily_volume_ratio < DAILY_VOLUME_RATIO_MIN:
-        return None, CandidateReject(
-            symbol,
-            "volume",
-            f"daily volume ratio {daily_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}",
-        )
-    _bump("passed_volume")
-
-    if daily_atr_pct < DAILY_MIN_ATR_PCT:
-        return None, CandidateReject(
-            symbol,
-            "atr",
-            f"daily ATR {daily_atr_pct:.2%} < {DAILY_MIN_ATR_PCT:.2%}",
-        )
-    if daily_atr_pct > DAILY_MAX_ATR_PCT:
-        return None, CandidateReject(
-            symbol,
-            "atr",
-            f"daily ATR {daily_atr_pct:.2%} > {DAILY_MAX_ATR_PCT:.2%}",
-        )
-    _bump("passed_daily_atr")
-
-    if daily_range_pct < DAILY_MIN_RANGE_PCT:
-        return None, CandidateReject(
-            symbol,
-            "range",
-            f"{DAILY_RANGE_LOOKBACK}-day range {daily_range_pct:.2%} < {DAILY_MIN_RANGE_PCT:.2%}",
-        )
-    _bump("passed_daily_range")
-
     if median_dollar_volume < DAILY_MIN_MEDIAN_DOLLAR_VOLUME:
         return None, CandidateReject(
             symbol,
@@ -327,16 +317,7 @@ def evaluate_symbol(
                 f"< {DAILY_MIN_MEDIAN_DOLLAR_VOLUME:.0f}"
             ),
         )
-    if median_dollar_volume > DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME:
-        return None, CandidateReject(
-            symbol,
-            "liquidity",
-            (
-                f"median dollar volume {median_dollar_volume:.0f} "
-                f"> {DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME:.0f}"
-            ),
-        )
-    _bump("passed_liquidity_band")
+    _bump("passed_liquidity_floor")
 
     quality_flags: list[str] = []
     if ema5_above_ema10:
@@ -347,50 +328,66 @@ def evaluate_symbol(
         _bump("passed_ema20_rising")
     else:
         quality_flags.append("EMA20 not rising on latest bar")
-    if cross_day_volume_ratio >= DAILY_VOLUME_RATIO_MIN:
+    if daily_volume_ratio >= DAILY_VOLUME_RATIO_TARGET:
+        _bump("passed_volume_target")
+    else:
+        quality_flags.append(
+            f"daily volume ratio {daily_volume_ratio:.2f} < target {DAILY_VOLUME_RATIO_TARGET:.2f}"
+        )
+    if cross_day_volume_ratio >= DAILY_VOLUME_RATIO_TARGET:
         _bump("passed_cross_day_volume")
     else:
         quality_flags.append(
-            f"cross-day volume ratio {cross_day_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}"
+            f"cross-day volume ratio {cross_day_volume_ratio:.2f} < target {DAILY_VOLUME_RATIO_TARGET:.2f}"
         )
     if last_daily_change_pct > 0:
         _bump("passed_positive_daily_change")
     else:
         quality_flags.append(f"latest daily change {last_daily_change_pct:.2f}% <= 0")
-    if median_dollar_volume <= DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME:
-        _bump("passed_preferred_liquidity_tier")
+    if DAILY_MIDCAP_SWEET_MIN <= median_dollar_volume <= DAILY_MIDCAP_SWEET_MAX:
+        _bump("passed_midcap_liquidity_tier")
+    elif median_dollar_volume > DAILY_MEGA_CAP_PENALTY_START:
+        quality_flags.append(
+            f"mega-cap liquidity {median_dollar_volume:.0f} > {DAILY_MEGA_CAP_PENALTY_START:.0f}"
+        )
     else:
         quality_flags.append(
-            f"median dollar volume {median_dollar_volume:.0f} above preferred "
-            f"{DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME:.0f}"
+            f"median dollar volume {median_dollar_volume:.0f} outside mid-cap sweet spot "
+            f"{DAILY_MIDCAP_SWEET_MIN:.0f}-{DAILY_MIDCAP_SWEET_MAX:.0f}"
         )
+    if daily_atr_pct >= 0.025:
+        _bump("passed_high_atr")
+    if daily_range_pct >= 0.05:
+        _bump("passed_high_range")
     if ema_gap_pct <= DAILY_MAX_GAP_EXTENSION_PCT:
         _bump("passed_gap_not_extended")
     else:
         quality_flags.append(f"EMA gap {ema_gap_pct:.2%} > {DAILY_MAX_GAP_EXTENSION_PCT:.2%}")
 
-    recency_score = max(0.0, 30.0 - (bars_since_cross * 6.0))
-    alignment_score = 12.0 if ema5_above_ema10 else -8.0
-    slope_score = _bounded(ema20_slope_pct * 400.0, low=-6.0, high=12.0)
-    gap_score = _bounded(ema_gap_pct * 180.0, low=0.0, high=18.0)
-    volume_score = min(daily_volume_ratio, 3.0) * 6.0
-    cross_volume_score = min(cross_day_volume_ratio, 3.0) * 5.0
-    atr_score = _bounded((daily_atr_pct - DAILY_MIN_ATR_PCT) * 260.0, low=-6.0, high=14.0)
-    range_score = _bounded((daily_range_pct - DAILY_MIN_RANGE_PCT) * 130.0, low=-6.0, high=14.0)
-    momentum_score = _bounded(last_daily_change_pct * 1.8, low=-6.0, high=12.0)
-    liquidity_score = _liquidity_tier_score(median_dollar_volume)
+    recency_score = max(0.0, 24.0 - (bars_since_cross * 4.0))
+    alignment_score = 10.0 if ema5_above_ema10 else -8.0
+    slope_score = _bounded(ema20_slope_pct * 400.0, low=-6.0, high=10.0)
+    gap_score = _bounded(ema_gap_pct * 160.0, low=0.0, high=14.0)
+    volume_component = _volume_score(daily_volume_ratio, cross_day_volume_ratio)
+    volatility_component = _volatility_score(daily_atr_pct, daily_range_pct)
+    momentum_score = _bounded(last_daily_change_pct * 2.0, low=-8.0, high=14.0)
+    midcap_component = _midcap_liquidity_score(median_dollar_volume)
+    mega_cap_penalty = 0.0
+    if median_dollar_volume > DAILY_MEGA_CAP_PENALTY_START:
+        mega_cap_penalty = (
+            (median_dollar_volume - DAILY_MEGA_CAP_PENALTY_START) / DAILY_MEGA_CAP_PENALTY_START
+        ) * 18.0
     extension_penalty = max(0.0, ema_gap_pct - DAILY_MAX_GAP_EXTENSION_PCT) * 120.0
     score = (
         recency_score
         + alignment_score
         + slope_score
         + gap_score
-        + volume_score
-        + cross_volume_score
-        + atr_score
-        + range_score
+        + volume_component
+        + volatility_component
         + momentum_score
-        + liquidity_score
+        + midcap_component
+        - mega_cap_penalty
         - extension_penalty
     )
 
@@ -437,14 +434,15 @@ def rank_candidates(
         "passed_ema5_above_ema20": 0,
         "passed_ema5_above_ema10": 0,
         "passed_ema20_rising": 0,
-        "passed_volume": 0,
-        "passed_daily_atr": 0,
-        "passed_daily_range": 0,
-        "passed_liquidity_band": 0,
+        "passed_liquidity_floor": 0,
+        "passed_volume_target": 0,
         "passed_cross_day_volume": 0,
         "passed_positive_daily_change": 0,
-        "passed_preferred_liquidity_tier": 0,
+        "passed_midcap_liquidity_tier": 0,
+        "passed_high_atr": 0,
+        "passed_high_range": 0,
         "passed_gap_not_extended": 0,
+        "ranked_candidates": 0,
     }
     for symbol in symbols:
         candidate, reject = evaluate_symbol(symbol, bars_by_symbol.get(symbol, []), stage_counts=stage_counts)
@@ -453,6 +451,8 @@ def rank_candidates(
         elif reject is not None:
             rejected.append(reject)
     ranked.sort(key=lambda row: row.score, reverse=True)
+    if stage_counts is not None:
+        stage_counts["ranked_candidates"] = len(ranked)
     return ranked, rejected, stage_counts
 
 
@@ -474,14 +474,13 @@ def deterministic_plan(
             "ema_fast": DAILY_EMA_FAST,
             "ema_mid": DAILY_EMA_MID,
             "ema_slow": DAILY_EMA_SLOW,
-            "daily_volume_ratio_min": DAILY_VOLUME_RATIO_MIN,
-            "daily_min_atr_pct": DAILY_MIN_ATR_PCT,
-            "daily_max_atr_pct": DAILY_MAX_ATR_PCT,
-            "daily_min_range_pct": DAILY_MIN_RANGE_PCT,
+            "selection_mode": "score_ranked_top_n",
+            "daily_volume_ratio_target": DAILY_VOLUME_RATIO_TARGET,
             "daily_range_lookback": DAILY_RANGE_LOOKBACK,
             "daily_min_median_dollar_volume": DAILY_MIN_MEDIAN_DOLLAR_VOLUME,
-            "daily_preferred_max_median_dollar_volume": DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME,
-            "daily_hard_max_median_dollar_volume": DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME,
+            "daily_midcap_sweet_min": DAILY_MIDCAP_SWEET_MIN,
+            "daily_midcap_sweet_max": DAILY_MIDCAP_SWEET_MAX,
+            "daily_mega_cap_penalty_start": DAILY_MEGA_CAP_PENALTY_START,
             "max_gap_extension_pct": DAILY_MAX_GAP_EXTENSION_PCT,
             "indicator_input": "daily OHLCV bars",
         }
@@ -490,9 +489,9 @@ def deterministic_plan(
         "selection_stage": "ranked",
         "note": (
             "Daily EMA gap ranker: requires EMA5 golden cross above EMA20 within the last "
-            f"{DAILY_CROSS_LOOKBACK} sessions, EMA5 still above EMA20, minimum volume/ATR/range, "
-            "and a mid-liquidity dollar-volume band. Scores recency, EMA alignment, cross-day "
-            "volume, volatility, positive daily change, and penalizes mega-cap liquidity."
+            f"{DAILY_CROSS_LOOKBACK} sessions and EMA5 still above EMA20, then ranks all "
+            "passers by score. Favors mid/small-cap liquidity, high ATR/range, cross-day volume, "
+            "fresh crosses, and positive daily change; penalizes mega-cap names and overextension."
         ),
         "symbols": [row.symbol for row in top],
         "ranked": [asdict(row) for row in top],
@@ -605,6 +604,9 @@ def main() -> int:
         "symbols_env_line": format_symbols_env_line(plan["symbols"]),
         "selection_plan": plan,
         "filter_stage_counts": stage_counts,
+        "ranked_candidates": stage_counts.get("ranked_candidates", len(candidates)),
+        "selected_count": len(plan["symbols"]),
+        "requested_top": args.top,
         "ai_enabled": args.use_ai,
         "plan_output": str(args.plan_output),
     }
