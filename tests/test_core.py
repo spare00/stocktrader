@@ -10994,6 +10994,42 @@ class CoreTradingTests(unittest.TestCase):
         )
         self.assertEqual(plan["symbols"][0], "FRESH")
         self.assertEqual(plan["settings"]["filter_thresholds"]["daily_cross_lookback"], 2)
+        self.assertGreaterEqual(selected["FRESH"].daily_volume_ratio, select_ema_gap_cross.DAILY_VOLUME_RATIO_MIN)
+        self.assertGreaterEqual(selected["FRESH"].daily_atr_pct, select_ema_gap_cross.DAILY_MIN_ATR_PCT)
+        self.assertGreaterEqual(selected["FRESH"].daily_range_pct, select_ema_gap_cross.DAILY_MIN_RANGE_PCT)
+
+    def test_ema_gap_cross_selector_rejects_low_volatility_candidate(self):
+        def daily_bars_from_closes(
+            symbol: str,
+            closes: list[float],
+            *,
+            volume: int = 1_000_000,
+            range_scale: float = 0.02,
+        ) -> list[Bar]:
+            base_ms = market_ms(2026, 1, 1, 16, 0)
+            bars: list[Bar] = []
+            for index, close in enumerate(closes):
+                previous = closes[index - 1] if index else close
+                high = max(close, previous) * (1.0 + range_scale)
+                low = min(close, previous) * (1.0 - range_scale)
+                bars.append(daily_bar_with_volume(symbol, close, low, high, volume, base_ms + index * 86_400_000))
+            return bars
+
+        fresh_cross = [100.0] * 35 + [98, 97, 96, 108, 115]
+        quiet = [100.0] * 40
+
+        candidates, rejected, _stage_counts = select_ema_gap_cross.rank_candidates(
+            ["FRESH", "QUIET"],
+            {
+                "FRESH": daily_bars_from_closes("FRESH", fresh_cross, volume=2_000_000),
+                "QUIET": daily_bars_from_closes("QUIET", quiet, range_scale=0.001),
+            },
+        )
+
+        selected = {candidate.symbol: candidate for candidate in candidates}
+        reject_codes = {item.symbol: item.code for item in rejected}
+        self.assertIn("FRESH", selected)
+        self.assertIn(reject_codes.get("QUIET"), {"golden_cross", "atr", "range", "volume"})
 
     def test_breakout_power_selector_prefers_green_above_trend_candidate(self):
         def daily_bars_from_closes(symbol: str, closes: list[float], *, volume_scale: float = 1.0) -> list[Bar]:

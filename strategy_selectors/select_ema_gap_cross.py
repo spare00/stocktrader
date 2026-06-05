@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from dataclasses import asdict, dataclass
@@ -35,7 +36,16 @@ DAILY_EMA_FAST = 5
 DAILY_EMA_MID = 10
 DAILY_EMA_SLOW = 20
 DAILY_VOLUME_LOOKBACK = 20
-DAILY_VOLUME_RATIO_MIN = 0.75
+DAILY_VOLUME_RATIO_MIN = 1.0
+DAILY_ATR_PERIOD = 14
+DAILY_MIN_ATR_PCT = 0.025
+DAILY_MAX_ATR_PCT = 0.15
+DAILY_RANGE_LOOKBACK = 20
+DAILY_MIN_RANGE_PCT = 0.04
+DAILY_MEDIAN_DOLLAR_VOLUME_LOOKBACK = 20
+DAILY_MIN_MEDIAN_DOLLAR_VOLUME = 3_000_000.0
+DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME = 120_000_000.0
+DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME = 350_000_000.0
 DAILY_MAX_GAP_EXTENSION_PCT = 0.12
 AI_SCORE_DELTA_LIMIT = 12.0
 DEFAULT_UNIVERSE = [
@@ -68,6 +78,10 @@ class EmaGapCrossCandidate:
     ema20_slope_pct: float
     ema5_above_ema10: bool
     daily_volume_ratio: float
+    cross_day_volume_ratio: float
+    daily_atr_pct: float
+    daily_range_pct: float
+    median_dollar_volume: float
     last_price: float
     last_daily_change_pct: float
     quality_flags: tuple[str, ...]
@@ -117,6 +131,63 @@ def _latest_daily_change_pct(closes: list[float]) -> float:
     if len(closes) < 2 or closes[-2] <= 0:
         return 0.0
     return ((closes[-1] - closes[-2]) / closes[-2]) * 100.0
+
+
+def _volume_ratio_at_index(
+    bars: list[Bar],
+    index: int,
+    *,
+    lookback: int = DAILY_VOLUME_LOOKBACK,
+) -> float:
+    if index < 0 or index >= len(bars):
+        return 0.0
+    volume = bars[index].volume
+    if volume <= 0:
+        return 0.0
+    start = max(0, index - lookback)
+    baseline_items = [bar.volume for bar in bars[start:index] if bar.volume > 0]
+    baseline = median(baseline_items or [0.0])
+    return volume / baseline if baseline > 0 else 0.0
+
+
+def _atr_pct(bars: list[Bar], period: int = DAILY_ATR_PERIOD) -> float:
+    if period <= 0 or len(bars) < period + 1:
+        return 0.0
+    window = bars[-(period + 1) :]
+    true_ranges: list[float] = []
+    for previous, current in zip(window, window[1:]):
+        true_ranges.append(
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+        )
+    price = bars[-1].close
+    return (sum(true_ranges) / len(true_ranges)) / price if true_ranges and price > 0 else 0.0
+
+
+def _range_pct(bars: list[Bar], lookback: int = DAILY_RANGE_LOOKBACK) -> float:
+    window = bars[-max(1, lookback) :]
+    if not window:
+        return 0.0
+    low = min(bar.low for bar in window)
+    high = max(bar.high for bar in window)
+    price = window[-1].close
+    return (high - low) / price if price > 0 else 0.0
+
+
+def _median_dollar_volume(bars: list[Bar], lookback: int = DAILY_MEDIAN_DOLLAR_VOLUME_LOOKBACK) -> float:
+    window = bars[-max(1, lookback) :]
+    dollar_volumes = [bar.close * bar.volume for bar in window if bar.close > 0 and bar.volume > 0]
+    return float(median(dollar_volumes)) if dollar_volumes else 0.0
+
+
+def _liquidity_tier_score(median_dollar_volume: float) -> float:
+    if median_dollar_volume <= DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME:
+        return min(12.0, math.log10(median_dollar_volume / DAILY_MIN_MEDIAN_DOLLAR_VOLUME + 1.0) * 5.0)
+    excess = (median_dollar_volume - DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME) / DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME
+    return max(-12.0, 8.0 - excess * 18.0)
 
 
 def _bounded(value: float, *, low: float, high: float) -> float:
@@ -210,6 +281,62 @@ def evaluate_symbol(
     ema20_slope_pct = (ema20_now - ema20_prev) / ema20_prev if ema20_prev > 0 else 0.0
     ema_gap_pct = (ema5_now - ema20_now) / ema20_now if ema20_now > 0 else 0.0
     daily_volume_ratio = _daily_volume_ratio(ordered)
+    cross_index = len(ordered) - 1 - bars_since_cross
+    cross_day_volume_ratio = _volume_ratio_at_index(ordered, cross_index)
+    daily_atr_pct = _atr_pct(ordered)
+    daily_range_pct = _range_pct(ordered)
+    median_dollar_volume = _median_dollar_volume(ordered)
+    last_daily_change_pct = _latest_daily_change_pct(closes)
+
+    if daily_volume_ratio < DAILY_VOLUME_RATIO_MIN:
+        return None, CandidateReject(
+            symbol,
+            "volume",
+            f"daily volume ratio {daily_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}",
+        )
+    _bump("passed_volume")
+
+    if daily_atr_pct < DAILY_MIN_ATR_PCT:
+        return None, CandidateReject(
+            symbol,
+            "atr",
+            f"daily ATR {daily_atr_pct:.2%} < {DAILY_MIN_ATR_PCT:.2%}",
+        )
+    if daily_atr_pct > DAILY_MAX_ATR_PCT:
+        return None, CandidateReject(
+            symbol,
+            "atr",
+            f"daily ATR {daily_atr_pct:.2%} > {DAILY_MAX_ATR_PCT:.2%}",
+        )
+    _bump("passed_daily_atr")
+
+    if daily_range_pct < DAILY_MIN_RANGE_PCT:
+        return None, CandidateReject(
+            symbol,
+            "range",
+            f"{DAILY_RANGE_LOOKBACK}-day range {daily_range_pct:.2%} < {DAILY_MIN_RANGE_PCT:.2%}",
+        )
+    _bump("passed_daily_range")
+
+    if median_dollar_volume < DAILY_MIN_MEDIAN_DOLLAR_VOLUME:
+        return None, CandidateReject(
+            symbol,
+            "liquidity",
+            (
+                f"median dollar volume {median_dollar_volume:.0f} "
+                f"< {DAILY_MIN_MEDIAN_DOLLAR_VOLUME:.0f}"
+            ),
+        )
+    if median_dollar_volume > DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME:
+        return None, CandidateReject(
+            symbol,
+            "liquidity",
+            (
+                f"median dollar volume {median_dollar_volume:.0f} "
+                f"> {DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME:.0f}"
+            ),
+        )
+    _bump("passed_liquidity_band")
 
     quality_flags: list[str] = []
     if ema5_above_ema10:
@@ -220,10 +347,23 @@ def evaluate_symbol(
         _bump("passed_ema20_rising")
     else:
         quality_flags.append("EMA20 not rising on latest bar")
-    if daily_volume_ratio >= DAILY_VOLUME_RATIO_MIN:
-        _bump("passed_volume")
+    if cross_day_volume_ratio >= DAILY_VOLUME_RATIO_MIN:
+        _bump("passed_cross_day_volume")
     else:
-        quality_flags.append(f"daily volume ratio {daily_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}")
+        quality_flags.append(
+            f"cross-day volume ratio {cross_day_volume_ratio:.2f} < {DAILY_VOLUME_RATIO_MIN:.2f}"
+        )
+    if last_daily_change_pct > 0:
+        _bump("passed_positive_daily_change")
+    else:
+        quality_flags.append(f"latest daily change {last_daily_change_pct:.2f}% <= 0")
+    if median_dollar_volume <= DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME:
+        _bump("passed_preferred_liquidity_tier")
+    else:
+        quality_flags.append(
+            f"median dollar volume {median_dollar_volume:.0f} above preferred "
+            f"{DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME:.0f}"
+        )
     if ema_gap_pct <= DAILY_MAX_GAP_EXTENSION_PCT:
         _bump("passed_gap_not_extended")
     else:
@@ -233,9 +373,26 @@ def evaluate_symbol(
     alignment_score = 12.0 if ema5_above_ema10 else -8.0
     slope_score = _bounded(ema20_slope_pct * 400.0, low=-6.0, high=12.0)
     gap_score = _bounded(ema_gap_pct * 180.0, low=0.0, high=18.0)
-    volume_score = min(daily_volume_ratio, 3.0) * 5.0
+    volume_score = min(daily_volume_ratio, 3.0) * 6.0
+    cross_volume_score = min(cross_day_volume_ratio, 3.0) * 5.0
+    atr_score = _bounded((daily_atr_pct - DAILY_MIN_ATR_PCT) * 260.0, low=-6.0, high=14.0)
+    range_score = _bounded((daily_range_pct - DAILY_MIN_RANGE_PCT) * 130.0, low=-6.0, high=14.0)
+    momentum_score = _bounded(last_daily_change_pct * 1.8, low=-6.0, high=12.0)
+    liquidity_score = _liquidity_tier_score(median_dollar_volume)
     extension_penalty = max(0.0, ema_gap_pct - DAILY_MAX_GAP_EXTENSION_PCT) * 120.0
-    score = recency_score + alignment_score + slope_score + gap_score + volume_score - extension_penalty
+    score = (
+        recency_score
+        + alignment_score
+        + slope_score
+        + gap_score
+        + volume_score
+        + cross_volume_score
+        + atr_score
+        + range_score
+        + momentum_score
+        + liquidity_score
+        - extension_penalty
+    )
 
     setup_stage = _setup_stage(
         bars_since_cross=bars_since_cross,
@@ -255,8 +412,12 @@ def evaluate_symbol(
         ema20_slope_pct=round(ema20_slope_pct, 6),
         ema5_above_ema10=ema5_above_ema10,
         daily_volume_ratio=round(daily_volume_ratio, 4),
+        cross_day_volume_ratio=round(cross_day_volume_ratio, 4),
+        daily_atr_pct=round(daily_atr_pct, 6),
+        daily_range_pct=round(daily_range_pct, 6),
+        median_dollar_volume=round(median_dollar_volume, 2),
         last_price=round(price, 4),
-        last_daily_change_pct=round(_latest_daily_change_pct(closes), 4),
+        last_daily_change_pct=round(last_daily_change_pct, 4),
         quality_flags=tuple(quality_flags),
         days=len(ordered),
     )
@@ -277,6 +438,12 @@ def rank_candidates(
         "passed_ema5_above_ema10": 0,
         "passed_ema20_rising": 0,
         "passed_volume": 0,
+        "passed_daily_atr": 0,
+        "passed_daily_range": 0,
+        "passed_liquidity_band": 0,
+        "passed_cross_day_volume": 0,
+        "passed_positive_daily_change": 0,
+        "passed_preferred_liquidity_tier": 0,
         "passed_gap_not_extended": 0,
     }
     for symbol in symbols:
@@ -308,6 +475,13 @@ def deterministic_plan(
             "ema_mid": DAILY_EMA_MID,
             "ema_slow": DAILY_EMA_SLOW,
             "daily_volume_ratio_min": DAILY_VOLUME_RATIO_MIN,
+            "daily_min_atr_pct": DAILY_MIN_ATR_PCT,
+            "daily_max_atr_pct": DAILY_MAX_ATR_PCT,
+            "daily_min_range_pct": DAILY_MIN_RANGE_PCT,
+            "daily_range_lookback": DAILY_RANGE_LOOKBACK,
+            "daily_min_median_dollar_volume": DAILY_MIN_MEDIAN_DOLLAR_VOLUME,
+            "daily_preferred_max_median_dollar_volume": DAILY_PREFERRED_MAX_MEDIAN_DOLLAR_VOLUME,
+            "daily_hard_max_median_dollar_volume": DAILY_HARD_MAX_MEDIAN_DOLLAR_VOLUME,
             "max_gap_extension_pct": DAILY_MAX_GAP_EXTENSION_PCT,
             "indicator_input": "daily OHLCV bars",
         }
@@ -316,8 +490,9 @@ def deterministic_plan(
         "selection_stage": "ranked",
         "note": (
             "Daily EMA gap ranker: requires EMA5 golden cross above EMA20 within the last "
-            f"{DAILY_CROSS_LOOKBACK} sessions, EMA5 still above EMA20, and scores recency, "
-            "EMA10 alignment, EMA20 slope, gap size, and volume."
+            f"{DAILY_CROSS_LOOKBACK} sessions, EMA5 still above EMA20, minimum volume/ATR/range, "
+            "and a mid-liquidity dollar-volume band. Scores recency, EMA alignment, cross-day "
+            "volume, volatility, positive daily change, and penalizes mega-cap liquidity."
         ),
         "symbols": [row.symbol for row in top],
         "ranked": [asdict(row) for row in top],
@@ -338,7 +513,8 @@ def ai_ema_gap_cross_selection(ranked: list[dict[str, Any]], limit: int) -> dict
             "must_choose_from_ranked": True,
             "focus": (
                 "prefer fresher daily golden crosses, EMA5 above EMA10, rising EMA20, "
-                "tradable volume, and avoid names already too extended above EMA20"
+                "strong cross-day volume, positive daily change, higher ATR/range, "
+                "mid-cap liquidity over mega-cap names, and avoid names already too extended above EMA20"
             ),
         },
         "ranked": ranked,
