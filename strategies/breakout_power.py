@@ -222,7 +222,7 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_supertrend_period", "BP_SUPERTREND_PERIOD", int_env, 10),
         ("bp_supertrend_multiplier", "BP_SUPERTREND_MULTIPLIER", float_env, 2.0),
         ("bp_supertrend_exit_enabled", "BP_SUPERTREND_EXIT_ENABLED", bool_env, True),
-        ("bp_ema_bearish_exit_enabled", "BP_EMA_BEARISH_EXIT_ENABLED", bool_env, False),
+        ("bp_ema_bearish_exit_enabled", "BP_EMA_BEARISH_EXIT_ENABLED", bool_env, True),
         ("bp_stop_lookback_bars", "BP_STOP_LOOKBACK_BARS", int_env, 6),
         ("bp_stop_buffer_pct", "BP_STOP_BUFFER_PCT", float_env, 0.001),
         ("bp_stop_loss_pct", "BP_STOP_LOSS_PCT", float_env, 0.0042),
