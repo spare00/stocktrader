@@ -18,6 +18,8 @@ from strategy_selectors.select_opening_impulse import usable_quote
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
+MIN_UPTREND_BARS = 25
+EMA_SLOPE_LOOKBACK = 10
 
 
 def batched(items: list[str], size: int) -> list[list[str]]:
@@ -89,6 +91,99 @@ def get_daily_bars(
     return results
 
 
+def _ema_series(values: list[float], period: int) -> list[float]:
+    if not values or period <= 0:
+        return []
+    alpha = 2.0 / (period + 1)
+    out: list[float] = []
+    ema = values[0]
+    for value in values:
+        ema = alpha * value + (1.0 - alpha) * ema
+        out.append(ema)
+    return out
+
+
+def uptrend_metrics(bars: list[Bar], trend_lookback_days: int) -> dict | None:
+    ordered = sorted((bar for bar in bars if bar.close > 0), key=lambda item: item.start_ms)
+    if len(ordered) < MIN_UPTREND_BARS:
+        return None
+
+    trend_slice = ordered[-trend_lookback_days:] if trend_lookback_days > 0 else ordered
+    if len(trend_slice) < 2:
+        return None
+
+    closes = [float(bar.close) for bar in ordered]
+    price = closes[-1]
+    ema5_series = _ema_series(closes, 5)
+    ema10_series = _ema_series(closes, 10)
+    ema20_series = _ema_series(closes, 20)
+    if len(ema20_series) < EMA_SLOPE_LOOKBACK + 1:
+        return None
+
+    ema5 = ema5_series[-1]
+    ema10 = ema10_series[-1]
+    ema20 = ema20_series[-1]
+    ema20_prev = ema20_series[-1 - EMA_SLOPE_LOOKBACK]
+    ema20_slope_bps = ((ema20 - ema20_prev) / ema20_prev) * 10_000 if ema20_prev > 0 else 0.0
+
+    first_close = float(trend_slice[0].close)
+    trend_bps = ((price - first_close) / first_close) * 10_000 if first_close > 0 else 0.0
+
+    long_trend_ok = True
+    ema40_above_ema60: bool | None = None
+    if len(closes) >= 40:
+        ema40 = _ema_series(closes, 40)[-1]
+        long_trend_ok = price > ema40 and ema20 > ema40
+    if len(closes) >= 60:
+        ema40 = _ema_series(closes, 40)[-1]
+        ema60 = _ema_series(closes, 60)[-1]
+        ema40_above_ema60 = ema40 > ema60
+        long_trend_ok = long_trend_ok and price > ema60 and ema40 > ema60
+
+    return {
+        "trend_bps": trend_bps,
+        "ema20_slope_bps": ema20_slope_bps,
+        "ema_stack": ema5 > ema10 > ema20,
+        "price_above_ema20": price > ema20,
+        "ema5_above_ema20": ema5 > ema20,
+        "long_trend_ok": long_trend_ok,
+        "ema40_above_ema60": ema40_above_ema60,
+    }
+
+
+def passes_uptrend(
+    uptrend: dict | None,
+    *,
+    min_trend_bps: float,
+    require_ema_stack: bool,
+) -> bool:
+    if not uptrend:
+        return False
+    if uptrend["trend_bps"] < min_trend_bps:
+        return False
+    if not uptrend["price_above_ema20"]:
+        return False
+    if not uptrend["ema5_above_ema20"]:
+        return False
+    if uptrend["ema20_slope_bps"] <= 0:
+        return False
+    if not uptrend["long_trend_ok"]:
+        return False
+    if require_ema_stack and not uptrend["ema_stack"]:
+        return False
+    return True
+
+
+def uptrend_score(uptrend: dict, min_trend_bps: float) -> float:
+    score = min(uptrend["trend_bps"] / max(min_trend_bps, 1.0), 4.0)
+    if uptrend["ema_stack"]:
+        score += 2.0
+    if uptrend.get("ema40_above_ema60"):
+        score += 1.0
+    score += min(max(uptrend["ema20_slope_bps"], 0.0) / 100.0, 2.0)
+    return score
+
+
 def get_latest_quotes(settings: Settings, symbols: list[str], batch_size: int) -> dict[str, Quote]:
     from alpaca.data.requests import StockLatestQuoteRequest
     from alpaca_client import make_clients, to_quote
@@ -145,6 +240,11 @@ def score_symbol(
     max_price: float,
     min_average_volume: float,
     max_spread_bps: float,
+    *,
+    require_uptrend: bool = True,
+    min_trend_bps: float = 200.0,
+    trend_lookback_days: int = 60,
+    require_ema_stack: bool = False,
 ) -> dict | None:
     metrics = daily_metrics(bars)
     if not metrics:
@@ -154,21 +254,36 @@ def score_symbol(
     if metrics["average_volume"] < min_average_volume:
         return None
 
+    uptrend = uptrend_metrics(bars, trend_lookback_days)
+    if require_uptrend and not passes_uptrend(
+        uptrend,
+        min_trend_bps=min_trend_bps,
+        require_ema_stack=require_ema_stack,
+    ):
+        return None
+
     valid_quote = usable_quote(quote)
     spread_bps = valid_quote.spread_bps if valid_quote else None
 
     liquidity_score = min(math.log10(metrics["average_volume"] / min_average_volume + 1), 6.0)
     quote_score = 0.5 if spread_bps is not None and spread_bps <= max_spread_bps else 0.0
-    score = liquidity_score + quote_score
+    trend_score = uptrend_score(uptrend, min_trend_bps) if uptrend else 0.0
+    score = liquidity_score + quote_score + trend_score
 
-    return {
+    result = {
         "symbol": symbol,
         "score": round(score, 3),
         "price": round(metrics["price"], 2),
         "average_volume": round(metrics["average_volume"], 2),
         "median_dollar_volume": round(metrics["median_dollar_volume"], 2),
         "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
+        "trend_score": round(trend_score, 3),
     }
+    if uptrend:
+        result["trend_bps"] = round(uptrend["trend_bps"], 1)
+        result["ema_stack"] = uptrend["ema_stack"]
+        result["ema20_slope_bps"] = round(uptrend["ema20_slope_bps"], 1)
+    return result
 
 
 def build_universe(args: argparse.Namespace) -> dict:
@@ -178,6 +293,12 @@ def build_universe(args: argparse.Namespace) -> dict:
         raise ValueError("--lookback-days must be at least 2.")
     if args.batch_size < 1:
         raise ValueError("--batch-size must be at least 1.")
+    require_uptrend = not bool(getattr(args, "no_require_uptrend", False))
+    trend_lookback_days = int(getattr(args, "trend_lookback_days", None) or args.lookback_days)
+    if require_uptrend and args.lookback_days < MIN_UPTREND_BARS:
+        raise ValueError(f"--lookback-days must be at least {MIN_UPTREND_BARS} when uptrend filter is enabled.")
+    if require_uptrend and trend_lookback_days < 2:
+        raise ValueError("--trend-lookback-days must be at least 2 when uptrend filter is enabled.")
 
     settings_kwargs = {}
     if args.alpaca_api_key:
@@ -215,6 +336,10 @@ def build_universe(args: argparse.Namespace) -> dict:
             max_price=args.max_price,
             min_average_volume=args.min_average_volume,
             max_spread_bps=args.max_spread_bps,
+            require_uptrend=require_uptrend,
+            min_trend_bps=args.min_trend_bps,
+            trend_lookback_days=trend_lookback_days,
+            require_ema_stack=bool(getattr(args, "require_ema_stack", False)),
         )
         if result:
             candidates.append(result)
@@ -234,6 +359,9 @@ def build_universe(args: argparse.Namespace) -> dict:
         "screened": len(symbols),
         "passed": len(candidates),
         "lookback_days": args.lookback_days,
+        "trend_lookback_days": trend_lookback_days,
+        "require_uptrend": require_uptrend,
+        "min_trend_bps": args.min_trend_bps,
         "min_average_volume": args.min_average_volume,
     }
 
@@ -247,13 +375,30 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--top", type=int, default=300)
     parser.add_argument("--output", type=Path, default=Path("data/opening_universe.txt"))
-    parser.add_argument("--lookback-days", type=int, default=20)
+    parser.add_argument("--lookback-days", type=int, default=60)
+    parser.add_argument("--trend-lookback-days", type=int, default=None, help="Trend window for EMA/trend checks (default: --lookback-days).")
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--exchanges", default="NASDAQ,NYSE,ARCA", help="Comma-separated asset exchanges to include.")
     parser.add_argument("--min-price", type=float, default=5.0)
     parser.add_argument("--max-price", type=float, default=500.0)
     parser.add_argument("--min-average-volume", type=float, default=1_000_000.0)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
+    parser.add_argument(
+        "--min-trend-bps",
+        type=float,
+        default=200.0,
+        help="Minimum daily-chart uptrend over --trend-lookback-days (basis points, 200 = 2%%).",
+    )
+    parser.add_argument(
+        "--require-ema-stack",
+        action="store_true",
+        help="Require EMA5 > EMA10 > EMA20 in addition to the default uptrend checks.",
+    )
+    parser.add_argument(
+        "--no-require-uptrend",
+        action="store_true",
+        help="Disable medium-term uptrend filter (legacy liquidity-only screening).",
+    )
     parser.add_argument(
         "--skip-quotes",
         action="store_true",

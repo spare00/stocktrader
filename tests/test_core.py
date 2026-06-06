@@ -67,7 +67,7 @@ import strategy_selectors.select_maha7 as select_maha7
 import strategy_selectors.select_macd_early_impulse as select_macd_early_impulse
 import strategy_selectors.select_breakout_power as select_breakout_power
 import strategy_selectors.select_stoch_macd_reversal as select_stoch_macd_reversal
-from strategy_selectors.select_market_universe import daily_metrics, score_symbol
+from strategy_selectors.select_market_universe import daily_metrics, passes_uptrend, score_symbol, uptrend_metrics
 import strategy_selectors.select_opening_impulse as select_opening_impulse
 import strategy_selectors.select_steady_intraday as select_steady_intraday
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
@@ -1470,6 +1470,7 @@ class CoreTradingTests(unittest.TestCase):
             max_price=500.0,
             min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
+            require_uptrend=False,
         )
 
         self.assertIsNotNone(result)
@@ -1519,12 +1520,16 @@ class CoreTradingTests(unittest.TestCase):
                         top=1,
                         output=output,
                         lookback_days=2,
+                        trend_lookback_days=2,
                         batch_size=2,
                         exchanges="NASDAQ,NYSE",
                         min_price=5.0,
                         max_price=500.0,
                         min_average_volume=1_000_000.0,
                         max_spread_bps=12.0,
+                        min_trend_bps=200.0,
+                        require_ema_stack=False,
+                        no_require_uptrend=True,
                         skip_quotes=True,
                         alpaca_api_key="test",
                         alpaca_secret_key="test",
@@ -1546,6 +1551,69 @@ class CoreTradingTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             select_market_universe.build_universe(args)
+
+    def test_opening_universe_builder_prefers_uptrending_symbols(self):
+        start_ms = market_ms(2026, 1, 2, 9, 30)
+
+        def rising_bars(symbol: str, start_price: float, days: int, daily_gain: float = 0.012) -> list[Bar]:
+            bars: list[Bar] = []
+            price = start_price
+            for index in range(days):
+                bars.append(
+                    daily_bar_with_volume(
+                        symbol,
+                        price,
+                        price * 0.985,
+                        price * 1.015,
+                        2_000_000,
+                        start_ms + index * 86_400_000,
+                    )
+                )
+                price *= 1.0 + daily_gain
+            return bars
+
+        def flat_bars(symbol: str, price: float, days: int) -> list[Bar]:
+            return [
+                daily_bar_with_volume(symbol, price, price * 0.99, price * 1.01, 2_000_000, start_ms + index * 86_400_000)
+                for index in range(days)
+            ]
+
+        uptrend_bars = rising_bars("UP", 50.0, 60)
+        flat = flat_bars("FLAT", 100.0, 60)
+        uptrend = uptrend_metrics(uptrend_bars, 60)
+        self.assertIsNotNone(uptrend)
+        assert uptrend is not None
+        self.assertTrue(passes_uptrend(uptrend, min_trend_bps=200.0, require_ema_stack=False))
+
+        uptrend_result = score_symbol(
+            "UP",
+            uptrend_bars,
+            quote=Quote("UP", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0),
+            min_price=5.0,
+            max_price=500.0,
+            min_average_volume=1_000_000.0,
+            max_spread_bps=12.0,
+            require_uptrend=True,
+            min_trend_bps=200.0,
+            trend_lookback_days=60,
+        )
+        flat_result = score_symbol(
+            "FLAT",
+            flat,
+            quote=Quote("FLAT", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0),
+            min_price=5.0,
+            max_price=500.0,
+            min_average_volume=1_000_000.0,
+            max_spread_bps=12.0,
+            require_uptrend=True,
+            min_trend_bps=200.0,
+            trend_lookback_days=60,
+        )
+        self.assertIsNotNone(uptrend_result)
+        self.assertIsNone(flat_result)
+        assert uptrend_result is not None
+        self.assertGreater(uptrend_result["trend_score"], 0.0)
+        self.assertTrue(uptrend_result["ema_stack"])
 
     def test_maha7_selector_writes_plan_from_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:
