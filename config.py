@@ -477,6 +477,12 @@ class Settings:
     egc_entry_below_bars: int = 2
     egc_cross_lookback_bars: int = 3
     egc_require_ema20_rising: bool = True
+    egc_min_ema20_rise_bars: int = 2
+    egc_block_recent_death_cross_bars: int = 8
+    egc_require_above_vwap: bool = True
+    egc_vwap_buffer_pct: float = 0.0
+    egc_require_bullish_cross_bar: bool = True
+    egc_block_open_minutes: int = 0
     egc_death_cross_confirm_bars: int = 2
     egc_stop_lookback_bars: int = 6
     egc_stop_buffer_pct: float = 0.001

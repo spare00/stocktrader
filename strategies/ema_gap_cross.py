@@ -11,7 +11,7 @@ from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from modules.indicator_history import continuous_indicator_bars
-from strategy_selectors.select_gap_and_go import latest_valid_quote
+from strategy_selectors.select_gap_and_go import latest_valid_quote, regular_bars
 from strategies.base import Strategy
 from strategies.macd_early_impulse import _ema_series
 
@@ -30,6 +30,45 @@ class _EGCPositionState:
     ema20_peak: float | None = None
     bars_since_entry: int = 0
     last_processed_bar_end_ms: int | None = None
+
+
+def ema_crossed_below(fast: list[float], slow: list[float], *, index: int = -1) -> bool:
+    """True when fast crosses below slow between index-1 and index."""
+    if len(fast) < 2 or len(slow) < 2 or len(fast) != len(slow):
+        return False
+    i = index if index >= 0 else len(fast) + index
+    if i < 1:
+        return False
+    return fast[i - 1] >= slow[i - 1] and fast[i] < slow[i]
+
+
+def recent_ema_cross_below(
+    fast: list[float],
+    slow: list[float],
+    *,
+    lookback: int = 8,
+    before_index: int | None = None,
+) -> tuple[bool, int | None]:
+    """True when fast crossed below slow within `lookback` bars ending before `before_index`."""
+    if len(fast) < 2 or len(slow) < 2 or len(fast) != len(slow) or lookback <= 0:
+        return False, None
+    end = len(fast) - 1 if before_index is None else before_index - 1
+    if end < 1:
+        return False, None
+    start = max(1, end - lookback + 1)
+    for index in range(end, start - 1, -1):
+        if ema_crossed_below(fast, slow, index=index):
+            return True, index
+    return False, None
+
+
+def ema_rising_for_bars(series: list[float], bars: int) -> bool:
+    """True when `series` has not declined over the last `bars` bar-to-bar steps."""
+    if bars <= 1:
+        return len(series) >= 2 and series[-1] >= series[-2]
+    if len(series) < bars + 1:
+        return False
+    return all(series[index] >= series[index - 1] for index in range(-bars, 0))
 
 
 def ema_crossed_above(fast: list[float], slow: list[float], *, index: int = -1) -> bool:
@@ -147,6 +186,12 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_entry_below_bars", "EGC_ENTRY_BELOW_BARS", int_env, 2),
         ("egc_cross_lookback_bars", "EGC_CROSS_LOOKBACK_BARS", int_env, 3),
         ("egc_require_ema20_rising", "EGC_REQUIRE_EMA20_RISING", bool_env, True),
+        ("egc_min_ema20_rise_bars", "EGC_MIN_EMA20_RISE_BARS", int_env, 2),
+        ("egc_block_recent_death_cross_bars", "EGC_BLOCK_RECENT_DEATH_CROSS_BARS", int_env, 8),
+        ("egc_require_above_vwap", "EGC_REQUIRE_ABOVE_VWAP", bool_env, True),
+        ("egc_vwap_buffer_pct", "EGC_VWAP_BUFFER_PCT", float_env, 0.0),
+        ("egc_require_bullish_cross_bar", "EGC_REQUIRE_BULLISH_CROSS_BAR", bool_env, True),
+        ("egc_block_open_minutes", "EGC_BLOCK_OPEN_MINUTES", int_env, 0),
         ("egc_death_cross_confirm_bars", "EGC_DEATH_CROSS_CONFIRM_BARS", int_env, 2),
         ("egc_stop_lookback_bars", "EGC_STOP_LOOKBACK_BARS", int_env, 6),
         ("egc_stop_buffer_pct", "EGC_STOP_BUFFER_PCT", float_env, 0.001),
@@ -175,6 +220,12 @@ class EmaGapCrossStrategy(Strategy):
             "entry_below_bars": settings.egc_entry_below_bars,
             "cross_lookback_bars": settings.egc_cross_lookback_bars,
             "require_ema20_rising": bool(settings.egc_require_ema20_rising),
+            "min_ema20_rise_bars": settings.egc_min_ema20_rise_bars,
+            "block_recent_death_cross_bars": settings.egc_block_recent_death_cross_bars,
+            "require_above_vwap": bool(settings.egc_require_above_vwap),
+            "vwap_buffer_pct": settings.egc_vwap_buffer_pct,
+            "require_bullish_cross_bar": bool(settings.egc_require_bullish_cross_bar),
+            "block_open_minutes": settings.egc_block_open_minutes,
             "death_cross_confirm_bars": settings.egc_death_cross_confirm_bars,
             "stop_lookback_bars": settings.egc_stop_lookback_bars,
             "stop_buffer_pct": settings.egc_stop_buffer_pct,
@@ -243,12 +294,15 @@ class EmaGapCrossStrategy(Strategy):
         if self._last_signaled_cross_index.get(symbol) == cross_index:
             return self._reject(state, "cross", f"golden cross at bar {cross_index} already signaled")
 
-        if self.settings.egc_require_ema20_rising and ema20[-1] < ema20[-2]:
-            return self._reject(
-                state,
-                "trend",
-                f"EMA20 not rising ({ema20[-2]:.4f} -> {ema20[-1]:.4f})",
-            )
+        if self._bad_entry_veto(
+            state,
+            indicator_bars=indicator_bars,
+            ema5=ema5,
+            ema20=ema20,
+            cross_index=cross_index,
+            ask=last.ask,
+        ):
+            return None
 
         gap = ema5[-1] - ema20[-1]
         gap_pct = gap / ema20[-1] if ema20[-1] > 0 else 0.0
@@ -392,6 +446,100 @@ class EmaGapCrossStrategy(Strategy):
 
     def _indicator_bars(self, state: SymbolState) -> list:
         return continuous_indicator_bars(state, self.settings)
+
+    def _session_vwap(self, state: SymbolState) -> float | None:
+        session_bars = regular_bars(state)
+        total_volume = sum(bar.volume for bar in session_bars if bar.volume > 0)
+        if total_volume <= 0:
+            return None
+        total_value = sum(bar.vwap * bar.volume for bar in session_bars if bar.volume > 0)
+        return total_value / total_volume if total_value > 0 else None
+
+    def _minutes_since_open(self, timestamp_ms: int | None) -> int | None:
+        if timestamp_ms is None:
+            return None
+        current = datetime.fromtimestamp(timestamp_ms / 1000, tz=self.market_tz)
+        minutes = current.hour * 60 + current.minute
+        market_open = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
+        return minutes - market_open
+
+    def _bad_entry_veto(
+        self,
+        state: SymbolState,
+        *,
+        indicator_bars: list,
+        ema5: list[float],
+        ema20: list[float],
+        cross_index: int,
+        ask: float,
+    ) -> bool:
+        block_open = max(0, self.settings.egc_block_open_minutes)
+        if block_open > 0:
+            elapsed = self._minutes_since_open(state.last_event_ms)
+            if elapsed is not None and elapsed < block_open:
+                self._reject(
+                    state,
+                    "open_chop",
+                    f"within first {block_open} minutes after open ({elapsed}m elapsed)",
+                )
+                return True
+
+        if self.settings.egc_require_ema20_rising:
+            rise_bars = max(1, self.settings.egc_min_ema20_rise_bars)
+            if not ema_rising_for_bars(ema20, rise_bars):
+                self._reject(
+                    state,
+                    "trend",
+                    f"EMA20 not rising for {rise_bars} bars ({ema20[-rise_bars]:.4f} -> {ema20[-1]:.4f})",
+                )
+                return True
+
+        death_lookback = max(0, self.settings.egc_block_recent_death_cross_bars)
+        if death_lookback > 0:
+            whipsaw, death_index = recent_ema_cross_below(
+                ema5,
+                ema20,
+                lookback=death_lookback,
+                before_index=cross_index,
+            )
+            if whipsaw and death_index is not None:
+                self._reject(
+                    state,
+                    "whipsaw",
+                    f"death cross {cross_index - death_index} bar(s) before golden cross",
+                )
+                return True
+
+        if self.settings.egc_require_above_vwap:
+            session_vwap = self._session_vwap(state)
+            if session_vwap is None:
+                self._reject(state, "vwap", "missing session VWAP")
+                return True
+            min_price = session_vwap * (1.0 + max(0.0, self.settings.egc_vwap_buffer_pct))
+            if ask < min_price:
+                self._reject(
+                    state,
+                    "vwap",
+                    f"price below VWAP ask={ask:.2f} vwap={session_vwap:.2f}",
+                )
+                return True
+
+        if self.settings.egc_require_bullish_cross_bar:
+            if cross_index < 0 or cross_index >= len(indicator_bars):
+                self._reject(state, "cross_bar", "cross bar unavailable")
+                return True
+            cross_bar = indicator_bars[cross_index]
+            if float(cross_bar.close) <= float(cross_bar.open):
+                self._reject(
+                    state,
+                    "cross_bar",
+                    (
+                        f"golden-cross bar not bullish "
+                        f"(open={float(cross_bar.open):.4f} close={float(cross_bar.close):.4f})"
+                    ),
+                )
+                return True
+        return False
 
     def _clear_position_state(self, symbol: str) -> None:
         self._position_states.pop(symbol.strip().upper(), None)

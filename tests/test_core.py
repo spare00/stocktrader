@@ -80,8 +80,10 @@ from strategies.ema_gap_cross import (
     ema_crossed_above,
     ema_crossed_above_after_bars_below,
     ema_fast_below_slow_for_bars,
+    ema_rising_for_bars,
     find_golden_cross_after_below,
     recent_ema_cross_above,
+    recent_ema_cross_below,
 )
 import strategy_selectors.select_ema_gap_cross as select_ema_gap_cross
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
@@ -10381,12 +10383,18 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(peak, 10.2)
 
     def test_ema_gap_cross_emits_buy_on_golden_cross(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"])
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_require_above_vwap=False,
+            egc_require_bullish_cross_bar=False,
+            egc_block_recent_death_cross_bars=0,
+        )
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
         ema5 = [9.0] * 42 + [9.7, 9.8, 10.5]
         ema10 = [9.0] * 42 + [10.0, 10.1, 10.2]
-        ema20 = [9.0] * 42 + [10.0, 9.9, 10.1]
+        ema20 = [9.0] * 42 + [9.8, 9.9, 10.1]
         with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
             signal = strategy.evaluate(state)
 
@@ -10413,6 +10421,9 @@ class CoreTradingTests(unittest.TestCase):
             strategy_names=["ema_gap_cross"],
             egc_cross_lookback_bars=3,
             egc_require_ema20_rising=False,
+            egc_require_above_vwap=False,
+            egc_require_bullish_cross_bar=False,
+            egc_block_recent_death_cross_bars=0,
         )
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
@@ -10426,7 +10437,15 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("cross 1 bar(s) ago", signal.reason)
 
     def test_ema_gap_cross_rejects_falling_ema20_bounce(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_require_ema20_rising=True)
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_require_ema20_rising=True,
+            egc_min_ema20_rise_bars=2,
+            egc_require_above_vwap=False,
+            egc_require_bullish_cross_bar=False,
+            egc_block_recent_death_cross_bars=0,
+        )
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
         ema5 = [9.0] * 42 + [9.7, 9.8, 10.5]
@@ -10437,8 +10456,40 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_ema_gap_cross_bad_entry_veto_blocks_whipsaw(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_block_recent_death_cross_bars=8,
+            egc_require_above_vwap=False,
+            egc_require_bullish_cross_bar=False,
+            egc_require_ema20_rising=False,
+        )
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        ema5 = [10.0, 10.2, 9.8, 9.9, 10.4, 10.5]
+        ema10 = [10.0, 10.1, 10.0, 10.0, 10.2, 10.3]
+        ema20 = [10.0, 10.0, 10.0, 10.0, 10.1, 10.2]
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+        self.assertTrue(recent_ema_cross_below(ema5, ema20, lookback=8, before_index=4)[0])
+
+    def test_ema_rising_for_bars_requires_sustained_slope(self):
+        self.assertTrue(ema_rising_for_bars([1.0, 1.1, 1.2], 2))
+        self.assertFalse(ema_rising_for_bars([1.2, 1.1, 1.2], 2))
+
     def test_ema_gap_cross_rejects_thin_gap(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["ema_gap_cross"], egc_min_gap_pct=0.001)
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_min_gap_pct=0.001,
+            egc_require_above_vwap=False,
+            egc_require_bullish_cross_bar=False,
+            egc_block_recent_death_cross_bars=0,
+            egc_require_ema20_rising=False,
+        )
         strategy = EmaGapCrossStrategy(settings)
         state = self._bp_state()
         ema5 = [9.9] * 43 + [9.95, 10.0006]
