@@ -483,6 +483,11 @@ class Settings:
     egc_vwap_buffer_pct: float = 0.0
     egc_require_bullish_cross_bar: bool = True
     egc_block_open_minutes: int = 0
+    egc_max_bars_since_cross: int = 1
+    egc_stale_cross_min_gap_pct: float = 0.0008
+    egc_require_bullish_entry_bar: bool = True
+    egc_require_ema5_rising: bool = True
+    egc_post_stop_cooldown_seconds: int = 600
     egc_death_cross_confirm_bars: int = 2
     egc_stop_lookback_bars: int = 6
     egc_stop_buffer_pct: float = 0.001

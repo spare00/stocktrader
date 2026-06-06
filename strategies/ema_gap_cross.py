@@ -192,6 +192,11 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_vwap_buffer_pct", "EGC_VWAP_BUFFER_PCT", float_env, 0.0),
         ("egc_require_bullish_cross_bar", "EGC_REQUIRE_BULLISH_CROSS_BAR", bool_env, True),
         ("egc_block_open_minutes", "EGC_BLOCK_OPEN_MINUTES", int_env, 0),
+        ("egc_max_bars_since_cross", "EGC_MAX_BARS_SINCE_CROSS", int_env, 1),
+        ("egc_stale_cross_min_gap_pct", "EGC_STALE_CROSS_MIN_GAP_PCT", float_env, 0.0008),
+        ("egc_require_bullish_entry_bar", "EGC_REQUIRE_BULLISH_ENTRY_BAR", bool_env, True),
+        ("egc_require_ema5_rising", "EGC_REQUIRE_EMA5_RISING", bool_env, True),
+        ("egc_post_stop_cooldown_seconds", "EGC_POST_STOP_COOLDOWN_SECONDS", int_env, 600),
         ("egc_death_cross_confirm_bars", "EGC_DEATH_CROSS_CONFIRM_BARS", int_env, 2),
         ("egc_stop_lookback_bars", "EGC_STOP_LOOKBACK_BARS", int_env, 6),
         ("egc_stop_buffer_pct", "EGC_STOP_BUFFER_PCT", float_env, 0.001),
@@ -226,6 +231,11 @@ class EmaGapCrossStrategy(Strategy):
             "vwap_buffer_pct": settings.egc_vwap_buffer_pct,
             "require_bullish_cross_bar": bool(settings.egc_require_bullish_cross_bar),
             "block_open_minutes": settings.egc_block_open_minutes,
+            "max_bars_since_cross": settings.egc_max_bars_since_cross,
+            "stale_cross_min_gap_pct": settings.egc_stale_cross_min_gap_pct,
+            "require_bullish_entry_bar": bool(settings.egc_require_bullish_entry_bar),
+            "require_ema5_rising": bool(settings.egc_require_ema5_rising),
+            "post_stop_cooldown_seconds": settings.egc_post_stop_cooldown_seconds,
             "death_cross_confirm_bars": settings.egc_death_cross_confirm_bars,
             "stop_lookback_bars": settings.egc_stop_lookback_bars,
             "stop_buffer_pct": settings.egc_stop_buffer_pct,
@@ -243,6 +253,7 @@ class EmaGapCrossStrategy(Strategy):
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
         self._position_states: dict[str, _EGCPositionState] = {}
         self._last_signaled_cross_index: dict[str, int] = {}
+        self._last_stop_ms: dict[str, int] = {}
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind != "bar":
@@ -294,18 +305,22 @@ class EmaGapCrossStrategy(Strategy):
         if self._last_signaled_cross_index.get(symbol) == cross_index:
             return self._reject(state, "cross", f"golden cross at bar {cross_index} already signaled")
 
+        gap = ema5[-1] - ema20[-1]
+        gap_pct = gap / ema20[-1] if ema20[-1] > 0 else 0.0
+
         if self._bad_entry_veto(
             state,
+            symbol=symbol,
             indicator_bars=indicator_bars,
             ema5=ema5,
             ema20=ema20,
             cross_index=cross_index,
+            bars_since=bars_since,
+            gap_pct=gap_pct,
             ask=last.ask,
         ):
             return None
 
-        gap = ema5[-1] - ema20[-1]
-        gap_pct = gap / ema20[-1] if ema20[-1] > 0 else 0.0
         if gap_pct < self.settings.egc_min_gap_pct:
             return self._reject(
                 state,
@@ -377,6 +392,7 @@ class EmaGapCrossStrategy(Strategy):
 
         pnl_pct = (price - position.entry_price) / position.entry_price
         if pnl_pct <= -self.settings.egc_stop_loss_pct:
+            self._last_stop_ms[symbol] = int(event_ms)
             self._clear_position_state(symbol)
             return ExitDecision("stop loss")
 
@@ -467,12 +483,46 @@ class EmaGapCrossStrategy(Strategy):
         self,
         state: SymbolState,
         *,
+        symbol: str,
         indicator_bars: list,
         ema5: list[float],
         ema20: list[float],
         cross_index: int,
+        bars_since: int | None,
+        gap_pct: float,
         ask: float,
     ) -> bool:
+        cooldown = max(0, self.settings.egc_post_stop_cooldown_seconds)
+        if cooldown > 0:
+            last_stop_ms = self._last_stop_ms.get(symbol)
+            now_ms = state.last_event_ms or 0
+            if last_stop_ms is not None and now_ms - last_stop_ms < cooldown * 1000:
+                self._reject(
+                    state,
+                    "stop_cooldown",
+                    f"recent stop loss {int((now_ms - last_stop_ms) / 1000)}s ago < {cooldown}s",
+                )
+                return True
+
+        max_cross_age = max(0, self.settings.egc_max_bars_since_cross)
+        if bars_since is not None and bars_since > max_cross_age:
+            self._reject(
+                state,
+                "stale_cross",
+                f"golden cross {bars_since} bar(s) ago > max {max_cross_age}",
+            )
+            return True
+
+        if bars_since is not None and bars_since >= 1:
+            stale_gap = max(0.0, self.settings.egc_stale_cross_min_gap_pct)
+            if stale_gap > 0 and gap_pct < stale_gap:
+                self._reject(
+                    state,
+                    "stale_cross",
+                    f"stale cross gap {gap_pct:.4%} < min {stale_gap:.4%}",
+                )
+                return True
+
         block_open = max(0, self.settings.egc_block_open_minutes)
         if block_open > 0:
             elapsed = self._minutes_since_open(state.last_event_ms)
@@ -536,6 +586,27 @@ class EmaGapCrossStrategy(Strategy):
                     (
                         f"golden-cross bar not bullish "
                         f"(open={float(cross_bar.open):.4f} close={float(cross_bar.close):.4f})"
+                    ),
+                )
+                return True
+
+        if self.settings.egc_require_ema5_rising and len(ema5) >= 2 and ema5[-1] <= ema5[-2]:
+            self._reject(
+                state,
+                "momentum",
+                f"EMA5 not rising ({ema5[-2]:.4f} -> {ema5[-1]:.4f})",
+            )
+            return True
+
+        if self.settings.egc_require_bullish_entry_bar and indicator_bars:
+            entry_bar = indicator_bars[-1]
+            if float(entry_bar.close) <= float(entry_bar.open):
+                self._reject(
+                    state,
+                    "entry_bar",
+                    (
+                        f"entry bar not bullish "
+                        f"(open={float(entry_bar.open):.4f} close={float(entry_bar.close):.4f})"
                     ),
                 )
                 return True
