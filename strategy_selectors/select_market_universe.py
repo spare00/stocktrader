@@ -241,7 +241,7 @@ def score_symbol(
     min_average_volume: float,
     max_spread_bps: float,
     *,
-    require_uptrend: bool = True,
+    require_uptrend: bool = False,
     min_trend_bps: float = 200.0,
     trend_lookback_days: int = 60,
     require_ema_stack: bool = False,
@@ -255,11 +255,12 @@ def score_symbol(
         return None
 
     uptrend = uptrend_metrics(bars, trend_lookback_days)
-    if require_uptrend and not passes_uptrend(
+    uptrend_ok = passes_uptrend(
         uptrend,
         min_trend_bps=min_trend_bps,
         require_ema_stack=require_ema_stack,
-    ):
+    )
+    if require_uptrend and not uptrend_ok:
         return None
 
     valid_quote = usable_quote(quote)
@@ -278,12 +279,26 @@ def score_symbol(
         "median_dollar_volume": round(metrics["median_dollar_volume"], 2),
         "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
         "trend_score": round(trend_score, 3),
+        "uptrend_ok": uptrend_ok,
     }
     if uptrend:
         result["trend_bps"] = round(uptrend["trend_bps"], 1)
         result["ema_stack"] = uptrend["ema_stack"]
         result["ema20_slope_bps"] = round(uptrend["ema20_slope_bps"], 1)
     return result
+
+
+def select_top_candidates(candidates: list[dict], top: int, *, prefer_uptrend: bool) -> list[dict]:
+    ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
+    if not prefer_uptrend:
+        return ranked[:top]
+
+    uptrend_first = [item for item in ranked if item.get("uptrend_ok")]
+    remainder = [item for item in ranked if not item.get("uptrend_ok")]
+    selected = uptrend_first[:top]
+    if len(selected) < top:
+        selected.extend(remainder[: top - len(selected)])
+    return selected
 
 
 def build_universe(args: argparse.Namespace) -> dict:
@@ -293,12 +308,9 @@ def build_universe(args: argparse.Namespace) -> dict:
         raise ValueError("--lookback-days must be at least 2.")
     if args.batch_size < 1:
         raise ValueError("--batch-size must be at least 1.")
-    require_uptrend = not bool(getattr(args, "no_require_uptrend", False))
     trend_lookback_days = int(getattr(args, "trend_lookback_days", None) or args.lookback_days)
-    if require_uptrend and args.lookback_days < MIN_UPTREND_BARS:
-        raise ValueError(f"--lookback-days must be at least {MIN_UPTREND_BARS} when uptrend filter is enabled.")
-    if require_uptrend and trend_lookback_days < 2:
-        raise ValueError("--trend-lookback-days must be at least 2 when uptrend filter is enabled.")
+    if trend_lookback_days < 2:
+        raise ValueError("--trend-lookback-days must be at least 2.")
 
     settings_kwargs = {}
     if args.alpaca_api_key:
@@ -336,7 +348,7 @@ def build_universe(args: argparse.Namespace) -> dict:
             max_price=args.max_price,
             min_average_volume=args.min_average_volume,
             max_spread_bps=args.max_spread_bps,
-            require_uptrend=require_uptrend,
+            require_uptrend=False,
             min_trend_bps=args.min_trend_bps,
             trend_lookback_days=trend_lookback_days,
             require_ema_stack=bool(getattr(args, "require_ema_stack", False)),
@@ -344,8 +356,9 @@ def build_universe(args: argparse.Namespace) -> dict:
         if result:
             candidates.append(result)
 
-    candidates.sort(key=lambda item: item["score"], reverse=True)
-    selected = candidates[: args.top]
+    prefer_uptrend = not bool(getattr(args, "liquidity_only_ranking", False))
+    selected = select_top_candidates(candidates, args.top, prefer_uptrend=prefer_uptrend)
+
     selected_symbols = [item["symbol"] for item in selected]
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -358,9 +371,11 @@ def build_universe(args: argparse.Namespace) -> dict:
         "candidates": selected,
         "screened": len(symbols),
         "passed": len(candidates),
+        "requested_top": args.top,
+        "selected_count": len(selected_symbols),
         "lookback_days": args.lookback_days,
         "trend_lookback_days": trend_lookback_days,
-        "require_uptrend": require_uptrend,
+        "prefer_uptrend": prefer_uptrend,
         "min_trend_bps": args.min_trend_bps,
         "min_average_volume": args.min_average_volume,
     }
@@ -392,12 +407,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-ema-stack",
         action="store_true",
-        help="Require EMA5 > EMA10 > EMA20 in addition to the default uptrend checks.",
+        help="Treat EMA5 > EMA10 > EMA20 as required for uptrend-first ranking tier.",
     )
     parser.add_argument(
-        "--no-require-uptrend",
+        "--liquidity-only-ranking",
         action="store_true",
-        help="Disable medium-term uptrend filter (legacy liquidity-only screening).",
+        help="Rank purely by liquidity/spread score without uptrend-first tiering.",
     )
     parser.add_argument(
         "--skip-quotes",

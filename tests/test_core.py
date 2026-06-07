@@ -67,7 +67,13 @@ import strategy_selectors.select_maha7 as select_maha7
 import strategy_selectors.select_macd_early_impulse as select_macd_early_impulse
 import strategy_selectors.select_breakout_power as select_breakout_power
 import strategy_selectors.select_stoch_macd_reversal as select_stoch_macd_reversal
-from strategy_selectors.select_market_universe import daily_metrics, passes_uptrend, score_symbol, uptrend_metrics
+from strategy_selectors.select_market_universe import (
+    daily_metrics,
+    passes_uptrend,
+    score_symbol,
+    select_top_candidates,
+    uptrend_metrics,
+)
 import strategy_selectors.select_opening_impulse as select_opening_impulse
 import strategy_selectors.select_steady_intraday as select_steady_intraday
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
@@ -1529,7 +1535,7 @@ class CoreTradingTests(unittest.TestCase):
                         max_spread_bps=12.0,
                         min_trend_bps=200.0,
                         require_ema_stack=False,
-                        no_require_uptrend=True,
+                        liquidity_only_ranking=False,
                         skip_quotes=True,
                         alpaca_api_key="test",
                         alpaca_secret_key="test",
@@ -1585,35 +1591,46 @@ class CoreTradingTests(unittest.TestCase):
         assert uptrend is not None
         self.assertTrue(passes_uptrend(uptrend, min_trend_bps=200.0, require_ema_stack=False))
 
+        quote = Quote("UP", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0)
         uptrend_result = score_symbol(
             "UP",
             uptrend_bars,
-            quote=Quote("UP", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0),
+            quote=quote,
             min_price=5.0,
             max_price=500.0,
             min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
-            require_uptrend=True,
-            min_trend_bps=200.0,
             trend_lookback_days=60,
         )
         flat_result = score_symbol(
             "FLAT",
             flat,
-            quote=Quote("FLAT", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0),
+            quote=quote,
             min_price=5.0,
             max_price=500.0,
             min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
-            require_uptrend=True,
-            min_trend_bps=200.0,
             trend_lookback_days=60,
         )
         self.assertIsNotNone(uptrend_result)
-        self.assertIsNone(flat_result)
+        self.assertIsNotNone(flat_result)
         assert uptrend_result is not None
-        self.assertGreater(uptrend_result["trend_score"], 0.0)
-        self.assertTrue(uptrend_result["ema_stack"])
+        assert flat_result is not None
+        self.assertTrue(uptrend_result["uptrend_ok"])
+        self.assertFalse(flat_result["uptrend_ok"])
+        self.assertGreater(uptrend_result["score"], flat_result["score"])
+
+        selected = select_top_candidates([flat_result, uptrend_result], top=2, prefer_uptrend=True)
+        self.assertEqual([item["symbol"] for item in selected], ["UP", "FLAT"])
+
+    def test_opening_universe_builder_fills_requested_top(self):
+        candidates = [
+            {"symbol": f"S{i}", "score": float(i), "uptrend_ok": i >= 8}
+            for i in range(10)
+        ]
+        selected = select_top_candidates(candidates, top=5, prefer_uptrend=True)
+        self.assertEqual(len(selected), 5)
+        self.assertEqual([item["symbol"] for item in selected[:3]], ["S9", "S8", "S7"])
 
     def test_maha7_selector_writes_plan_from_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:
