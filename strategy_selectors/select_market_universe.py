@@ -345,8 +345,16 @@ def score_symbol(
     return result
 
 
-def select_top_candidates(candidates: list[dict], top: int, *, prefer_breakout_setup: bool) -> list[dict]:
+def select_top_candidates(
+    candidates: list[dict],
+    top: int,
+    *,
+    prefer_breakout_setup: bool,
+    strict: bool = False,
+) -> list[dict]:
     ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
+    if strict:
+        return [item for item in ranked if item.get("breakout_setup_ok")][:top]
     if not prefer_breakout_setup:
         return ranked[:top]
 
@@ -418,7 +426,13 @@ def build_universe(args: argparse.Namespace) -> dict:
             candidates.append(result)
 
     prefer_breakout_setup = not bool(getattr(args, "liquidity_only_ranking", False))
-    selected = select_top_candidates(candidates, args.top, prefer_breakout_setup=prefer_breakout_setup)
+    strict = bool(getattr(args, "strict", False))
+    selected = select_top_candidates(
+        candidates,
+        args.top,
+        prefer_breakout_setup=prefer_breakout_setup,
+        strict=strict,
+    )
 
     selected_symbols = [item["symbol"] for item in selected]
     if args.output:
@@ -437,6 +451,7 @@ def build_universe(args: argparse.Namespace) -> dict:
         "lookback_days": args.lookback_days,
         "base_lookback_days": base_lookback_days,
         "prefer_breakout_setup": prefer_breakout_setup,
+        "strict": strict,
         "max_base_range_pct": args.max_base_range_pct,
         "min_breakout_day_pct": args.min_breakout_day_pct,
         "min_volume_ratio": args.min_volume_ratio,
@@ -490,6 +505,11 @@ def parse_args() -> argparse.Namespace:
         "--require-ema-stack",
         action="store_true",
         help="Require EMA5 > EMA10 > EMA20 for breakout_setup_ok tier (default allows fresh EMA5/20 cross).",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Only include symbols passing breakout_setup_ok; do not backfill --top with filtered-out names.",
     )
     parser.add_argument(
         "--liquidity-only-ranking",

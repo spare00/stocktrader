@@ -1641,9 +1641,18 @@ class CoreTradingTests(unittest.TestCase):
             {"symbol": f"S{i}", "score": float(i), "breakout_setup_ok": i >= 8}
             for i in range(10)
         ]
-        selected = select_top_candidates(candidates, top=5, prefer_breakout_setup=True)
+        selected = select_top_candidates(candidates, top=5, prefer_breakout_setup=True, strict=False)
         self.assertEqual(len(selected), 5)
         self.assertEqual([item["symbol"] for item in selected[:3]], ["S9", "S8", "S7"])
+
+    def test_opening_universe_builder_strict_excludes_non_setup_symbols(self):
+        candidates = [
+            {"symbol": f"S{i}", "score": float(i), "breakout_setup_ok": i >= 8}
+            for i in range(10)
+        ]
+        selected = select_top_candidates(candidates, top=5, prefer_breakout_setup=True, strict=True)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual([item["symbol"] for item in selected], ["S9", "S8"])
 
     def test_maha7_selector_writes_plan_from_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:
