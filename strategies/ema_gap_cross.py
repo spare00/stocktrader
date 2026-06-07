@@ -390,13 +390,13 @@ class EmaGapCrossStrategy(Strategy):
         symbol = position.symbol.strip().upper()
         pos_state = self._position_states.get(symbol)
 
+        event_ms = state.last_event_ms or (quote.timestamp_ms if quote else position.entry_ms)
         pnl_pct = (price - position.entry_price) / position.entry_price
         if pnl_pct <= -self.settings.egc_stop_loss_pct:
             self._last_stop_ms[symbol] = int(event_ms)
             self._clear_position_state(symbol)
             return ExitDecision("stop loss")
 
-        event_ms = state.last_event_ms or (quote.timestamp_ms if quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
         if age_seconds < self.settings.egc_min_hold_seconds:
             return None

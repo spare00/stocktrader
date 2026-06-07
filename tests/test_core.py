@@ -10705,6 +10705,31 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(decision)
 
+    def test_ema_gap_cross_stop_loss_records_event_ms(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["ema_gap_cross"],
+            egc_stop_loss_pct=0.02,
+            egc_min_hold_seconds=0,
+        )
+        strategy = EmaGapCrossStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position(
+            strategy="ema_gap_cross",
+            entry_price=100.0,
+            entry_ms=state.last_event_ms or market_ms(2026, 4, 24, 10, 14),
+        )
+        state.update_quote(Quote("AAPL", bid=97.0, ask=97.1, bid_size=100, ask_size=100, timestamp_ms=state.last_event_ms))
+        ema5 = [10.0] * 45
+        ema10 = [10.0] * 45
+        ema20 = [10.0] * 45
+        with patch.object(strategy, "_ema_triple", return_value=(ema5, ema10, ema20)):
+            decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "stop loss")
+        self.assertEqual(strategy._last_stop_ms["AAPL"], state.last_event_ms)
+
     def test_ema_gap_cross_max_hold_overrides_global_max_hold(self):
         settings = Settings(
             alpaca_api_key="test",
