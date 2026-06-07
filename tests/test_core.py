@@ -10,7 +10,7 @@ import logging
 import json
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 from contextlib import redirect_stdout
@@ -6801,6 +6801,57 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn('"gap_and_go"', captured.output[0])
         self.assertIn('"maha7"', captured.output[0])
         self.assertIn('"open_positions": ["AAPL"]', captured.output[0])
+
+    def test_heartbeat_uses_effective_market_data_mode(self):
+        reporter = trading_main.HeartbeatReporter(min_interval_seconds=0.0)
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_market_data_mode="rest",
+            dynamic_execution_selector_enabled=True,
+            strategy_names=["liquidity_scalper"],
+            symbols=["XLF"],
+        )
+        states = {"XLF": SymbolState("XLF")}
+        executor = LocalPaperExecutor(PositionTracker(settings))
+
+        with self.assertLogs(level="INFO") as captured:
+            reporter.emit(settings, states, executor)
+
+        self.assertIn('"market_data_mode": "stream"', captured.output[0])
+        self.assertIn('"market_data_mode_config": "rest"', captured.output[0])
+
+    def test_heartbeat_replay_event_age_uses_mock_clock(self):
+        reporter = trading_main.HeartbeatReporter(min_interval_seconds=0.0)
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_data_base_url="http://127.0.0.1:19902",
+            replay_market_data=True,
+            replay_use_mock_clock=True,
+            strategy_names=["gap_and_go"],
+            symbols=["AAPL"],
+        )
+        states = {"AAPL": SymbolState("AAPL")}
+        states["AAPL"].last_event_ms = int(datetime(2026, 5, 4, 13, 30, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        executor = LocalPaperExecutor(PositionTracker(settings))
+        status_body = json.dumps({"replay_now_utc": "2026-05-04T13:30:05Z"}).encode("utf-8")
+
+        class FakeResponse:
+            def read(self):
+                return status_body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with patch("alpaca_stream.urllib.request.urlopen", return_value=FakeResponse()):
+            with self.assertLogs(level="INFO") as captured:
+                reporter.emit(settings, states, executor)
+
+        self.assertIn('"latest_event_age_seconds": 5.0', captured.output[0])
 
     def test_market_regime_risk_off_downsizes_signal(self):
         settings = Settings(

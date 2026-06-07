@@ -26,6 +26,38 @@ from models import Bar, Heartbeat, NewsEvent, Quote, Trade
 logger = logging.getLogger(__name__)
 
 
+def mock_status_url(settings: Settings) -> str | None:
+    base_url = (settings.alpaca_data_base_url or "").strip().rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/v1/mock/status"
+
+
+def replay_clock_utc(settings: Settings) -> datetime:
+    """Wall clock in live mode; mock ``replay_now_utc`` when replay clock sync is enabled."""
+    if not (settings.replay_market_data and settings.replay_use_mock_clock):
+        return datetime.now(tz=timezone.utc)
+    status_url = mock_status_url(settings)
+    if not status_url:
+        return datetime.now(tz=timezone.utc)
+    try:
+        with urllib.request.urlopen(status_url, timeout=settings.replay_clock_timeout_seconds) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        logger.debug("Mock replay clock poll failed (%s: %s); using wall clock", type(exc).__name__, exc)
+        return datetime.now(tz=timezone.utc)
+    replay_now = str(body.get("replay_now_utc") or "").strip()
+    if replay_now.endswith("Z"):
+        replay_now = replay_now[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(replay_now)
+    except ValueError:
+        return datetime.now(tz=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class AlpacaStreamAuthError(RuntimeError):
     pass
 
@@ -87,34 +119,8 @@ class AlpacaRestPollingStream:
         normalized = symbol.strip().upper()
         self._symbols = [existing for existing in self._symbols if existing != normalized]
 
-    def _mock_status_url(self) -> str | None:
-        base_url = (self.settings.alpaca_data_base_url or "").strip().rstrip("/")
-        if not base_url:
-            return None
-        return f"{base_url}/v1/mock/status"
-
     def _poll_clock_utc(self) -> datetime:
-        if not (self.settings.replay_market_data and self.settings.replay_use_mock_clock):
-            return datetime.now(tz=timezone.utc)
-        status_url = self._mock_status_url()
-        if not status_url:
-            return datetime.now(tz=timezone.utc)
-        try:
-            with urllib.request.urlopen(status_url, timeout=self.settings.replay_clock_timeout_seconds) as resp:
-                body = json.loads(resp.read().decode("utf-8") or "{}")
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            logger.debug("Mock replay clock poll failed (%s: %s); using wall clock", type(exc).__name__, exc)
-            return datetime.now(tz=timezone.utc)
-        replay_now = str(body.get("replay_now_utc") or "").strip()
-        if replay_now.endswith("Z"):
-            replay_now = replay_now[:-1] + "+00:00"
-        try:
-            parsed = datetime.fromisoformat(replay_now)
-        except ValueError:
-            return datetime.now(tz=timezone.utc)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+        return replay_clock_utc(self.settings)
 
     def _closed_bar_cutoff_ms(self, now: datetime) -> int | None:
         if not (self.settings.replay_market_data and self.settings.replay_closed_bars_only):

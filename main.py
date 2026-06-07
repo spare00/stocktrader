@@ -18,6 +18,7 @@ from alpaca_stream import (
     AlpacaStreamConnectionLimitError,
     AlpacaStreamEndedError,
     build_market_data_stream,
+    replay_clock_utc,
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca_client import get_bars_between, get_latest_quotes, get_recent_bars, make_clients
@@ -240,16 +241,21 @@ class HeartbeatReporter:
 
         latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
         active_symbols = sum(1 for state in states.values() if state.last_event_ms is not None)
+        effective_mode = effective_market_data_mode(settings)
         payload = {
-            "market_data_mode": settings.alpaca_market_data_mode,
+            "market_data_mode": effective_mode,
             "watched_symbols": len(states),
             "active_symbols": active_symbols,
             "open_positions": sorted(executor.open_symbols()),
             "events": dict(self._events),
             "strategies": {},
         }
+        configured_mode = settings.alpaca_market_data_mode
+        if configured_mode != effective_mode:
+            payload["market_data_mode_config"] = configured_mode
         if latest_event_ms:
-            payload["latest_event_age_seconds"] = round((time.time() * 1000 - latest_event_ms) / 1000, 1)
+            clock_ms = int(replay_clock_utc(settings).timestamp() * 1000)
+            payload["latest_event_age_seconds"] = round((clock_ms - latest_event_ms) / 1000, 1)
 
         for strategy_name in settings.strategy_names:
             reasons = self._rejection_reasons.get(strategy_name, {})
@@ -262,7 +268,7 @@ class HeartbeatReporter:
             }
 
         logging.info("Heartbeat %s", json.dumps(payload, sort_keys=True))
-        self._events = {"quotes": 0, "bars": 0, "heartbeats": 0, "news": 0}
+        self._events = {"quotes": 0, "bars": 0, "heartbeats": 0, "news": 0, "trades": 0}
         self._signals.clear()
         self._entries.clear()
         self._rejections.clear()
