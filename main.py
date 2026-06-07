@@ -207,6 +207,9 @@ class HeartbeatReporter:
     def record_bar(self) -> None:
         self._events["bars"] += 1
 
+    def record_trade(self) -> None:
+        self._events["trades"] = self._events.get("trades", 0) + 1
+
     def record_heartbeat(self) -> None:
         self._events["heartbeats"] += 1
 
@@ -671,6 +674,8 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
 
 def realtime_stream_reasons(settings: Settings) -> list[str]:
     reasons = []
+    if "liquidity_scalper" in settings.strategy_names:
+        reasons.append("liquidity scalper requires trade ticks")
     if settings.dynamic_execution_selector_enabled:
         reasons.append("dynamic execution selector requires trade ticks")
     if settings.news_dynamic_symbols_enabled:
@@ -1126,9 +1131,6 @@ async def main(args: argparse.Namespace | None = None) -> None:
                         )
                         if warmed:
                             logging.info("Warmed symbol %s from recent market data", selection.symbol)
-                if isinstance(event, Trade):
-                    continue
-
             state = states.get(event.symbol)
             if state is None:
                 logging.debug("Ignoring market data for unsubscribed symbol %s", event.symbol)
@@ -1140,6 +1142,9 @@ async def main(args: argparse.Namespace | None = None) -> None:
             elif isinstance(event, Bar):
                 heartbeat.record_bar()
                 state.add_bar(event)
+            elif isinstance(event, Trade):
+                heartbeat.record_trade()
+                state.update_trade(event)
             else:
                 continue
 

@@ -1,7 +1,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 
-from models import Bar, Quote
+from models import Bar, Quote, Trade
 
 
 @dataclass
@@ -9,7 +9,9 @@ class SymbolState:
     symbol: str
     indicator_max_bars: int = 3000
     quotes: deque[Quote] = field(default_factory=lambda: deque(maxlen=2400))
+    trades: deque[Trade] = field(default_factory=lambda: deque(maxlen=4800))
     quote: Quote | None = None
+    trade: Trade | None = None
     last_news_ms: int | None = None
     last_news_price: float | None = None
     last_news_sentiment: int = 0
@@ -39,6 +41,12 @@ class SymbolState:
         if self.last_news_ms is not None and self.last_news_price is None:
             self.last_news_price = quote.mid
 
+    def update_trade(self, trade: Trade) -> None:
+        self.trade = trade
+        self.trades.append(trade)
+        self.last_event_kind = "trade"
+        self.last_event_ms = trade.timestamp_ms
+
     def mark_news(
         self,
         timestamp_ms: int,
@@ -58,4 +66,6 @@ class SymbolState:
     def last_price(self) -> float | None:
         if self.quote:
             return self.quote.mid
+        if self.trade:
+            return self.trade.price
         return self.bars[-1].close if self.bars else None

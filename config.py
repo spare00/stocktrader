@@ -73,6 +73,12 @@ class Settings:
     liquidity_scalper_min_session_dollar_volume: float = 30_000_000.0
     liquidity_scalper_min_volume_ratio: float = 2.0
     liquidity_scalper_min_range_pct: float = 0.015
+    liquidity_scalper_tape_window_seconds: int = 5
+    liquidity_scalper_min_tape_trades: int = 4
+    liquidity_scalper_min_tape_dollar_volume: float = 250_000.0
+    liquidity_scalper_min_trade_dollar_volume: float = 25_000.0
+    liquidity_scalper_min_buy_sell_ratio: float = 1.8
+    liquidity_scalper_min_tape_price_move_pct: float = 0.0005
     liquidity_scalper_flush_lookback_bars: int = 3
     liquidity_scalper_flush_drop_pct: float = 0.025
     liquidity_scalper_reclaim_pct: float = 0.003

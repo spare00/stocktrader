@@ -200,7 +200,10 @@ class AlpacaStockStream:
         return bool(self.settings.news_dynamic_symbols_enabled or self.settings.news_log_events)
 
     def _should_stream_trades(self) -> bool:
-        return bool(self.settings.dynamic_execution_selector_enabled)
+        return bool(
+            self.settings.dynamic_execution_selector_enabled
+            or "liquidity_scalper" in self.settings.strategy_names
+        )
 
     def add_symbol(self, symbol: str) -> None:
         normalized = symbol.strip().upper()

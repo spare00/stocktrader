@@ -63,10 +63,12 @@ Market-data modes:
 - `ALPACA_MARKET_DATA_MODE=rest`: poll latest quotes and minute bars over REST every `ALPACA_MARKET_DATA_POLL_SECONDS`. This is the default.
 - `ALPACA_MARKET_DATA_MODE=stream`: use Alpaca's websocket feed. Runtime features that require real-time trades or news automatically upgrade the effective mode to stream.
 
+`liquidity_scalper` always upgrades to stream mode because it needs trade ticks. Run it alone when you want the single Alpaca stream connection dedicated to the scalper.
+
 Strategies:
 
 - `spike`: short-window price/volume spike detection
-- `liquidity_scalper`: liquidity-first intraday scalper that only enters high dollar-volume, high-range symbols during active windows; it buys either a flush reclaim or tight liquidity breakout and exits quickly when the trade stops working
+- `liquidity_scalper`: stream-only liquidity scalper that uses trade ticks for recent buy/sell pressure and short-window dollar volume, with 1-minute liquidity/volatility filters as guardrails; it exits quickly when the trade stops working
 - `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold

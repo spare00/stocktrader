@@ -7732,6 +7732,46 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(strategy.evaluate(state))
 
+    def test_liquidity_scalper_emits_trade_tape_signal(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FAST"],
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_min_session_dollar_volume=0.0,
+            liquidity_scalper_min_range_pct=0.0,
+            liquidity_scalper_min_tape_trades=4,
+            liquidity_scalper_min_tape_dollar_volume=10_000.0,
+            liquidity_scalper_min_trade_dollar_volume=2_000.0,
+            liquidity_scalper_min_buy_sell_ratio=2.0,
+            liquidity_scalper_min_tape_price_move_pct=0.0001,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        state = SymbolState("FAST")
+        ts = market_ms(2026, 5, 8, 9, 34)
+        state.update_quote(Quote("FAST", bid=100.00, ask=100.02, bid_size=100, ask_size=100, timestamp_ms=ts))
+        trades = [
+            Trade("FAST", 100.00, 20, ts - 4_000),
+            Trade("FAST", 100.02, 80, ts - 3_000),
+            Trade("FAST", 100.03, 90, ts - 2_000),
+            Trade("FAST", 100.04, 100, ts - 1_000),
+        ]
+        for item in trades:
+            state.update_trade(item)
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "liquidity_scalper")
+        self.assertIn("trade_tape", signal.reason)
+        self.assertGreater(signal.volume_ratio, 2.0)
+
+    def test_liquidity_scalper_forces_stream_trade_ticks(self):
+        settings = Settings(strategy_names=["liquidity_scalper"], alpaca_market_data_mode="rest")
+
+        self.assertEqual(trading_main.effective_market_data_mode(settings), "stream")
+        self.assertIn("liquidity scalper requires trade ticks", trading_main.realtime_stream_reasons(settings))
+
     def test_liquidity_scalper_exits_when_trade_is_not_working(self):
         settings = Settings(
             alpaca_api_key="test",
