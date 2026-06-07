@@ -261,6 +261,9 @@ def setup_gate_checks(setup: dict, *, min_volume_ratio: float, min_breakout_day_
         "ema_aligned": setup["ema_aligned"],
         "not_overextended": setup["not_overextended"],
     }
+
+
+def summarize_setup_gate_failures(candidates: list[dict]) -> dict[str, int]:
     with_checks = [item for item in candidates if item.get("setup_checks")]
     if not with_checks:
         return {}

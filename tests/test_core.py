@@ -1654,6 +1654,40 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(len(selected), 2)
         self.assertEqual([item["symbol"] for item in selected], ["S9", "S8"])
 
+    def test_opening_universe_builder_summarize_setup_gate_failures(self):
+        candidates = [
+            {
+                "symbol": "AAA",
+                "setup_checks": {
+                    "compressed": True,
+                    "breakout": False,
+                    "close_near_high": True,
+                    "volume_ok": True,
+                    "daily_change_ok": True,
+                    "price_above_ema20": True,
+                    "ema_aligned": True,
+                    "not_overextended": True,
+                },
+            },
+            {
+                "symbol": "BBB",
+                "setup_checks": {
+                    "compressed": True,
+                    "breakout": True,
+                    "close_near_high": False,
+                    "volume_ok": True,
+                    "daily_change_ok": True,
+                    "price_above_ema20": True,
+                    "ema_aligned": True,
+                    "not_overextended": True,
+                },
+            },
+        ]
+        summary = select_market_universe.summarize_setup_gate_failures(candidates)
+        self.assertEqual(summary["breakout"], 1)
+        self.assertEqual(summary["close_near_high"], 1)
+        self.assertEqual(summary["compressed"], 0)
+
     def test_maha7_selector_writes_plan_from_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             universe = Path(tmpdir) / "universe.txt"
