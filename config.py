@@ -28,6 +28,7 @@ class Settings:
     alpaca_data_base_url: str | None = None
     alpaca_market_data_mode: str = "rest"
     alpaca_market_data_poll_seconds: float = 5.0
+    market_data_requires_trade_ticks: bool = False
     replay_use_mock_clock: bool = False
     replay_closed_bars_only: bool = False
     replay_clock_timeout_seconds: float = 0.5
@@ -790,11 +791,12 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
     values["strategy_names"] = active_strategy_names
     values["target_profit_pct"] = min(values["target_profit_pct"], 0.02)
 
-    from strategies.registry import strategy_environment_specs
+    from strategies.registry import strategies_requiring_trade_ticks, strategy_environment_specs
 
     strategy_env = strategy_environment_specs()
     for strategy_name in active_strategy_names:
         values.update(_read_env(strategy_env.get(strategy_name, ())))
+    values["market_data_requires_trade_ticks"] = bool(strategies_requiring_trade_ticks(active_strategy_names))
 
     if "maha7" in active_strategy_names:
         legacy_ma7_bars = os.getenv("MAHA7_MA7_BREAKDOWN_BARS")

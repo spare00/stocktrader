@@ -63,7 +63,7 @@ Market-data modes:
 - `ALPACA_MARKET_DATA_MODE=rest`: poll latest quotes and minute bars over REST every `ALPACA_MARKET_DATA_POLL_SECONDS`. This is the default.
 - `ALPACA_MARKET_DATA_MODE=stream`: use Alpaca's websocket feed. Runtime features that require real-time trades or news automatically upgrade the effective mode to stream.
 
-`liquidity_scalper` always upgrades to stream mode because it needs trade ticks. Run it alone when you want the single Alpaca stream connection dedicated to the scalper.
+Strategies that declare a trade-tick requirement automatically upgrade to stream mode. Run only one stream-dependent strategy when you want the single Alpaca stream connection dedicated to that strategy.
 
 Strategies:
 

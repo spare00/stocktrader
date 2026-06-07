@@ -100,3 +100,13 @@ def strategies_requiring_plan(strategy_names: list[str]) -> list[str]:
         if cls and cls.requires_plan:
             required.append(name)
     return required
+
+
+def strategies_requiring_trade_ticks(strategy_names: list[str]) -> list[str]:
+    required: list[str] = []
+    for raw in strategy_names:
+        name = raw.strip().lower()
+        cls = STRATEGY_REGISTRY.get(name)
+        if cls and cls.requires_trade_ticks:
+            required.append(name)
+    return required

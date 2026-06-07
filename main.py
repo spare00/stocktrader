@@ -674,8 +674,8 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
 
 def realtime_stream_reasons(settings: Settings) -> list[str]:
     reasons = []
-    if "liquidity_scalper" in settings.strategy_names:
-        reasons.append("liquidity scalper requires trade ticks")
+    if settings.market_data_requires_trade_ticks:
+        reasons.append("active strategy requires trade ticks")
     if settings.dynamic_execution_selector_enabled:
         reasons.append("dynamic execution selector requires trade ticks")
     if settings.news_dynamic_symbols_enabled:

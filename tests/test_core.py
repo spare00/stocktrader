@@ -77,6 +77,7 @@ import strategy_selectors.select_opening_impulse as select_opening_impulse
 import strategy_selectors.select_steady_intraday as select_steady_intraday
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
+from strategies.registry import strategies_requiring_trade_ticks
 from strategies.gap_and_go import GapAndGoStrategy
 from strategies.breakout_power import BreakoutPowerStrategy, BPBarDetails, BPSeries, compute_breakout_power_series
 from strategies.ema_gap_cross import (
@@ -7767,10 +7768,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(signal.volume_ratio, 2.0)
 
     def test_liquidity_scalper_forces_stream_trade_ticks(self):
-        settings = Settings(strategy_names=["liquidity_scalper"], alpaca_market_data_mode="rest")
+        settings = load_settings(strategy_names=["liquidity_scalper"], validate=False)
 
+        self.assertTrue(settings.market_data_requires_trade_ticks)
         self.assertEqual(trading_main.effective_market_data_mode(settings), "stream")
-        self.assertIn("liquidity scalper requires trade ticks", trading_main.realtime_stream_reasons(settings))
+        self.assertIn("active strategy requires trade ticks", trading_main.realtime_stream_reasons(settings))
+        self.assertEqual(strategies_requiring_trade_ticks(["opening_impulse", "liquidity_scalper"]), ["liquidity_scalper"])
 
     def test_liquidity_scalper_exits_when_trade_is_not_working(self):
         settings = Settings(

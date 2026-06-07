@@ -21,6 +21,7 @@ class Strategy(ABC):
     plan_file: ClassVar[Path | None] = None
     selector_command: ClassVar[str | None] = None
     requires_plan: ClassVar[bool] = True
+    requires_trade_ticks: ClassVar[bool] = False
     _symbol_manager: Any = None
     _market_regime: Any = None
 

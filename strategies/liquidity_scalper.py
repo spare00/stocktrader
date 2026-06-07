@@ -18,6 +18,7 @@ class LiquidityScalperStrategy(Strategy):
 
     name = "liquidity_scalper"
     requires_plan = False
+    requires_trade_ticks = True
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("liquidity_scalper_start_minute", "LIQUIDITY_SCALPER_START_MINUTE", int_env, 0),
         ("liquidity_scalper_end_minute", "LIQUIDITY_SCALPER_END_MINUTE", int_env, 30),
