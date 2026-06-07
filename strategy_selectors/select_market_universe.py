@@ -18,8 +18,13 @@ from strategy_selectors.select_opening_impulse import usable_quote
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
-MIN_UPTREND_BARS = 25
-EMA_SLOPE_LOOKBACK = 10
+MIN_SETUP_BARS = 21
+BASE_LOOKBACK_DAYS = 15
+PRIOR_HIGH_LOOKBACK = 20
+DEFAULT_MAX_BASE_RANGE_PCT = 0.10
+DEFAULT_MIN_BREAKOUT_DAY_PCT = 0.01
+DEFAULT_MIN_VOLUME_RATIO = 1.10
+DEFAULT_MAX_EXTENSION_FROM_BASE_PCT = 0.12
 
 
 def batched(items: list[str], size: int) -> list[list[str]]:
@@ -103,84 +108,131 @@ def _ema_series(values: list[float], period: int) -> list[float]:
     return out
 
 
-def uptrend_metrics(bars: list[Bar], trend_lookback_days: int) -> dict | None:
+def breakout_setup_metrics(
+    bars: list[Bar],
+    *,
+    base_lookback_days: int = BASE_LOOKBACK_DAYS,
+    prior_high_lookback: int = PRIOR_HIGH_LOOKBACK,
+    max_base_range_pct: float = DEFAULT_MAX_BASE_RANGE_PCT,
+    min_breakout_day_pct: float = DEFAULT_MIN_BREAKOUT_DAY_PCT,
+    min_volume_ratio: float = DEFAULT_MIN_VOLUME_RATIO,
+    max_extension_from_base_pct: float = DEFAULT_MAX_EXTENSION_FROM_BASE_PCT,
+    require_ema_stack: bool = False,
+) -> dict | None:
+    """Daily setup for next-session day trades: tight base then fresh breakout (SOFI May-28 style)."""
     ordered = sorted((bar for bar in bars if bar.close > 0), key=lambda item: item.start_ms)
-    if len(ordered) < MIN_UPTREND_BARS:
+    if len(ordered) < MIN_SETUP_BARS:
         return None
 
-    trend_slice = ordered[-trend_lookback_days:] if trend_lookback_days > 0 else ordered
-    if len(trend_slice) < 2:
+    latest = ordered[-1]
+    if len(ordered) < 2:
         return None
+
+    base = ordered[-(base_lookback_days + 1) : -1]
+    if len(base) < 5:
+        return None
+
+    base_high = max(float(bar.high) for bar in base)
+    base_low = min(float(bar.low) for bar in base)
+    if base_low <= 0:
+        return None
+
+    base_range_pct = (base_high - base_low) / base_low
+    compressed = base_range_pct <= max_base_range_pct
+
+    prior_window = ordered[-(prior_high_lookback + 1) : -1]
+    prior_high = max(float(bar.high) for bar in prior_window) if prior_window else base_high
+
+    prior_close = float(ordered[-2].close)
+    daily_change_pct = (float(latest.close) - prior_close) / prior_close if prior_close > 0 else 0.0
+    day_range = float(latest.high) - float(latest.low)
+    close_near_high = ((float(latest.close) - float(latest.low)) / day_range) >= 0.65 if day_range > 0 else False
+
+    base_volumes = [float(bar.volume) for bar in base if bar.volume > 0]
+    avg_base_volume = sum(base_volumes) / len(base_volumes) if base_volumes else 0.0
+    volume_ratio = float(latest.volume) / avg_base_volume if avg_base_volume > 0 else 0.0
+
+    broke_base = float(latest.close) > base_high * 1.001
+    broke_prior_high = float(latest.close) >= prior_high * 0.998
 
     closes = [float(bar.close) for bar in ordered]
-    price = closes[-1]
     ema5_series = _ema_series(closes, 5)
     ema10_series = _ema_series(closes, 10)
     ema20_series = _ema_series(closes, 20)
-    if len(ema20_series) < EMA_SLOPE_LOOKBACK + 1:
-        return None
+    ema5_now = ema5_series[-1]
+    ema10_now = ema10_series[-1]
+    ema20_now = ema20_series[-1]
 
-    ema5 = ema5_series[-1]
-    ema10 = ema10_series[-1]
-    ema20 = ema20_series[-1]
-    ema20_prev = ema20_series[-1 - EMA_SLOPE_LOOKBACK]
-    ema20_slope_bps = ((ema20 - ema20_prev) / ema20_prev) * 10_000 if ema20_prev > 0 else 0.0
+    ema_stack = ema5_now > ema10_now > ema20_now
+    price_above_ema20 = float(latest.close) > ema20_now
+    recent_cross = False
+    if len(ema5_series) >= 6 and len(ema20_series) >= 6:
+        was_below = any(ema5_series[-1 - offset] <= ema20_series[-1 - offset] for offset in range(1, 6))
+        recent_cross = was_below and ema5_now > ema20_now
 
-    first_close = float(trend_slice[0].close)
-    trend_bps = ((price - first_close) / first_close) * 10_000 if first_close > 0 else 0.0
+    ema_gap_now = (ema5_now - ema20_now) / ema20_now if ema20_now > 0 else 0.0
+    ema_gap_prev = (ema5_series[-2] - ema20_series[-2]) / ema20_series[-2] if ema20_series[-2] > 0 else 0.0
+    ema_gap_expanding = ema_gap_now > ema_gap_prev and ema_gap_now > 0
 
-    long_trend_ok = True
-    ema40_above_ema60: bool | None = None
-    if len(closes) >= 40:
-        ema40 = _ema_series(closes, 40)[-1]
-        long_trend_ok = price > ema40 and ema20 > ema40
-    if len(closes) >= 60:
-        ema40 = _ema_series(closes, 40)[-1]
-        ema60 = _ema_series(closes, 60)[-1]
-        ema40_above_ema60 = ema40 > ema60
-        long_trend_ok = long_trend_ok and price > ema60 and ema40 > ema60
+    extension_from_base = (float(latest.close) - base_low) / base_low
+    not_overextended = extension_from_base <= max_extension_from_base_pct
+
+    ema_aligned = ema_stack or recent_cross
+    if require_ema_stack:
+        ema_aligned = ema_stack
+
+    setup_ok = (
+        compressed
+        and (broke_base or broke_prior_high)
+        and close_near_high
+        and volume_ratio >= min_volume_ratio
+        and daily_change_pct >= min_breakout_day_pct
+        and price_above_ema20
+        and ema_aligned
+        and not_overextended
+    )
 
     return {
-        "trend_bps": trend_bps,
-        "ema20_slope_bps": ema20_slope_bps,
-        "ema_stack": ema5 > ema10 > ema20,
-        "price_above_ema20": price > ema20,
-        "ema5_above_ema20": ema5 > ema20,
-        "long_trend_ok": long_trend_ok,
-        "ema40_above_ema60": ema40_above_ema60,
+        "setup_ok": setup_ok,
+        "compressed": compressed,
+        "broke_base": broke_base,
+        "broke_prior_high": broke_prior_high,
+        "close_near_high": close_near_high,
+        "volume_ratio": volume_ratio,
+        "daily_change_pct": daily_change_pct,
+        "base_range_pct": base_range_pct,
+        "extension_from_base": extension_from_base,
+        "ema_stack": ema_stack,
+        "recent_cross": recent_cross,
+        "ema_gap_expanding": ema_gap_expanding,
+        "price_above_ema20": price_above_ema20,
+        "not_overextended": not_overextended,
     }
 
 
-def passes_uptrend(
-    uptrend: dict | None,
-    *,
-    min_trend_bps: float,
-    require_ema_stack: bool,
-) -> bool:
-    if not uptrend:
-        return False
-    if uptrend["trend_bps"] < min_trend_bps:
-        return False
-    if not uptrend["price_above_ema20"]:
-        return False
-    if not uptrend["ema5_above_ema20"]:
-        return False
-    if uptrend["ema20_slope_bps"] <= 0:
-        return False
-    if not uptrend["long_trend_ok"]:
-        return False
-    if require_ema_stack and not uptrend["ema_stack"]:
-        return False
-    return True
-
-
-def uptrend_score(uptrend: dict, min_trend_bps: float) -> float:
-    score = min(uptrend["trend_bps"] / max(min_trend_bps, 1.0), 4.0)
-    if uptrend["ema_stack"]:
+def breakout_setup_score(setup: dict) -> float:
+    score = 0.0
+    if setup["compressed"]:
+        tightness = max(0.0, DEFAULT_MAX_BASE_RANGE_PCT - setup["base_range_pct"]) / DEFAULT_MAX_BASE_RANGE_PCT
+        score += 1.5 + tightness
+    if setup["broke_base"]:
+        score += 2.5
+    if setup["broke_prior_high"]:
+        score += 1.5
+    if setup["close_near_high"]:
+        score += 1.5
+    score += min(max(setup["volume_ratio"] - 1.0, 0.0), 2.5)
+    score += min(max(setup["daily_change_pct"] * 25.0, 0.0), 3.0)
+    if setup["ema_stack"]:
         score += 2.0
-    if uptrend.get("ema40_above_ema60"):
-        score += 1.0
-    score += min(max(uptrend["ema20_slope_bps"], 0.0) / 100.0, 2.0)
+    if setup["recent_cross"]:
+        score += 2.5
+    if setup["ema_gap_expanding"]:
+        score += 1.5
+    if setup["price_above_ema20"]:
+        score += 0.5
+    if not setup["not_overextended"]:
+        score -= 2.0
     return score
 
 
@@ -241,9 +293,11 @@ def score_symbol(
     min_average_volume: float,
     max_spread_bps: float,
     *,
-    require_uptrend: bool = False,
-    min_trend_bps: float = 200.0,
-    trend_lookback_days: int = 60,
+    base_lookback_days: int = BASE_LOOKBACK_DAYS,
+    max_base_range_pct: float = DEFAULT_MAX_BASE_RANGE_PCT,
+    min_breakout_day_pct: float = DEFAULT_MIN_BREAKOUT_DAY_PCT,
+    min_volume_ratio: float = DEFAULT_MIN_VOLUME_RATIO,
+    max_extension_from_base_pct: float = DEFAULT_MAX_EXTENSION_FROM_BASE_PCT,
     require_ema_stack: bool = False,
 ) -> dict | None:
     metrics = daily_metrics(bars)
@@ -254,22 +308,23 @@ def score_symbol(
     if metrics["average_volume"] < min_average_volume:
         return None
 
-    uptrend = uptrend_metrics(bars, trend_lookback_days)
-    uptrend_ok = passes_uptrend(
-        uptrend,
-        min_trend_bps=min_trend_bps,
+    setup = breakout_setup_metrics(
+        bars,
+        base_lookback_days=base_lookback_days,
+        max_base_range_pct=max_base_range_pct,
+        min_breakout_day_pct=min_breakout_day_pct,
+        min_volume_ratio=min_volume_ratio,
+        max_extension_from_base_pct=max_extension_from_base_pct,
         require_ema_stack=require_ema_stack,
     )
-    if require_uptrend and not uptrend_ok:
-        return None
 
     valid_quote = usable_quote(quote)
     spread_bps = valid_quote.spread_bps if valid_quote else None
 
     liquidity_score = min(math.log10(metrics["average_volume"] / min_average_volume + 1), 6.0)
     quote_score = 0.5 if spread_bps is not None and spread_bps <= max_spread_bps else 0.0
-    trend_score = uptrend_score(uptrend, min_trend_bps) if uptrend else 0.0
-    score = liquidity_score + quote_score + trend_score
+    setup_score = breakout_setup_score(setup) if setup else 0.0
+    score = liquidity_score + quote_score + setup_score
 
     result = {
         "symbol": symbol,
@@ -278,24 +333,26 @@ def score_symbol(
         "average_volume": round(metrics["average_volume"], 2),
         "median_dollar_volume": round(metrics["median_dollar_volume"], 2),
         "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
-        "trend_score": round(trend_score, 3),
-        "uptrend_ok": uptrend_ok,
+        "setup_score": round(setup_score, 3),
+        "breakout_setup_ok": bool(setup and setup["setup_ok"]),
     }
-    if uptrend:
-        result["trend_bps"] = round(uptrend["trend_bps"], 1)
-        result["ema_stack"] = uptrend["ema_stack"]
-        result["ema20_slope_bps"] = round(uptrend["ema20_slope_bps"], 1)
+    if setup:
+        result["daily_change_pct"] = round(setup["daily_change_pct"] * 100, 2)
+        result["volume_ratio"] = round(setup["volume_ratio"], 2)
+        result["base_range_pct"] = round(setup["base_range_pct"] * 100, 2)
+        result["ema_stack"] = setup["ema_stack"]
+        result["recent_cross"] = setup["recent_cross"]
     return result
 
 
-def select_top_candidates(candidates: list[dict], top: int, *, prefer_uptrend: bool) -> list[dict]:
+def select_top_candidates(candidates: list[dict], top: int, *, prefer_breakout_setup: bool) -> list[dict]:
     ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
-    if not prefer_uptrend:
+    if not prefer_breakout_setup:
         return ranked[:top]
 
-    uptrend_first = [item for item in ranked if item.get("uptrend_ok")]
-    remainder = [item for item in ranked if not item.get("uptrend_ok")]
-    selected = uptrend_first[:top]
+    setup_first = [item for item in ranked if item.get("breakout_setup_ok")]
+    remainder = [item for item in ranked if not item.get("breakout_setup_ok")]
+    selected = setup_first[:top]
     if len(selected) < top:
         selected.extend(remainder[: top - len(selected)])
     return selected
@@ -308,9 +365,11 @@ def build_universe(args: argparse.Namespace) -> dict:
         raise ValueError("--lookback-days must be at least 2.")
     if args.batch_size < 1:
         raise ValueError("--batch-size must be at least 1.")
-    trend_lookback_days = int(getattr(args, "trend_lookback_days", None) or args.lookback_days)
-    if trend_lookback_days < 2:
-        raise ValueError("--trend-lookback-days must be at least 2.")
+    if args.lookback_days < MIN_SETUP_BARS:
+        raise ValueError(f"--lookback-days must be at least {MIN_SETUP_BARS}.")
+    base_lookback_days = int(getattr(args, "base_lookback_days", BASE_LOOKBACK_DAYS))
+    if base_lookback_days < 5:
+        raise ValueError("--base-lookback-days must be at least 5.")
 
     settings_kwargs = {}
     if args.alpaca_api_key:
@@ -348,16 +407,18 @@ def build_universe(args: argparse.Namespace) -> dict:
             max_price=args.max_price,
             min_average_volume=args.min_average_volume,
             max_spread_bps=args.max_spread_bps,
-            require_uptrend=False,
-            min_trend_bps=args.min_trend_bps,
-            trend_lookback_days=trend_lookback_days,
+            base_lookback_days=base_lookback_days,
+            max_base_range_pct=args.max_base_range_pct,
+            min_breakout_day_pct=args.min_breakout_day_pct,
+            min_volume_ratio=args.min_volume_ratio,
+            max_extension_from_base_pct=args.max_extension_from_base_pct,
             require_ema_stack=bool(getattr(args, "require_ema_stack", False)),
         )
         if result:
             candidates.append(result)
 
-    prefer_uptrend = not bool(getattr(args, "liquidity_only_ranking", False))
-    selected = select_top_candidates(candidates, args.top, prefer_uptrend=prefer_uptrend)
+    prefer_breakout_setup = not bool(getattr(args, "liquidity_only_ranking", False))
+    selected = select_top_candidates(candidates, args.top, prefer_breakout_setup=prefer_breakout_setup)
 
     selected_symbols = [item["symbol"] for item in selected]
     if args.output:
@@ -374,9 +435,11 @@ def build_universe(args: argparse.Namespace) -> dict:
         "requested_top": args.top,
         "selected_count": len(selected_symbols),
         "lookback_days": args.lookback_days,
-        "trend_lookback_days": trend_lookback_days,
-        "prefer_uptrend": prefer_uptrend,
-        "min_trend_bps": args.min_trend_bps,
+        "base_lookback_days": base_lookback_days,
+        "prefer_breakout_setup": prefer_breakout_setup,
+        "max_base_range_pct": args.max_base_range_pct,
+        "min_breakout_day_pct": args.min_breakout_day_pct,
+        "min_volume_ratio": args.min_volume_ratio,
         "min_average_volume": args.min_average_volume,
     }
 
@@ -384,14 +447,15 @@ def build_universe(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "REST-only broad market selector. "
-            "Run periodically, then pass the output file to a per-strategy selector."
+            "REST-only broad market selector for next-session day-trade monitoring. "
+            "Ranks symbols whose latest daily bar looks like a fresh base breakout "
+            "(tight range, strong close, volume expansion, EMA turn), then fills --top."
         )
     )
     parser.add_argument("--top", type=int, default=300)
     parser.add_argument("--output", type=Path, default=Path("data/opening_universe.txt"))
     parser.add_argument("--lookback-days", type=int, default=60)
-    parser.add_argument("--trend-lookback-days", type=int, default=None, help="Trend window for EMA/trend checks (default: --lookback-days).")
+    parser.add_argument("--base-lookback-days", type=int, default=BASE_LOOKBACK_DAYS, help="Consolidation window before the latest daily bar.")
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--exchanges", default="NASDAQ,NYSE,ARCA", help="Comma-separated asset exchanges to include.")
     parser.add_argument("--min-price", type=float, default=5.0)
@@ -399,20 +463,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-average-volume", type=float, default=1_000_000.0)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
     parser.add_argument(
-        "--min-trend-bps",
+        "--max-base-range-pct",
         type=float,
-        default=200.0,
-        help="Minimum daily-chart uptrend over --trend-lookback-days (basis points, 200 = 2%%).",
+        default=DEFAULT_MAX_BASE_RANGE_PCT,
+        help="Maximum base range (fraction) over --base-lookback-days before breakout day.",
+    )
+    parser.add_argument(
+        "--min-breakout-day-pct",
+        type=float,
+        default=DEFAULT_MIN_BREAKOUT_DAY_PCT,
+        help="Minimum latest daily gain (fraction) for breakout_setup_ok tier.",
+    )
+    parser.add_argument(
+        "--min-volume-ratio",
+        type=float,
+        default=DEFAULT_MIN_VOLUME_RATIO,
+        help="Minimum latest-day volume vs average base volume for breakout_setup_ok tier.",
+    )
+    parser.add_argument(
+        "--max-extension-from-base-pct",
+        type=float,
+        default=DEFAULT_MAX_EXTENSION_FROM_BASE_PCT,
+        help="Maximum extension above base low on breakout day (avoid late chase).",
     )
     parser.add_argument(
         "--require-ema-stack",
         action="store_true",
-        help="Treat EMA5 > EMA10 > EMA20 as required for uptrend-first ranking tier.",
+        help="Require EMA5 > EMA10 > EMA20 for breakout_setup_ok tier (default allows fresh EMA5/20 cross).",
     )
     parser.add_argument(
         "--liquidity-only-ranking",
         action="store_true",
-        help="Rank purely by liquidity/spread score without uptrend-first tiering.",
+        help="Rank purely by liquidity/spread score without breakout-setup-first tiering.",
     )
     parser.add_argument(
         "--skip-quotes",

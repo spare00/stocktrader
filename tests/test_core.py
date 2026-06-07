@@ -68,11 +68,10 @@ import strategy_selectors.select_macd_early_impulse as select_macd_early_impulse
 import strategy_selectors.select_breakout_power as select_breakout_power
 import strategy_selectors.select_stoch_macd_reversal as select_stoch_macd_reversal
 from strategy_selectors.select_market_universe import (
+    breakout_setup_metrics,
     daily_metrics,
-    passes_uptrend,
     score_symbol,
     select_top_candidates,
-    uptrend_metrics,
 )
 import strategy_selectors.select_opening_impulse as select_opening_impulse
 import strategy_selectors.select_steady_intraday as select_steady_intraday
@@ -1476,7 +1475,6 @@ class CoreTradingTests(unittest.TestCase):
             max_price=500.0,
             min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
-            require_uptrend=False,
         )
 
         self.assertIsNotNone(result)
@@ -1525,15 +1523,18 @@ class CoreTradingTests(unittest.TestCase):
                     types.SimpleNamespace(
                         top=1,
                         output=output,
-                        lookback_days=2,
-                        trend_lookback_days=2,
+                        lookback_days=25,
+                        base_lookback_days=5,
                         batch_size=2,
                         exchanges="NASDAQ,NYSE",
                         min_price=5.0,
                         max_price=500.0,
                         min_average_volume=1_000_000.0,
                         max_spread_bps=12.0,
-                        min_trend_bps=200.0,
+                        max_base_range_pct=0.10,
+                        min_breakout_day_pct=0.01,
+                        min_volume_ratio=1.10,
+                        max_extension_from_base_pct=0.12,
                         require_ema_stack=False,
                         liquidity_only_ranking=False,
                         skip_quotes=True,
@@ -1558,24 +1559,38 @@ class CoreTradingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             select_market_universe.build_universe(args)
 
-    def test_opening_universe_builder_prefers_uptrending_symbols(self):
-        start_ms = market_ms(2026, 1, 2, 9, 30)
+    def test_opening_universe_builder_prefers_breakout_setup_symbols(self):
+        start_ms = market_ms(2026, 5, 1, 9, 30)
 
-        def rising_bars(symbol: str, start_price: float, days: int, daily_gain: float = 0.012) -> list[Bar]:
+        def breakout_base_bars(symbol: str, base_days: int = 24, base_price: float = 15.0) -> list[Bar]:
             bars: list[Bar] = []
-            price = start_price
-            for index in range(days):
+            for index in range(base_days):
+                close = base_price + (index % 3) * 0.05
                 bars.append(
                     daily_bar_with_volume(
                         symbol,
-                        price,
-                        price * 0.985,
-                        price * 1.015,
+                        close,
+                        close - 0.15,
+                        close + 0.15,
                         2_000_000,
                         start_ms + index * 86_400_000,
                     )
                 )
-                price *= 1.0 + daily_gain
+            prior_close = bars[-1].close
+            breakout_close = prior_close * 1.04
+            bars.append(
+                Bar(
+                    symbol=symbol,
+                    open=prior_close,
+                    high=breakout_close + 0.20,
+                    low=prior_close - 0.05,
+                    close=breakout_close,
+                    volume=4_000_000,
+                    vwap=breakout_close,
+                    start_ms=start_ms + base_days * 86_400_000,
+                    end_ms=start_ms + base_days * 86_400_000 + 86_400_000,
+                )
+            )
             return bars
 
         def flat_bars(symbol: str, price: float, days: int) -> list[Bar]:
@@ -1584,23 +1599,22 @@ class CoreTradingTests(unittest.TestCase):
                 for index in range(days)
             ]
 
-        uptrend_bars = rising_bars("UP", 50.0, 60)
-        flat = flat_bars("FLAT", 100.0, 60)
-        uptrend = uptrend_metrics(uptrend_bars, 60)
-        self.assertIsNotNone(uptrend)
-        assert uptrend is not None
-        self.assertTrue(passes_uptrend(uptrend, min_trend_bps=200.0, require_ema_stack=False))
+        breakout_bars = breakout_base_bars("BRK")
+        flat = flat_bars("FLAT", 100.0, 25)
+        setup = breakout_setup_metrics(breakout_bars)
+        self.assertIsNotNone(setup)
+        assert setup is not None
+        self.assertTrue(setup["setup_ok"])
 
-        quote = Quote("UP", bid=100.0, ask=100.1, bid_size=100, ask_size=100, timestamp_ms=0)
-        uptrend_result = score_symbol(
-            "UP",
-            uptrend_bars,
+        quote = Quote("BRK", bid=15.5, ask=15.6, bid_size=100, ask_size=100, timestamp_ms=0)
+        breakout_result = score_symbol(
+            "BRK",
+            breakout_bars,
             quote=quote,
             min_price=5.0,
             max_price=500.0,
             min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
-            trend_lookback_days=60,
         )
         flat_result = score_symbol(
             "FLAT",
@@ -1610,25 +1624,24 @@ class CoreTradingTests(unittest.TestCase):
             max_price=500.0,
             min_average_volume=1_000_000.0,
             max_spread_bps=12.0,
-            trend_lookback_days=60,
         )
-        self.assertIsNotNone(uptrend_result)
+        self.assertIsNotNone(breakout_result)
         self.assertIsNotNone(flat_result)
-        assert uptrend_result is not None
+        assert breakout_result is not None
         assert flat_result is not None
-        self.assertTrue(uptrend_result["uptrend_ok"])
-        self.assertFalse(flat_result["uptrend_ok"])
-        self.assertGreater(uptrend_result["score"], flat_result["score"])
+        self.assertTrue(breakout_result["breakout_setup_ok"])
+        self.assertFalse(flat_result["breakout_setup_ok"])
+        self.assertGreater(breakout_result["score"], flat_result["score"])
 
-        selected = select_top_candidates([flat_result, uptrend_result], top=2, prefer_uptrend=True)
-        self.assertEqual([item["symbol"] for item in selected], ["UP", "FLAT"])
+        selected = select_top_candidates([flat_result, breakout_result], top=2, prefer_breakout_setup=True)
+        self.assertEqual([item["symbol"] for item in selected], ["BRK", "FLAT"])
 
     def test_opening_universe_builder_fills_requested_top(self):
         candidates = [
-            {"symbol": f"S{i}", "score": float(i), "uptrend_ok": i >= 8}
+            {"symbol": f"S{i}", "score": float(i), "breakout_setup_ok": i >= 8}
             for i in range(10)
         ]
-        selected = select_top_candidates(candidates, top=5, prefer_uptrend=True)
+        selected = select_top_candidates(candidates, top=5, prefer_breakout_setup=True)
         self.assertEqual(len(selected), 5)
         self.assertEqual([item["symbol"] for item in selected[:3]], ["S9", "S8", "S7"])
 
