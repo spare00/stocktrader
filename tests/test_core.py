@@ -1531,7 +1531,7 @@ class CoreTradingTests(unittest.TestCase):
                         max_price=500.0,
                         min_average_volume=1_000_000.0,
                         max_spread_bps=12.0,
-                        max_base_range_pct=0.10,
+                        max_base_range_pct=0.15,
                         min_breakout_day_pct=0.01,
                         min_volume_ratio=1.10,
                         max_extension_from_base_pct=0.12,

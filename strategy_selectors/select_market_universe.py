@@ -21,10 +21,21 @@ MARKET_TZ = ZoneInfo("America/New_York")
 MIN_SETUP_BARS = 21
 BASE_LOOKBACK_DAYS = 15
 PRIOR_HIGH_LOOKBACK = 20
-DEFAULT_MAX_BASE_RANGE_PCT = 0.10
+DEFAULT_MAX_BASE_RANGE_PCT = 0.15
 DEFAULT_MIN_BREAKOUT_DAY_PCT = 0.01
 DEFAULT_MIN_VOLUME_RATIO = 1.10
 DEFAULT_MAX_EXTENSION_FROM_BASE_PCT = 0.12
+CLOSE_NEAR_HIGH_MIN = 0.55
+SETUP_GATE_KEYS = (
+    "compressed",
+    "breakout",
+    "close_near_high",
+    "volume_ok",
+    "daily_change_ok",
+    "price_above_ema20",
+    "ema_aligned",
+    "not_overextended",
+)
 
 
 def batched(items: list[str], size: int) -> list[list[str]]:
@@ -146,7 +157,7 @@ def breakout_setup_metrics(
     prior_close = float(ordered[-2].close)
     daily_change_pct = (float(latest.close) - prior_close) / prior_close if prior_close > 0 else 0.0
     day_range = float(latest.high) - float(latest.low)
-    close_near_high = ((float(latest.close) - float(latest.low)) / day_range) >= 0.65 if day_range > 0 else False
+    close_near_high = ((float(latest.close) - float(latest.low)) / day_range) >= CLOSE_NEAR_HIGH_MIN if day_range > 0 else False
 
     base_volumes = [float(bar.volume) for bar in base if bar.volume > 0]
     avg_base_volume = sum(base_volumes) / len(base_volumes) if base_volumes else 0.0
@@ -182,8 +193,7 @@ def breakout_setup_metrics(
         ema_aligned = ema_stack
 
     setup_ok = (
-        compressed
-        and (broke_base or broke_prior_high)
+        (broke_base or broke_prior_high)
         and close_near_high
         and volume_ratio >= min_volume_ratio
         and daily_change_pct >= min_breakout_day_pct
@@ -194,6 +204,7 @@ def breakout_setup_metrics(
 
     return {
         "setup_ok": setup_ok,
+        "setup_ideal": setup_ok and compressed,
         "compressed": compressed,
         "broke_base": broke_base,
         "broke_prior_high": broke_prior_high,
@@ -204,6 +215,7 @@ def breakout_setup_metrics(
         "extension_from_base": extension_from_base,
         "ema_stack": ema_stack,
         "recent_cross": recent_cross,
+        "ema_aligned": ema_aligned,
         "ema_gap_expanding": ema_gap_expanding,
         "price_above_ema20": price_above_ema20,
         "not_overextended": not_overextended,
@@ -233,7 +245,46 @@ def breakout_setup_score(setup: dict) -> float:
         score += 0.5
     if not setup["not_overextended"]:
         score -= 2.0
+    if setup["setup_ideal"]:
+        score += 1.5
     return score
+
+
+def setup_gate_checks(setup: dict, *, min_volume_ratio: float, min_breakout_day_pct: float) -> dict[str, bool]:
+    return {
+        "compressed": setup["compressed"],
+        "breakout": setup["broke_base"] or setup["broke_prior_high"],
+        "close_near_high": setup["close_near_high"],
+        "volume_ok": setup["volume_ratio"] >= min_volume_ratio,
+        "daily_change_ok": setup["daily_change_pct"] >= min_breakout_day_pct,
+        "price_above_ema20": setup["price_above_ema20"],
+        "ema_aligned": setup["ema_aligned"],
+        "not_overextended": setup["not_overextended"],
+    }
+    with_checks = [item for item in candidates if item.get("setup_checks")]
+    if not with_checks:
+        return {}
+    summary: dict[str, int] = {}
+    for key in SETUP_GATE_KEYS:
+        summary[key] = sum(1 for item in with_checks if not item["setup_checks"].get(key))
+    return summary
+
+
+def near_miss_candidates(candidates: list[dict], limit: int = 10) -> list[dict]:
+    misses = [item for item in candidates if item.get("setup_checks") and not item.get("breakout_setup_ok")]
+    misses.sort(key=lambda item: item.get("setup_score", 0.0), reverse=True)
+    trimmed = []
+    for item in misses[:limit]:
+        trimmed.append(
+            {
+                "symbol": item["symbol"],
+                "setup_score": item.get("setup_score"),
+                "setup_checks": item.get("setup_checks"),
+                "daily_change_pct": item.get("daily_change_pct"),
+                "volume_ratio": item.get("volume_ratio"),
+            }
+        )
+    return trimmed
 
 
 def get_latest_quotes(settings: Settings, symbols: list[str], batch_size: int) -> dict[str, Quote]:
@@ -337,6 +388,12 @@ def score_symbol(
         "breakout_setup_ok": bool(setup and setup["setup_ok"]),
     }
     if setup:
+        result["setup_ideal"] = setup["setup_ideal"]
+        result["setup_checks"] = setup_gate_checks(
+            setup,
+            min_volume_ratio=min_volume_ratio,
+            min_breakout_day_pct=min_breakout_day_pct,
+        )
         result["daily_change_pct"] = round(setup["daily_change_pct"] * 100, 2)
         result["volume_ratio"] = round(setup["volume_ratio"], 2)
         result["base_range_pct"] = round(setup["base_range_pct"] * 100, 2)
@@ -354,11 +411,20 @@ def select_top_candidates(
 ) -> list[dict]:
     ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
     if strict:
-        return [item for item in ranked if item.get("breakout_setup_ok")][:top]
+        strict_ranked = [item for item in ranked if item.get("breakout_setup_ok")]
+        strict_ranked.sort(
+            key=lambda item: (bool(item.get("setup_ideal")), item.get("setup_score", 0.0), item["score"]),
+            reverse=True,
+        )
+        return strict_ranked[:top]
     if not prefer_breakout_setup:
         return ranked[:top]
 
     setup_first = [item for item in ranked if item.get("breakout_setup_ok")]
+    setup_first.sort(
+        key=lambda item: (bool(item.get("setup_ideal")), item.get("setup_score", 0.0), item["score"]),
+        reverse=True,
+    )
     remainder = [item for item in ranked if not item.get("breakout_setup_ok")]
     selected = setup_first[:top]
     if len(selected) < top:
@@ -435,9 +501,13 @@ def build_universe(args: argparse.Namespace) -> dict:
     )
 
     selected_symbols = [item["symbol"] for item in selected]
+    setup_pass_count = sum(1 for item in candidates if item.get("breakout_setup_ok"))
+    setup_failure_summary = summarize_setup_gate_failures(candidates) if candidates else {}
+    near_misses = near_miss_candidates(candidates) if strict and not selected else []
+
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(",".join(selected_symbols) + "\n")
+        args.output.write_text(",".join(selected_symbols) + ("\n" if selected_symbols else ""))
 
     return {
         "selected_symbols": selected_symbols,
@@ -446,8 +516,12 @@ def build_universe(args: argparse.Namespace) -> dict:
         "candidates": selected,
         "screened": len(symbols),
         "passed": len(candidates),
+        "setup_pass_count": setup_pass_count,
+        "setup_failure_summary": setup_failure_summary,
+        "near_misses": near_misses,
         "requested_top": args.top,
         "selected_count": len(selected_symbols),
+        "as_of_date": as_of.isoformat() if as_of is not None else None,
         "lookback_days": args.lookback_days,
         "base_lookback_days": base_lookback_days,
         "prefer_breakout_setup": prefer_breakout_setup,
@@ -545,6 +619,38 @@ def main() -> None:
     result = build_universe(parse_args())
     print(json.dumps(result, indent=2, sort_keys=True))
     line = result.get("symbols_env_line") or ""
+    selected_count = int(result.get("selected_count") or 0)
+    if selected_count == 0:
+        print(
+            "No symbols selected. "
+            f"screened={result.get('screened')} passed={result.get('passed')} "
+            f"setup_pass_count={result.get('setup_pass_count')} strict={result.get('strict')}",
+            file=sys.stderr,
+        )
+        if result.get("setup_failure_summary"):
+            print(
+                "Setup gate failures (counts among liquid symbols with daily setup data): "
+                f"{json.dumps(result['setup_failure_summary'], sort_keys=True)}",
+                file=sys.stderr,
+            )
+        if result.get("near_misses"):
+            print(
+                "Near-miss symbols (highest setup_score, not strict-pass): "
+                f"{json.dumps(result['near_misses'], sort_keys=True)}",
+                file=sys.stderr,
+            )
+        if not result.get("passed"):
+            print(
+                "Hint: passed=0 usually means missing Alpaca credentials, empty bar history, "
+                "or no symbols met liquidity filters. Use --as-of-date YYYY-MM-DD (not --as-of-te).",
+                file=sys.stderr,
+            )
+        elif result.get("strict") and not result.get("setup_pass_count"):
+            print(
+                "Hint: --strict requires breakout_setup_ok. Try without --strict to backfill --top, "
+                "or loosen --max-base-range-pct / --min-breakout-day-pct / --min-volume-ratio.",
+                file=sys.stderr,
+            )
     if line:
         print(
             "# Paste into profiles/*.env or `.env` — do not `export` (pollutes shell/tmux).",
