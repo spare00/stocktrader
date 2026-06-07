@@ -22,10 +22,12 @@ MIN_SETUP_BARS = 21
 BASE_LOOKBACK_DAYS = 15
 PRIOR_HIGH_LOOKBACK = 20
 DEFAULT_MAX_BASE_RANGE_PCT = 0.15
-DEFAULT_MIN_BREAKOUT_DAY_PCT = 0.01
-DEFAULT_MIN_VOLUME_RATIO = 1.10
-DEFAULT_MAX_EXTENSION_FROM_BASE_PCT = 0.12
-CLOSE_NEAR_HIGH_MIN = 0.55
+DEFAULT_MIN_BREAKOUT_DAY_PCT = 0.001
+DEFAULT_MIN_VOLUME_RATIO = 0.85
+DEFAULT_MAX_EXTENSION_FROM_BASE_PCT = 0.15
+CLOSE_NEAR_HIGH_MIN = 0.50
+BASE_BREAK_TOLERANCE = 0.998
+PRIOR_HIGH_BREAK_TOLERANCE = 0.995
 SETUP_GATE_KEYS = (
     "compressed",
     "breakout",
@@ -163,8 +165,8 @@ def breakout_setup_metrics(
     avg_base_volume = sum(base_volumes) / len(base_volumes) if base_volumes else 0.0
     volume_ratio = float(latest.volume) / avg_base_volume if avg_base_volume > 0 else 0.0
 
-    broke_base = float(latest.close) > base_high * 1.001
-    broke_prior_high = float(latest.close) >= prior_high * 0.998
+    broke_base = float(latest.close) > base_high * BASE_BREAK_TOLERANCE
+    broke_prior_high = float(latest.close) >= prior_high * PRIOR_HIGH_BREAK_TOLERANCE
 
     closes = [float(bar.close) for bar in ordered]
     ema5_series = _ema_series(closes, 5)
@@ -188,7 +190,7 @@ def breakout_setup_metrics(
     extension_from_base = (float(latest.close) - base_low) / base_low
     not_overextended = extension_from_base <= max_extension_from_base_pct
 
-    ema_aligned = ema_stack or recent_cross
+    ema_aligned = ema_stack or recent_cross or (price_above_ema20 and ema5_now > ema20_now)
     if require_ema_stack:
         ema_aligned = ema_stack
 
