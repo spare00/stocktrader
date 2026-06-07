@@ -66,6 +66,7 @@ Market-data modes:
 Strategies:
 
 - `spike`: short-window price/volume spike detection
+- `liquidity_scalper`: liquidity-first intraday scalper that only enters high dollar-volume, high-range symbols during active windows; it buys either a flush reclaim or tight liquidity breakout and exits quickly when the trade stops working
 - `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold
@@ -73,7 +74,7 @@ Strategies:
 - `breakout_power`: 1-minute BreakOut Power score cross above trend line with green avg_momentum (threshold 70, max spread 6 bps), SuperTrend(10,2) entry filter, profit partials at 0.8R/0.8%, optional SuperTrend-bearish exit, and bar-based recovery-aware exits
 - `ema_gap_cross`: 1-minute EMA5 golden cross above EMA20 with bullish EMA5>EMA10>EMA20 stack and minimum gap; sell 50% on first EMA20 decline from its position peak after grace bars, remainder after EMA5 stays below EMA20 for two bars (default 180s min hold)
 
-Choose one or many with `STRATEGIES=spike,opening_impulse,gap_and_go,maha7,stoch_macd_reversal,breakout_power,ema_gap_cross`.
+Choose one or many with `STRATEGIES=spike,liquidity_scalper,opening_impulse,gap_and_go,maha7,stoch_macd_reversal,breakout_power,ema_gap_cross`.
 When running `main.py`, you can override that directly with `--strategy`; if neither is set, the runner asks for the strategy before starting.
 
 Strategy entry windows are configured independently, in minutes from the
@@ -82,6 +83,7 @@ regular-market open at `09:30` New York time. For example, `0` means `09:30`,
 minutes. Supported window variables:
 
 - `OPENING_IMPULSE_START_MINUTE` / `OPENING_IMPULSE_END_MINUTE`
+- `LIQUIDITY_SCALPER_START_MINUTE` / `LIQUIDITY_SCALPER_END_MINUTE` plus `LIQUIDITY_SCALPER_AFTERNOON_START_MINUTE` / `LIQUIDITY_SCALPER_AFTERNOON_END_MINUTE`
 - `GAP_AND_GO_START_MINUTE` / `GAP_AND_GO_END_MINUTE`
 - `MAHA7_START_MINUTE` / `MAHA7_END_MINUTE` (defaults to `30` / `300`, or `10:00` / `14:30` ET)
 - `STOCH_MACD_START_MINUTE` / `STOCH_MACD_END_MINUTE`
@@ -114,6 +116,7 @@ strategy needs different sizing, book size, hold time, or pacing:
 - `BP_MAX_POSITION_VALUE` / `BP_MAX_OPEN_POSITIONS` / `BP_MAX_HOLD_SECONDS` / `BP_TRADE_COOLDOWN_SECONDS`
 - `EGC_MAX_HOLD_SECONDS` (falls back to `MAX_HOLD_SECONDS` when unset or `0`)
 - `OPENING_IMPULSE_MAX_POSITION_VALUE` / `OPENING_IMPULSE_MAX_OPEN_POSITIONS` / `OPENING_IMPULSE_MAX_HOLD_SECONDS`
+- `LIQUIDITY_SCALPER_MAX_POSITION_VALUE` / `LIQUIDITY_SCALPER_MAX_OPEN_POSITIONS` / `LIQUIDITY_SCALPER_MAX_HOLD_SECONDS` / `LIQUIDITY_SCALPER_TRADE_COOLDOWN_SECONDS`
 - `GAP_AND_GO_MAX_POSITION_VALUE` / `GAP_AND_GO_MAX_OPEN_POSITIONS` / `GAP_AND_GO_MAX_HOLD_SECONDS`
 - `SPIKE_MAX_POSITION_VALUE` / `SPIKE_MAX_OPEN_POSITIONS` / `SPIKE_MAX_HOLD_SECONDS`
 - `MAHA7_MAX_POSITION_VALUE` / `MAHA7_MAX_OPEN_POSITIONS` / `MAHA7_MAX_HOLD_SECONDS`

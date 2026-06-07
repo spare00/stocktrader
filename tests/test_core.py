@@ -90,6 +90,7 @@ from strategies.ema_gap_cross import (
     recent_ema_cross_above,
     recent_ema_cross_below,
 )
+from strategies.liquidity_scalper import LiquidityScalperStrategy
 import strategy_selectors.select_ema_gap_cross as select_ema_gap_cross
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
@@ -7676,9 +7677,88 @@ class CoreTradingTests(unittest.TestCase):
                 "maha7",
                 "steady_intraday",
                 "spike",
+                "liquidity_scalper",
                 "opening_impulse",
             ],
         )
+
+    def test_liquidity_scalper_emits_flush_reclaim_signal(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FAST"],
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_min_session_dollar_volume=3_000_000.0,
+            liquidity_scalper_breakout_lookback_bars=3,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        state = SymbolState("FAST")
+        rows = [
+            Bar("FAST", 100.0, 101.0, 99.0, 100.0, 10_000, 100.0, market_ms(2026, 5, 8, 9, 30), market_ms(2026, 5, 8, 9, 31)),
+            Bar("FAST", 100.0, 100.0, 99.0, 99.5, 10_000, 99.5, market_ms(2026, 5, 8, 9, 31), market_ms(2026, 5, 8, 9, 32)),
+            Bar("FAST", 99.5, 99.5, 96.0, 97.0, 10_000, 97.0, market_ms(2026, 5, 8, 9, 32), market_ms(2026, 5, 8, 9, 33)),
+            Bar("FAST", 96.8, 98.2, 96.5, 97.5, 40_000, 97.5, market_ms(2026, 5, 8, 9, 33), market_ms(2026, 5, 8, 9, 34)),
+        ]
+        for item in rows:
+            state.add_bar(item)
+        state.update_quote(Quote("FAST", bid=97.54, ask=97.56, bid_size=100, ask_size=100, timestamp_ms=rows[-1].end_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = rows[-1].end_ms
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "liquidity_scalper")
+        self.assertIn("flush_reclaim", signal.reason)
+        self.assertLess(signal.stop_price, signal.price)
+
+    def test_liquidity_scalper_rejects_thin_dollar_volume(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["THIN"],
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_min_session_dollar_volume=3_000_000.0,
+            liquidity_scalper_breakout_lookback_bars=3,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        state = SymbolState("THIN")
+        for index, close in enumerate([100.0, 99.5, 97.0, 97.5]):
+            start = market_ms(2026, 5, 8, 9, 30 + index)
+            state.add_bar(Bar("THIN", close, close + 1.0, close - 1.0, close, 1_000, close, start, start + 60_000))
+        state.update_quote(Quote("THIN", bid=97.54, ask=97.56, bid_size=100, ask_size=100, timestamp_ms=state.bars[-1].end_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        self.assertIsNone(strategy.evaluate(state))
+
+    def test_liquidity_scalper_exits_when_trade_is_not_working(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FAST"],
+            liquidity_scalper_min_hold_seconds=2,
+            liquidity_scalper_stall_loss_pct=0.0005,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        entry_ms = market_ms(2026, 5, 8, 9, 34)
+        state = SymbolState("FAST")
+        state.update_quote(Quote("FAST", bid=99.89, ask=99.91, bid_size=100, ask_size=100, timestamp_ms=entry_ms + 3_000))
+        position = Position(
+            symbol="FAST",
+            strategy="liquidity_scalper",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=entry_ms,
+            target_price=100.4,
+            stop_price=99.7,
+            max_price=100.0,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "not immediately working")
 
     def test_steady_intraday_emits_pullback_reclaim_signal(self):
         settings = Settings(

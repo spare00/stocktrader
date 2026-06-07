@@ -8,6 +8,7 @@ from strategies.base import Strategy
 from strategies.breakout_power import BreakoutPowerStrategy
 from strategies.ema_gap_cross import EmaGapCrossStrategy
 from strategies.gap_and_go import GapAndGoStrategy
+from strategies.liquidity_scalper import LiquidityScalperStrategy
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
@@ -26,6 +27,7 @@ _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     Maha7Strategy,
     SteadyIntradayStrategy,
     SpikeStrategy,
+    LiquidityScalperStrategy,
     OpeningImpulseStrategy,
 )
 

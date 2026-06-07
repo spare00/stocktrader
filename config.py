@@ -65,6 +65,29 @@ class Settings:
     volume_ratio: float = 2.0
     max_spread_bps: float = 12.0
 
+    liquidity_scalper_start_minute: int = 0
+    liquidity_scalper_end_minute: int = 30
+    liquidity_scalper_afternoon_start_minute: int = 270
+    liquidity_scalper_afternoon_end_minute: int = 360
+    liquidity_scalper_min_bar_dollar_volume: float = 3_000_000.0
+    liquidity_scalper_min_session_dollar_volume: float = 30_000_000.0
+    liquidity_scalper_min_volume_ratio: float = 2.0
+    liquidity_scalper_min_range_pct: float = 0.015
+    liquidity_scalper_flush_lookback_bars: int = 3
+    liquidity_scalper_flush_drop_pct: float = 0.025
+    liquidity_scalper_reclaim_pct: float = 0.003
+    liquidity_scalper_breakout_lookback_bars: int = 5
+    liquidity_scalper_breakout_buffer_pct: float = 0.0005
+    liquidity_scalper_max_spread_bps: float = 12.0
+    liquidity_scalper_min_hold_seconds: int = 2
+    liquidity_scalper_quick_profit_pct: float = 0.004
+    liquidity_scalper_trailing_pullback_pct: float = 0.0025
+    liquidity_scalper_stall_seconds: int = 20
+    liquidity_scalper_stall_loss_pct: float = 0.0005
+    liquidity_scalper_stop_loss_pct: float = 0.003
+    liquidity_scalper_max_trades_per_symbol_per_session: int = 6
+    liquidity_scalper_symbol_loss_lock_count: int = 2
+
     target_profit_pct: float = 0.01
     stop_loss_pct: float = 0.005
     max_hold_seconds: int = 120
@@ -88,6 +111,13 @@ class Settings:
     spike_max_open_positions: int = 0
     spike_max_position_value: float = 0.0
     spike_max_hold_seconds: int = 0
+    liquidity_scalper_max_open_positions: int = 0
+    liquidity_scalper_max_position_value: float = 0.0
+    liquidity_scalper_max_hold_seconds: int = 0
+    liquidity_scalper_trade_cooldown_seconds: int = 0
+    liquidity_scalper_consecutive_loss_pause_count: int | None = None
+    liquidity_scalper_consecutive_loss_pause_minutes: int | None = None
+    liquidity_scalper_consecutive_loss_stop_count: int | None = None
     stoch_macd_max_open_positions: int = 0
     stoch_macd_max_position_value: float = 0.0
     stoch_macd_max_hold_seconds: int = 0
@@ -581,6 +611,28 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("spike_max_open_positions", "SPIKE_MAX_OPEN_POSITIONS", _int_env, 0),
     ("spike_max_position_value", "SPIKE_MAX_POSITION_VALUE", _float_env, 0.0),
     ("spike_max_hold_seconds", "SPIKE_MAX_HOLD_SECONDS", _int_env, 0),
+    (
+        "liquidity_scalper_consecutive_loss_pause_count",
+        "LIQUIDITY_SCALPER_CONSECUTIVE_LOSS_PAUSE_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "liquidity_scalper_consecutive_loss_pause_minutes",
+        "LIQUIDITY_SCALPER_CONSECUTIVE_LOSS_PAUSE_MINUTES",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "liquidity_scalper_consecutive_loss_stop_count",
+        "LIQUIDITY_SCALPER_CONSECUTIVE_LOSS_STOP_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    ("liquidity_scalper_max_open_positions", "LIQUIDITY_SCALPER_MAX_OPEN_POSITIONS", _int_env, 0),
+    ("liquidity_scalper_max_position_value", "LIQUIDITY_SCALPER_MAX_POSITION_VALUE", _float_env, 0.0),
+    ("liquidity_scalper_max_hold_seconds", "LIQUIDITY_SCALPER_MAX_HOLD_SECONDS", _int_env, 0),
+    ("liquidity_scalper_trade_cooldown_seconds", "LIQUIDITY_SCALPER_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("stoch_macd_max_open_positions", "STOCH_MACD_MAX_OPEN_POSITIONS", _int_env, 0),
     ("stoch_macd_max_position_value", "STOCH_MACD_MAX_POSITION_VALUE", _float_env, 0.0),
     ("stoch_macd_max_hold_seconds", "STOCH_MACD_MAX_HOLD_SECONDS", _int_env, 0),

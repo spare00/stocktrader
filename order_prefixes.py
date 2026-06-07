@@ -14,6 +14,7 @@ STRATEGY_ORDER_PREFIXES: dict[str, str] = {
     "maha7": "mh7",
     "steady_intraday": "si",
     "spike": "spk",
+    "liquidity_scalper": "lqs",
     "opening_impulse": "oi",
     "reconciled": "rec",
 }

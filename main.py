@@ -600,6 +600,12 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
                     "max_position_value": settings.spike_max_position_value,
                     "max_hold_seconds": settings.spike_max_hold_seconds,
                 },
+                "liquidity_scalper": {
+                    "max_open_positions": settings.liquidity_scalper_max_open_positions,
+                    "max_position_value": settings.liquidity_scalper_max_position_value,
+                    "max_hold_seconds": settings.liquidity_scalper_max_hold_seconds,
+                    "trade_cooldown_seconds": settings.liquidity_scalper_trade_cooldown_seconds,
+                },
                 "stoch_macd_reversal": {
                     "max_open_positions": settings.stoch_macd_max_open_positions,
                     "max_position_value": settings.stoch_macd_max_position_value,
