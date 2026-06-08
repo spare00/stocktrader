@@ -1,49 +1,74 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
 from datetime import datetime, time
 from statistics import median
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from candle import SymbolState
 from config import Settings
 from env_vars import EnvSpec, float_env, int_env
 from market_hours import MARKET_TZ
-from models import Bar, ExitDecision, Signal, Trade
+from models import Bar, ExitDecision, Quote, Signal, Trade
 from strategies.base import Strategy
 
+
+logger = logging.getLogger("strategies.liquidity_scalper")
 
 MARKET_OPEN = time(9, 30)
 
 
+@dataclass(frozen=True)
+class TapeMetrics:
+    buy_volume: int
+    sell_volume: int
+    buy_sell_ratio: float
+    dollar_volume: float
+    move_pct: float
+    trade_count: int
+    ask_prints: int
+    bid_prints: int
+    accel_ratio: float
+
+
 class LiquidityScalperStrategy(Strategy):
-    """Liquidity-first scalping based on intraday dollar flow and snapback structure."""
+    """Stream-native liquidity scalper: tape impulse entries and tick-level exits."""
 
     name = "liquidity_scalper"
     requires_plan = False
     requires_trade_ticks = True
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("liquidity_scalper_start_minute", "LIQUIDITY_SCALPER_START_MINUTE", int_env, 0),
-        ("liquidity_scalper_end_minute", "LIQUIDITY_SCALPER_END_MINUTE", int_env, 30),
-        ("liquidity_scalper_afternoon_start_minute", "LIQUIDITY_SCALPER_AFTERNOON_START_MINUTE", int_env, 270),
+        ("liquidity_scalper_end_minute", "LIQUIDITY_SCALPER_END_MINUTE", int_env, 360),
+        ("liquidity_scalper_afternoon_start_minute", "LIQUIDITY_SCALPER_AFTERNOON_START_MINUTE", int_env, 0),
         ("liquidity_scalper_afternoon_end_minute", "LIQUIDITY_SCALPER_AFTERNOON_END_MINUTE", int_env, 360),
         ("liquidity_scalper_min_bar_dollar_volume", "LIQUIDITY_SCALPER_MIN_BAR_DOLLAR_VOLUME", float_env, 3_000_000.0),
         ("liquidity_scalper_min_session_dollar_volume", "LIQUIDITY_SCALPER_MIN_SESSION_DOLLAR_VOLUME", float_env, 30_000_000.0),
         ("liquidity_scalper_min_volume_ratio", "LIQUIDITY_SCALPER_MIN_VOLUME_RATIO", float_env, 2.0),
         ("liquidity_scalper_min_range_pct", "LIQUIDITY_SCALPER_MIN_RANGE_PCT", float_env, 0.015),
-        ("liquidity_scalper_tape_window_seconds", "LIQUIDITY_SCALPER_TAPE_WINDOW_SECONDS", int_env, 5),
-        ("liquidity_scalper_min_tape_trades", "LIQUIDITY_SCALPER_MIN_TAPE_TRADES", int_env, 4),
-        ("liquidity_scalper_min_tape_dollar_volume", "LIQUIDITY_SCALPER_MIN_TAPE_DOLLAR_VOLUME", float_env, 250_000.0),
-        ("liquidity_scalper_min_trade_dollar_volume", "LIQUIDITY_SCALPER_MIN_TRADE_DOLLAR_VOLUME", float_env, 25_000.0),
-        ("liquidity_scalper_min_buy_sell_ratio", "LIQUIDITY_SCALPER_MIN_BUY_SELL_RATIO", float_env, 1.8),
-        ("liquidity_scalper_min_tape_price_move_pct", "LIQUIDITY_SCALPER_MIN_TAPE_PRICE_MOVE_PCT", float_env, 0.0005),
+        ("liquidity_scalper_tape_window_seconds", "LIQUIDITY_SCALPER_TAPE_WINDOW_SECONDS", int_env, 3),
+        ("liquidity_scalper_exit_tape_window_seconds", "LIQUIDITY_SCALPER_EXIT_TAPE_WINDOW_SECONDS", int_env, 2),
+        ("liquidity_scalper_min_tape_trades", "LIQUIDITY_SCALPER_MIN_TAPE_TRADES", int_env, 3),
+        ("liquidity_scalper_min_tape_dollar_volume", "LIQUIDITY_SCALPER_MIN_TAPE_DOLLAR_VOLUME", float_env, 150_000.0),
+        ("liquidity_scalper_min_trade_dollar_volume", "LIQUIDITY_SCALPER_MIN_TRADE_DOLLAR_VOLUME", float_env, 15_000.0),
+        ("liquidity_scalper_min_buy_sell_ratio", "LIQUIDITY_SCALPER_MIN_BUY_SELL_RATIO", float_env, 1.5),
+        ("liquidity_scalper_min_tape_price_move_pct", "LIQUIDITY_SCALPER_MIN_TAPE_PRICE_MOVE_PCT", float_env, 0.0004),
+        ("liquidity_scalper_quote_max_lag_ms", "LIQUIDITY_SCALPER_QUOTE_MAX_LAG_MS", int_env, 500),
+        ("liquidity_scalper_min_ask_prints", "LIQUIDITY_SCALPER_MIN_ASK_PRINTS", int_env, 2),
+        ("liquidity_scalper_tape_accel_min_ratio", "LIQUIDITY_SCALPER_TAPE_ACCEL_MIN_RATIO", float_env, 1.15),
+        ("liquidity_scalper_exit_tape_reversal_ratio", "LIQUIDITY_SCALPER_EXIT_TAPE_REVERSAL_RATIO", float_env, 1.35),
         ("liquidity_scalper_flush_lookback_bars", "LIQUIDITY_SCALPER_FLUSH_LOOKBACK_BARS", int_env, 3),
         ("liquidity_scalper_flush_drop_pct", "LIQUIDITY_SCALPER_FLUSH_DROP_PCT", float_env, 0.025),
         ("liquidity_scalper_reclaim_pct", "LIQUIDITY_SCALPER_RECLAIM_PCT", float_env, 0.003),
         ("liquidity_scalper_breakout_lookback_bars", "LIQUIDITY_SCALPER_BREAKOUT_LOOKBACK_BARS", int_env, 5),
         ("liquidity_scalper_breakout_buffer_pct", "LIQUIDITY_SCALPER_BREAKOUT_BUFFER_PCT", float_env, 0.0005),
         ("liquidity_scalper_max_spread_bps", "LIQUIDITY_SCALPER_MAX_SPREAD_BPS", float_env, 12.0),
-        ("liquidity_scalper_min_hold_seconds", "LIQUIDITY_SCALPER_MIN_HOLD_SECONDS", int_env, 2),
-        ("liquidity_scalper_quick_profit_pct", "LIQUIDITY_SCALPER_QUICK_PROFIT_PCT", float_env, 0.004),
-        ("liquidity_scalper_trailing_pullback_pct", "LIQUIDITY_SCALPER_TRAILING_PULLBACK_PCT", float_env, 0.0025),
-        ("liquidity_scalper_stall_seconds", "LIQUIDITY_SCALPER_STALL_SECONDS", int_env, 20),
+        ("liquidity_scalper_min_hold_seconds", "LIQUIDITY_SCALPER_MIN_HOLD_SECONDS", int_env, 1),
+        ("liquidity_scalper_micro_profit_pct", "LIQUIDITY_SCALPER_MICRO_PROFIT_PCT", float_env, 0.0015),
+        ("liquidity_scalper_quick_profit_pct", "LIQUIDITY_SCALPER_QUICK_PROFIT_PCT", float_env, 0.003),
+        ("liquidity_scalper_trailing_pullback_pct", "LIQUIDITY_SCALPER_TRAILING_PULLBACK_PCT", float_env, 0.002),
+        ("liquidity_scalper_stall_seconds", "LIQUIDITY_SCALPER_STALL_SECONDS", int_env, 12),
         ("liquidity_scalper_stall_loss_pct", "LIQUIDITY_SCALPER_STALL_LOSS_PCT", float_env, 0.0005),
         ("liquidity_scalper_stop_loss_pct", "LIQUIDITY_SCALPER_STOP_LOSS_PCT", float_env, 0.003),
         (
@@ -65,21 +90,16 @@ class LiquidityScalperStrategy(Strategy):
             "end_minute": settings.liquidity_scalper_end_minute,
             "afternoon_start_minute": settings.liquidity_scalper_afternoon_start_minute,
             "afternoon_end_minute": settings.liquidity_scalper_afternoon_end_minute,
-            "min_bar_dollar_volume": settings.liquidity_scalper_min_bar_dollar_volume,
-            "min_session_dollar_volume": settings.liquidity_scalper_min_session_dollar_volume,
-            "min_volume_ratio": settings.liquidity_scalper_min_volume_ratio,
-            "min_range_pct": settings.liquidity_scalper_min_range_pct,
             "tape_window_seconds": settings.liquidity_scalper_tape_window_seconds,
-            "min_tape_trades": settings.liquidity_scalper_min_tape_trades,
-            "min_tape_dollar_volume": settings.liquidity_scalper_min_tape_dollar_volume,
-            "min_trade_dollar_volume": settings.liquidity_scalper_min_trade_dollar_volume,
+            "exit_tape_window_seconds": settings.liquidity_scalper_exit_tape_window_seconds,
+            "quote_max_lag_ms": settings.liquidity_scalper_quote_max_lag_ms,
             "min_buy_sell_ratio": settings.liquidity_scalper_min_buy_sell_ratio,
-            "min_tape_price_move_pct": settings.liquidity_scalper_min_tape_price_move_pct,
-            "flush_drop_pct": settings.liquidity_scalper_flush_drop_pct,
-            "reclaim_pct": settings.liquidity_scalper_reclaim_pct,
-            "max_spread_bps": settings.liquidity_scalper_max_spread_bps,
+            "min_ask_prints": settings.liquidity_scalper_min_ask_prints,
+            "tape_accel_min_ratio": settings.liquidity_scalper_tape_accel_min_ratio,
+            "micro_profit_pct": settings.liquidity_scalper_micro_profit_pct,
             "quick_profit_pct": settings.liquidity_scalper_quick_profit_pct,
-            "trailing_pullback_pct": settings.liquidity_scalper_trailing_pullback_pct,
+            "exit_tape_reversal_ratio": settings.liquidity_scalper_exit_tape_reversal_ratio,
+            "max_spread_bps": settings.liquidity_scalper_max_spread_bps,
             "stall_seconds": settings.liquidity_scalper_stall_seconds,
             "stop_loss_pct": settings.liquidity_scalper_stop_loss_pct,
             "max_trades_per_symbol_per_session": settings.liquidity_scalper_max_trades_per_symbol_per_session,
@@ -101,79 +121,43 @@ class LiquidityScalperStrategy(Strategy):
         if state.last_event_kind == "trade":
             return self._trade_tape_signal(state)
 
-        bars = self._session_bars(state)
-        if len(bars) < max(4, self.settings.liquidity_scalper_breakout_lookback_bars + 1):
-            return None
-
-        last = bars[-1]
-        quote = state.quote
-        spread_bps = quote.spread_bps if quote is not None else None
-        if spread_bps is not None and spread_bps > self.settings.liquidity_scalper_max_spread_bps:
-            return None
-
-        bar_dollar_volume = last.close * last.volume
-        if bar_dollar_volume < self.settings.liquidity_scalper_min_bar_dollar_volume:
-            return None
-        session_dollar_volume = sum(bar.close * bar.volume for bar in bars)
-        if session_dollar_volume < self.settings.liquidity_scalper_min_session_dollar_volume:
-            return None
-
-        session_range_pct = self._range_pct(bars)
-        if session_range_pct < self.settings.liquidity_scalper_min_range_pct:
-            return None
-
-        volume_ratio = self._volume_ratio(bars)
-        if volume_ratio < self.settings.liquidity_scalper_min_volume_ratio:
-            return None
-
-        setup = self._flush_reclaim_setup(bars) or self._liquidity_breakout_setup(bars)
-        if setup is None:
-            return None
-
-        entry_price = quote.ask if quote is not None and quote.ask > 0 else last.close
-        stop_price = entry_price * (1.0 - self.settings.liquidity_scalper_stop_loss_pct)
-        reason = (
-            f"{setup}; bar_dv ${bar_dollar_volume:,.0f}, session_dv ${session_dollar_volume:,.0f}, "
-            f"range {session_range_pct:.2%}, volume {volume_ratio:.1f}x"
-        )
-        return Signal(
-            strategy=self.name,
-            symbol=state.symbol,
-            side="BUY",
-            price=entry_price,
-            timestamp_ms=last.end_ms,
-            change_pct=(last.close - bars[-2].close) / bars[-2].close if bars[-2].close > 0 else 0.0,
-            volume_ratio=volume_ratio,
-            spread_bps=spread_bps,
-            reason=reason,
-            stop_price=stop_price,
-        )
+        return self._bar_structure_signal(state)
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
         if state.last_event_kind not in {"quote", "bar", "trade"} or position.strategy != self.name:
             return None
 
-        price = state.trade.price if state.last_event_kind == "trade" and state.trade is not None else state.last_price
-        if price is None or position.entry_price <= 0:
+        mark = self._mark_price(state, side="long")
+        if mark is None or position.entry_price <= 0:
             return None
 
         event_ms = state.last_event_ms or position.entry_ms
         age_seconds = (event_ms - position.entry_ms) / 1000
-        pnl_pct = (price - position.entry_price) / position.entry_price
+        pnl_pct = (mark - position.entry_price) / position.entry_price
 
         if pnl_pct <= -self.settings.liquidity_scalper_stop_loss_pct:
             return ExitDecision("scalper stop loss")
+
         if age_seconds < self.settings.liquidity_scalper_min_hold_seconds:
             return None
+
+        if age_seconds >= self.settings.liquidity_scalper_min_hold_seconds:
+            reversal = self._exit_tape_reversal(state)
+            if reversal is not None:
+                return reversal
 
         if pnl_pct <= -self.settings.liquidity_scalper_stall_loss_pct:
             return ExitDecision("not immediately working")
 
-        if pnl_pct >= self.settings.liquidity_scalper_quick_profit_pct:
-            return ExitDecision("quick scalp profit")
+        if pnl_pct >= self.settings.liquidity_scalper_micro_profit_pct:
+            if self._tape_still_supportive(state):
+                if pnl_pct >= self.settings.liquidity_scalper_quick_profit_pct:
+                    return ExitDecision("quick scalp profit")
+            else:
+                return ExitDecision("micro scalp profit")
 
         if position.max_price > position.entry_price:
-            pullback_pct = (position.max_price - price) / position.max_price
+            pullback_pct = (position.max_price - mark) / position.max_price
             if pullback_pct >= self.settings.liquidity_scalper_trailing_pullback_pct:
                 return ExitDecision("scalp pullback")
 
@@ -204,26 +188,23 @@ class LiquidityScalperStrategy(Strategy):
         if trade_dollar_volume < self.settings.liquidity_scalper_min_trade_dollar_volume:
             return None
 
-        recent = self._recent_trades(state, self.settings.liquidity_scalper_tape_window_seconds)
-        if len(recent) < self.settings.liquidity_scalper_min_tape_trades:
+        metrics = self._tape_metrics(state, self.settings.liquidity_scalper_tape_window_seconds)
+        if metrics is None:
             return None
 
-        classified = [(item, self._classify_trade(item, quote)) for item in recent]
-        buy_volume = sum(item.size for item, side in classified if side == "buy")
-        sell_volume = sum(item.size for item, side in classified if side == "sell")
-        if buy_volume <= 0:
+        if metrics.buy_sell_ratio < self.settings.liquidity_scalper_min_buy_sell_ratio:
             return None
-        buy_sell_ratio = buy_volume / max(1, sell_volume)
-        if buy_sell_ratio < self.settings.liquidity_scalper_min_buy_sell_ratio:
+        if metrics.dollar_volume < self.settings.liquidity_scalper_min_tape_dollar_volume:
             return None
-
-        tape_dollar_volume = sum(item.price * item.size for item in recent)
-        if tape_dollar_volume < self.settings.liquidity_scalper_min_tape_dollar_volume:
+        if metrics.move_pct < self.settings.liquidity_scalper_min_tape_price_move_pct:
+            return None
+        if metrics.ask_prints < self.settings.liquidity_scalper_min_ask_prints:
+            return None
+        if metrics.accel_ratio < self.settings.liquidity_scalper_tape_accel_min_ratio:
             return None
 
-        first_price = recent[0].price
-        tape_move_pct = (trade.price - first_price) / first_price if first_price > 0 else 0.0
-        if tape_move_pct < self.settings.liquidity_scalper_min_tape_price_move_pct:
+        trigger_quote = self._quote_at_ms(state, trade.timestamp_ms)
+        if trigger_quote is None or not self._is_aggressive_buy(trade, trigger_quote):
             return None
 
         session_bars = self._session_bars(state)
@@ -238,23 +219,213 @@ class LiquidityScalperStrategy(Strategy):
         entry_price = quote.ask
         stop_price = entry_price * (1.0 - self.settings.liquidity_scalper_stop_loss_pct)
         reason = (
-            f"trade_tape buy_sell={buy_sell_ratio:.2f} "
-            f"tape_dv ${tape_dollar_volume:,.0f}/{self.settings.liquidity_scalper_tape_window_seconds}s "
-            f"last_trade_dv ${trade_dollar_volume:,.0f} move {tape_move_pct:.3%}; "
+            f"trade_tape buy_sell={metrics.buy_sell_ratio:.2f} accel={metrics.accel_ratio:.2f} "
+            f"ask_prints={metrics.ask_prints} "
+            f"tape_dv ${metrics.dollar_volume:,.0f}/{self.settings.liquidity_scalper_tape_window_seconds}s "
+            f"last_trade_dv ${trade_dollar_volume:,.0f} move {metrics.move_pct:.3%}; "
             f"session_dv ${session_dollar_volume:,.0f}, range {session_range_pct:.2%}"
         )
+        logger.debug("%s entry signal %s", state.symbol, reason)
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
             side="BUY",
             price=entry_price,
             timestamp_ms=trade.timestamp_ms,
-            change_pct=tape_move_pct,
-            volume_ratio=buy_sell_ratio,
+            change_pct=metrics.move_pct,
+            volume_ratio=metrics.buy_sell_ratio,
             spread_bps=spread_bps,
             reason=reason,
             stop_price=stop_price,
         )
+
+    def _bar_structure_signal(self, state: SymbolState) -> Signal | None:
+        bars = self._session_bars(state)
+        if len(bars) < max(4, self.settings.liquidity_scalper_breakout_lookback_bars + 1):
+            return None
+
+        last = bars[-1]
+        quote = state.quote
+        spread_bps = quote.spread_bps if quote is not None else None
+        if spread_bps is not None and spread_bps > self.settings.liquidity_scalper_max_spread_bps:
+            return None
+
+        bar_dollar_volume = last.close * last.volume
+        if bar_dollar_volume < self.settings.liquidity_scalper_min_bar_dollar_volume:
+            return None
+        session_dollar_volume = sum(bar.close * bar.volume for bar in bars)
+        if session_dollar_volume < self.settings.liquidity_scalper_min_session_dollar_volume:
+            return None
+
+        session_range_pct = self._range_pct(bars)
+        if session_range_pct < self.settings.liquidity_scalper_min_range_pct:
+            return None
+
+        volume_ratio = self._volume_ratio(bars)
+        if volume_ratio < self.settings.liquidity_scalper_min_volume_ratio:
+            return None
+
+        setup = self._flush_reclaim_setup(bars) or self._liquidity_breakout_setup(bars)
+        if setup is None:
+            return None
+
+        tape = self._tape_metrics(state, self.settings.liquidity_scalper_tape_window_seconds)
+        if tape is None or tape.buy_sell_ratio < 1.0:
+            return None
+
+        entry_price = quote.ask if quote is not None and quote.ask > 0 else last.close
+        stop_price = entry_price * (1.0 - self.settings.liquidity_scalper_stop_loss_pct)
+        reason = (
+            f"{setup}; bar_dv ${bar_dollar_volume:,.0f}, session_dv ${session_dollar_volume:,.0f}, "
+            f"range {session_range_pct:.2%}, volume {volume_ratio:.1f}x, tape={tape.buy_sell_ratio:.2f}"
+        )
+        return Signal(
+            strategy=self.name,
+            symbol=state.symbol,
+            side="BUY",
+            price=entry_price,
+            timestamp_ms=last.end_ms,
+            change_pct=(last.close - bars[-2].close) / bars[-2].close if bars[-2].close > 0 else 0.0,
+            volume_ratio=volume_ratio,
+            spread_bps=spread_bps,
+            reason=reason,
+            stop_price=stop_price,
+        )
+
+    def _exit_tape_reversal(self, state: SymbolState) -> ExitDecision | None:
+        metrics = self._tape_metrics(
+            state,
+            self.settings.liquidity_scalper_exit_tape_window_seconds,
+            require_buy=False,
+        )
+        if metrics is None:
+            return None
+        if metrics.sell_volume <= 0:
+            return None
+        if metrics.buy_volume <= 0:
+            return ExitDecision(
+                f"tape reversal sell-only "
+                f"({self.settings.liquidity_scalper_exit_tape_window_seconds}s)"
+            )
+        sell_buy = metrics.sell_volume / metrics.buy_volume
+        if sell_buy >= self.settings.liquidity_scalper_exit_tape_reversal_ratio:
+            return ExitDecision(
+                f"tape reversal sell/buy={sell_buy:.2f} "
+                f"({self.settings.liquidity_scalper_exit_tape_window_seconds}s)"
+            )
+        return None
+
+    def _tape_still_supportive(self, state: SymbolState) -> bool:
+        metrics = self._tape_metrics(
+            state,
+            self.settings.liquidity_scalper_exit_tape_window_seconds,
+            require_buy=False,
+        )
+        if metrics is None:
+            return False
+        return metrics.buy_sell_ratio >= 1.0 and metrics.move_pct >= 0
+
+    def _tape_metrics(
+        self,
+        state: SymbolState,
+        window_seconds: int,
+        *,
+        require_buy: bool = True,
+    ) -> TapeMetrics | None:
+        recent = self._recent_trades(state, window_seconds)
+        if len(recent) < self.settings.liquidity_scalper_min_tape_trades:
+            return None
+
+        buy_volume = 0
+        sell_volume = 0
+        dollar_volume = 0.0
+        ask_prints = 0
+        bid_prints = 0
+        classified: list[tuple[Trade, Literal["buy", "sell"]]] = []
+
+        for item in recent:
+            quote = self._quote_at_ms(state, item.timestamp_ms)
+            if quote is None:
+                continue
+            side = self._classify_trade(item, quote)
+            if side == "buy":
+                buy_volume += item.size
+                if self._is_aggressive_buy(item, quote):
+                    ask_prints += 1
+            else:
+                sell_volume += item.size
+                if self._is_aggressive_sell(item, quote):
+                    bid_prints += 1
+            classified.append((item, side))
+            dollar_volume += item.price * item.size
+
+        if len(classified) < self.settings.liquidity_scalper_min_tape_trades:
+            return None
+        if buy_volume <= 0 and require_buy:
+            return None
+
+        first_price = classified[0][0].price
+        last_price = classified[-1][0].price
+        move_pct = (last_price - first_price) / first_price if first_price > 0 else 0.0
+        buy_sell_ratio = buy_volume / max(1, sell_volume)
+
+        midpoint = max(1, len(classified) // 2)
+        first_half = classified[:midpoint]
+        second_half = classified[midpoint:]
+        first_buy = sum(item.size for item, side in first_half if side == "buy")
+        first_sell = sum(item.size for item, side in first_half if side == "sell")
+        second_buy = sum(item.size for item, side in second_half if side == "buy")
+        second_sell = sum(item.size for item, side in second_half if side == "sell")
+        first_ratio = first_buy / max(1, first_sell)
+        second_ratio = second_buy / max(1, second_sell)
+        accel_ratio = second_ratio / max(0.01, first_ratio)
+
+        return TapeMetrics(
+            buy_volume=buy_volume,
+            sell_volume=sell_volume,
+            buy_sell_ratio=buy_sell_ratio,
+            dollar_volume=dollar_volume,
+            move_pct=move_pct,
+            trade_count=len(classified),
+            ask_prints=ask_prints,
+            bid_prints=bid_prints,
+            accel_ratio=accel_ratio,
+        )
+
+    @staticmethod
+    def _mark_price(state: SymbolState, *, side: str) -> float | None:
+        if state.quote is not None and state.quote.bid > 0 and state.quote.ask > 0:
+            return state.quote.bid if side == "long" else state.quote.ask
+        if state.trade is not None and state.trade.price > 0:
+            return state.trade.price
+        return state.last_price
+
+    def _quote_at_ms(self, state: SymbolState, timestamp_ms: int) -> Quote | None:
+        max_lag_ms = max(1, self.settings.liquidity_scalper_quote_max_lag_ms)
+        best: Quote | None = None
+        for quote in reversed(state.quotes):
+            if quote.timestamp_ms > timestamp_ms:
+                continue
+            lag_ms = timestamp_ms - quote.timestamp_ms
+            if lag_ms > max_lag_ms:
+                break
+            best = quote
+            break
+        if best is not None:
+            return best
+        if state.quote is not None and state.quote.timestamp_ms <= timestamp_ms:
+            lag_ms = timestamp_ms - state.quote.timestamp_ms
+            if lag_ms <= max_lag_ms:
+                return state.quote
+        return None
+
+    @staticmethod
+    def _is_aggressive_buy(trade: Trade, quote: Quote) -> bool:
+        return trade.price >= quote.ask
+
+    @staticmethod
+    def _is_aggressive_sell(trade: Trade, quote: Quote) -> bool:
+        return trade.price <= quote.bid
 
     def _flush_reclaim_setup(self, bars: list[Bar]) -> str | None:
         lookback = max(2, self.settings.liquidity_scalper_flush_lookback_bars)
@@ -309,7 +480,7 @@ class LiquidityScalperStrategy(Strategy):
         return [trade for trade in state.trades if trade.timestamp_ms >= threshold and trade.price > 0 and trade.size > 0]
 
     @staticmethod
-    def _classify_trade(trade: Trade, quote) -> str:
+    def _classify_trade(trade: Trade, quote: Quote) -> Literal["buy", "sell"]:
         if trade.price >= quote.ask:
             return "buy"
         if trade.price <= quote.bid:

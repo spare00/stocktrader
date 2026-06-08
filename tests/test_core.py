@@ -7747,9 +7747,14 @@ class CoreTradingTests(unittest.TestCase):
         ]
         for item in rows:
             state.add_bar(item)
-        state.update_quote(Quote("FAST", bid=97.54, ask=97.56, bid_size=100, ask_size=100, timestamp_ms=rows[-1].end_ms))
+        bar_end = rows[-1].end_ms
+        state.update_quote(Quote("FAST", bid=97.54, ask=97.56, bid_size=100, ask_size=100, timestamp_ms=bar_end))
+        for offset, price in enumerate([97.50, 97.52, 97.55]):
+            trade_ms = bar_end - (2 - offset) * 500
+            state.update_quote(Quote("FAST", bid=price - 0.01, ask=price + 0.01, bid_size=100, ask_size=100, timestamp_ms=trade_ms))
+            state.update_trade(Trade("FAST", price + 0.01, 500, trade_ms))
         state.last_event_kind = "bar"
-        state.last_event_ms = rows[-1].end_ms
+        state.last_event_ms = bar_end
 
         signal = strategy.evaluate(state)
 
@@ -7786,23 +7791,29 @@ class CoreTradingTests(unittest.TestCase):
             strategy_names=["liquidity_scalper"],
             liquidity_scalper_min_session_dollar_volume=0.0,
             liquidity_scalper_min_range_pct=0.0,
-            liquidity_scalper_min_tape_trades=4,
+            liquidity_scalper_min_tape_trades=3,
             liquidity_scalper_min_tape_dollar_volume=10_000.0,
             liquidity_scalper_min_trade_dollar_volume=2_000.0,
-            liquidity_scalper_min_buy_sell_ratio=2.0,
+            liquidity_scalper_min_buy_sell_ratio=1.5,
             liquidity_scalper_min_tape_price_move_pct=0.0001,
+            liquidity_scalper_min_ask_prints=2,
+            liquidity_scalper_tape_accel_min_ratio=1.0,
         )
         strategy = LiquidityScalperStrategy(settings)
         state = SymbolState("FAST")
         ts = market_ms(2026, 5, 8, 9, 34)
-        state.update_quote(Quote("FAST", bid=100.00, ask=100.02, bid_size=100, ask_size=100, timestamp_ms=ts))
         trades = [
-            Trade("FAST", 100.00, 20, ts - 4_000),
-            Trade("FAST", 100.02, 80, ts - 3_000),
-            Trade("FAST", 100.03, 90, ts - 2_000),
-            Trade("FAST", 100.04, 100, ts - 1_000),
+            Trade("FAST", 100.02, 20, ts - 2_500),
+            Trade("FAST", 100.03, 80, ts - 1_800),
+            Trade("FAST", 100.04, 90, ts - 900),
+            Trade("FAST", 100.06, 100, ts - 100),
         ]
-        for item in trades:
+        for index, item in enumerate(trades):
+            quote_ts = item.timestamp_ms
+            ask = 100.02 + index * 0.01
+            state.update_quote(
+                Quote("FAST", bid=ask - 0.02, ask=ask, bid_size=100, ask_size=100, timestamp_ms=quote_ts)
+            )
             state.update_trade(item)
 
         signal = strategy.evaluate(state)
@@ -7810,7 +7821,41 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.strategy, "liquidity_scalper")
         self.assertIn("trade_tape", signal.reason)
-        self.assertGreater(signal.volume_ratio, 2.0)
+        self.assertGreater(signal.volume_ratio, 1.5)
+
+    def test_liquidity_scalper_exits_on_tape_reversal(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FAST"],
+            liquidity_scalper_min_hold_seconds=1,
+            liquidity_scalper_exit_tape_reversal_ratio=1.2,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        entry_ms = market_ms(2026, 5, 8, 9, 34)
+        state = SymbolState("FAST")
+        ts = entry_ms + 2_000
+        for index, (price, size) in enumerate([(99.99, 100), (99.98, 120), (99.97, 140), (99.96, 160)]):
+            trade_ts = ts + index * 200
+            bid = price
+            ask = price + 0.02
+            state.update_quote(Quote("FAST", bid=bid, ask=ask, bid_size=100, ask_size=100, timestamp_ms=trade_ts))
+            state.update_trade(Trade("FAST", price, size, trade_ts))
+        position = Position(
+            symbol="FAST",
+            strategy="liquidity_scalper",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=entry_ms,
+            target_price=100.4,
+            stop_price=99.7,
+            max_price=100.05,
+        )
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertIn("tape reversal", decision.reason)
 
     def test_liquidity_scalper_forces_stream_trade_ticks(self):
         settings = load_settings(strategy_names=["liquidity_scalper"], validate=False)

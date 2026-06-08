@@ -68,7 +68,7 @@ Strategies that declare a trade-tick requirement automatically upgrade to stream
 Strategies:
 
 - `spike`: short-window price/volume spike detection
-- `liquidity_scalper`: stream-only liquidity scalper that uses trade ticks for recent buy/sell pressure and short-window dollar volume, with 1-minute liquidity/volatility filters as guardrails; it exits quickly when the trade stops working
+- `liquidity_scalper`: **default stream strategy** for ultra-short scalping; classifies each trade tick with the quote at print time (≤500ms lag), enters on accelerating ask-side tape impulse, and exits on bid using micro profit (+0.15%), quick profit (+0.3%), tape reversal, stall, or stop; entry window ends at 15:30 ET (`end_minute=360`) so positions flatten before the close
 - `gap_and_go`: premarket gap continuation that waits for a regular-session breakout above premarket high with volume and spread filters
 - `opening_impulse`: market-open impulse capture using opening-range and 1-minute bar structure first, with quote momentum only as fallback and quotes used as execution sanity checks
 - `maha7`: 10:00-14:30 ET MA7/MA20 pullback reclaim with stabilized MA trend, RSI 55 reclaim outside the neutral zone, strong higher-high structure, VWAP distance filter, swing-low stop, 50% partial at 0.5R, and final exits at 2R, close below MA7, or RSI below 50 after the minimum hold
