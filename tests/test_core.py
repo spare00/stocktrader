@@ -6821,12 +6821,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn('"market_data_mode": "stream"', captured.output[0])
         self.assertIn('"market_data_mode_config": "rest"', captured.output[0])
 
-    def test_heartbeat_replay_event_age_uses_mock_clock(self):
+    def test_heartbeat_replay_event_age_uses_trading_clock(self):
         reporter = trading_main.HeartbeatReporter(min_interval_seconds=0.0)
         settings = Settings(
             alpaca_api_key="test",
             alpaca_secret_key="test",
-            alpaca_data_base_url="http://127.0.0.1:19902",
+            alpaca_trading_base_url="http://127.0.0.1:19901",
             replay_market_data=True,
             replay_use_mock_clock=True,
             strategy_names=["gap_and_go"],
@@ -6835,19 +6835,13 @@ class CoreTradingTests(unittest.TestCase):
         states = {"AAPL": SymbolState("AAPL")}
         states["AAPL"].last_event_ms = int(datetime(2026, 5, 4, 13, 30, 0, tzinfo=timezone.utc).timestamp() * 1000)
         executor = LocalPaperExecutor(PositionTracker(settings))
-        status_body = json.dumps({"replay_now_utc": "2026-05-04T13:30:05Z"}).encode("utf-8")
+        fake_clock = types.SimpleNamespace(
+            timestamp=datetime(2026, 5, 4, 13, 30, 5, tzinfo=timezone.utc),
+            is_open=True,
+        )
+        fake_clients = types.SimpleNamespace(trading=types.SimpleNamespace(get_clock=lambda: fake_clock))
 
-        class FakeResponse:
-            def read(self):
-                return status_body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-        with patch("alpaca_stream.urllib.request.urlopen", return_value=FakeResponse()):
+        with patch("alpaca_stream.make_clients", return_value=fake_clients):
             with self.assertLogs(level="INFO") as captured:
                 reporter.emit(settings, states, executor)
 
