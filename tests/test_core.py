@@ -7657,40 +7657,51 @@ class CoreTradingTests(unittest.TestCase):
             thin_bars,
             {session_date},
         )
-        settings = Settings(
-            alpaca_api_key="test",
-            alpaca_secret_key="test",
-            strategy_names=["liquidity_scalper"],
-            liquidity_scalper_min_session_dollar_volume=30_000_000.0,
-            liquidity_scalper_min_bar_dollar_volume=3_000_000.0,
-            liquidity_scalper_min_range_pct=0.015,
-            liquidity_scalper_max_spread_bps=12.0,
-        )
+        as_of = datetime(2026, 5, 8, 8, 0, tzinfo=select_liquidity_scalper.MARKET_TZ)
         quote = Quote("BAC", 39.99, 40.01, 500, 500, 1_000)
         liquid = select_liquidity_scalper.score_liquidity_scalper_candidate(
             "BAC",
             session_rows_liquid,
             quote,
-            settings,
+            premarket_bars=liquid_bars,
+            as_of=as_of,
             min_price=5.0,
             max_price=500.0,
             min_session_days=1,
+            min_session_dollar_volume=5_000_000.0,
+            min_bar_dollar_volume=500_000.0,
+            min_range_pct=0.01,
+            max_spread_bps=12.0,
         )
         thin = select_liquidity_scalper.score_liquidity_scalper_candidate(
             "THIN",
             session_rows_thin,
             Quote("THIN", 39.99, 40.01, 10, 10, 1_000),
-            settings,
+            premarket_bars=thin_bars,
+            as_of=as_of,
             min_price=5.0,
             max_price=500.0,
             min_session_days=1,
+            min_session_dollar_volume=5_000_000.0,
+            min_bar_dollar_volume=500_000.0,
+            min_range_pct=0.01,
+            max_spread_bps=12.0,
         )
         self.assertIsNotNone(liquid)
         self.assertIsNotNone(thin)
         assert liquid is not None and thin is not None
         self.assertFalse(liquid.hard_reject)
-        self.assertTrue(thin.hard_reject)
+        self.assertFalse(thin.hard_reject)
         self.assertGreater(liquid.score, thin.score)
+
+    def test_liquidity_scalper_selector_accepts_one_sided_premarket_quote(self):
+        price, spread, quote_size, flags = select_liquidity_scalper.selector_price_context(
+            Quote("BAC", 50.99, 0.0, 500, 0, 1_000),
+            [],
+        )
+        self.assertEqual(price, 50.99)
+        self.assertIsNone(spread)
+        self.assertTrue(any("one-sided" in flag for flag in flags))
 
     def test_liquidity_scalper_deterministic_plan_caps_symbols(self):
         screen_result = {
@@ -7705,6 +7716,53 @@ class CoreTradingTests(unittest.TestCase):
         plan = select_liquidity_scalper.deterministic_plan(screen_result, 2)
         self.assertEqual(plan["strategy"], "liquidity_scalper")
         self.assertEqual(plan["symbols"], ["BAC", "KRE"])
+
+    def test_liquidity_scalper_selector_ai_plan_is_bounded_to_screen_candidates(self):
+        screen_result = {
+            "as_of": "2026-06-08T08:00:00-04:00",
+            "stream_symbol_limit": 15,
+            "effective_top": 12,
+            "candidates": [
+                {
+                    "symbol": "BAC",
+                    "score": 9.0,
+                    "quality_flags": [],
+                    "median_session_dollar_volume": 50_000_000.0,
+                    "median_range_pct": 0.02,
+                    "p75_bar_dollar_volume": 4_000_000.0,
+                    "spread_bps": 4.0,
+                },
+                {
+                    "symbol": "KRE",
+                    "score": 8.0,
+                    "quality_flags": ["wide spread premarket"],
+                    "median_session_dollar_volume": 40_000_000.0,
+                    "median_range_pct": 0.018,
+                    "p75_bar_dollar_volume": 3_500_000.0,
+                    "spread_bps": 10.0,
+                },
+            ],
+            "rejected": [],
+        }
+        validated = select_liquidity_scalper.validated_liquidity_scalper_selection(
+            {
+                "adjustments": {
+                    "KRE": {"ai_score_delta": 1.5, "ai_reason": "Strong regional bank tape"},
+                    "GONE": {"ai_score_delta": 2.0, "ai_reason": "should be ignored"},
+                },
+                "rejected": ["GONE"],
+                "settings": {},
+                "risk_note": "test",
+            },
+            screen_result,
+            limit=2,
+        )
+        self.assertEqual(validated["symbols"], ["KRE", "BAC"])
+        self.assertEqual(validated["ranked"][0]["symbol"], "KRE")
+        self.assertEqual(validated["ranked"][0]["base_score"], 8.0)
+        self.assertEqual(validated["ranked"][0]["ai_score_delta"], 1.5)
+        self.assertEqual(validated["ranked"][0]["score"], 9.5)
+        self.assertEqual(validated["ai_rejected"], ["GONE"])
 
     def test_rest_polling_stream_retries_after_quote_connection_error(self):
         class FailingHistorical:

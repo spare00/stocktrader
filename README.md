@@ -192,13 +192,14 @@ For `gap_and_go`, use its dedicated selector:
 .venv/bin/python strategy_selectors/select_gap_and_go.py --top 5
 ```
 
-For `liquidity_scalper`, rank liquid names from prior regular sessions (REST only; default `--top 12` fits Basic IEX stream limits):
+For `liquidity_scalper`, rank liquid names before the open (premarket-safe; default `--top 12` fits Basic IEX stream limits):
 
 ```bash
 .venv/bin/python strategy_selectors/select_liquidity_scalper.py --top 12
+.venv/bin/python strategy_selectors/select_liquidity_scalper.py --top 12 --use-ai
 ```
 
-This selector uses completed regular-session minute bars plus a quote snapshot. It filters on session dollar volume, intraday range, minute-bar liquidity, and spread — the same constraints the live scalper needs for tape entries.
+Selector defaults are softer than live runtime gates (`--min-bar-dollar-volume` default 500K vs runtime $3M). It uses prior regular-session bars, today's premarket activity, and falls back to bar close when IEX quotes are one-sided premarket — same pattern as `opening_impulse` / `gap_and_go`.
 
 This selector is pre-market only: it ranks symbols using previous-day bars,
 premarket bars, and the current premarket quote. It does not depend on the
