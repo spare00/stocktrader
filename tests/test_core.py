@@ -71,7 +71,6 @@ import strategy_selectors.select_macd_early_impulse as select_macd_early_impulse
 import strategy_selectors.select_breakout_power as select_breakout_power
 import strategy_selectors.select_stoch_macd_reversal as select_stoch_macd_reversal
 from strategy_selectors.select_market_universe import (
-    breakout_setup_metrics,
     daily_metrics,
     score_symbol,
     select_top_candidates,
@@ -1466,26 +1465,235 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(result["spread_bps"], 8.0)
         self.assertEqual(result["quote_size"], 0)
 
+    @staticmethod
+    def _market_universe_trend_bars(
+        symbol: str,
+        *,
+        start: float = 80.0,
+        daily_step: float = 1.0,
+        days: int = 80,
+        volume: float = 2_000_000.0,
+        final_close: float | None = None,
+        final_low: float | None = None,
+        final_high: float | None = None,
+        final_volume: float | None = None,
+    ) -> list[Bar]:
+        start_ms = market_ms(2026, 1, 2, 9, 30)
+        bars: list[Bar] = []
+        for index in range(days):
+            close = start + index * daily_step
+            low = close * 0.99
+            high = close * 1.01
+            bar_volume = volume
+            if index == days - 1 and final_close is not None:
+                close = final_close
+                low = final_low if final_low is not None else close * 0.99
+                high = final_high if final_high is not None else close * 1.01
+                bar_volume = final_volume if final_volume is not None else volume
+            bars.append(daily_bar_with_volume(symbol, close, low, high, bar_volume, start_ms + index * 86_400_000))
+        return bars
+
+    @staticmethod
+    def _universe_score_kwargs(**overrides) -> dict:
+        params = {
+            "min_price": 5.0,
+            "max_price": 500.0,
+            "min_average_volume": 1_000_000.0,
+            "min_median_dollar_volume": 20_000_000.0,
+            "max_spread_bps": 12.0,
+            "min_previous_day_volume": 1_000_000.0,
+            "min_ema20_slope_bps": 0.0,
+            "min_ema40_slope_bps": 0.0,
+            "min_ema60_slope_bps": 0.0,
+            "require_price_above_ema20": True,
+            "require_ema_stack": False,
+            "require_price_above_ema60": False,
+            "reject_wide_spread": False,
+            "apply_rollover_rejection": True,
+        }
+        params.update(overrides)
+        return params
+
     def test_opening_universe_builder_scores_liquid_symbols_without_pattern_filtering(self):
-        bars = [
-            daily_bar_with_volume("AAPL", 100.0, 99.8, 100.2, 2_000_000, market_ms(2026, 4, 20, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.1, 99.9, 100.3, 2_200_000, market_ms(2026, 4, 21, 9, 30)),
-            daily_bar_with_volume("AAPL", 100.2, 100.0, 100.4, 2_400_000, market_ms(2026, 4, 22, 9, 30)),
-        ]
+        bars = self._market_universe_trend_bars("AAPL")
         result = score_symbol(
             symbol="AAPL",
             bars=bars,
             quote=Quote("AAPL", bid=100.0, ask=101.5, bid_size=100, ask_size=100, timestamp_ms=0),
-            min_price=5.0,
-            max_price=500.0,
-            min_average_volume=1_000_000.0,
-            max_spread_bps=12.0,
+            **self._universe_score_kwargs(),
         )
 
         self.assertIsNotNone(result)
         self.assertGreater(daily_metrics(bars)["average_volume"], 1_000_000.0)
         self.assertEqual(result["symbol"], "AAPL")
         self.assertGreater(result["spread_bps"], 12.0)
+        self.assertGreater(result["trend_60d_bps"], 200.0)
+        self.assertEqual(result["trend_track"], "established")
+
+    def test_opening_universe_builder_accepts_recovery_uptrend_without_full_stack(self):
+        bars = self._market_universe_trend_bars("RCVR", start=90.0, daily_step=0.35, days=80)
+        for offset, close in enumerate([152.0, 153.5, 155.0, 156.5, 158.0]):
+            index = len(bars) - 5 + offset
+            bars[index] = daily_bar_with_volume(
+                "RCVR",
+                close,
+                close * 0.985,
+                close * 1.015,
+                2_000_000,
+                bars[index].start_ms,
+            )
+        result = score_symbol(
+            symbol="RCVR",
+            bars=bars,
+            quote=None,
+            **self._universe_score_kwargs(),
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn(result["trend_track"], {"established", "recovery"})
+
+    def test_opening_universe_builder_rejects_recently_broken_trend_by_default(self):
+        bars = self._market_universe_trend_bars(
+            "ROLL",
+            final_close=100.0,
+            final_low=99.0,
+            final_high=130.0,
+            final_volume=2_000_000,
+        )
+        result = score_symbol(
+            symbol="ROLL",
+            bars=bars,
+            quote=None,
+            **self._universe_score_kwargs(),
+        )
+
+        self.assertIsNone(result)
+
+    def test_opening_universe_builder_rejects_five_day_down_pressure_by_default(self):
+        bars = self._market_universe_trend_bars("DRIFT")
+        for offset, close in enumerate([156.0, 154.0, 152.0, 150.0, 148.0]):
+            index = len(bars) - 5 + offset
+            bars[index] = daily_bar_with_volume(
+                "DRIFT",
+                close,
+                close * 0.99,
+                close * 1.01,
+                2_000_000,
+                bars[index].start_ms,
+            )
+
+        result = score_symbol(
+            symbol="DRIFT",
+            bars=bars,
+            quote=None,
+            **self._universe_score_kwargs(),
+        )
+
+        self.assertIsNone(result)
+
+    def test_opening_universe_mode_filters_match_limit_down_and_limit_up(self):
+        drop_bars = self._market_universe_trend_bars(
+            "DROP",
+            final_close=100.0,
+            final_low=99.5,
+            final_high=143.0,
+            final_volume=2_200_000,
+        )
+        limit_up_bars = self._market_universe_trend_bars(
+            "UP",
+            final_close=205.0,
+            final_low=157.0,
+            final_high=205.2,
+            final_volume=2_200_000,
+        )
+        ordinary_bars = self._market_universe_trend_bars("FLAT", final_close=160.0)
+
+        drop = daily_metrics(drop_bars)
+        limit_up = daily_metrics(limit_up_bars)
+        ordinary = daily_metrics(ordinary_bars)
+        self.assertIsNotNone(drop)
+        self.assertIsNotNone(limit_up)
+        self.assertIsNotNone(ordinary)
+        assert drop is not None
+        assert limit_up is not None
+        assert ordinary is not None
+
+        self.assertTrue(select_market_universe.passes_mode_filter(drop, "limit-down", min_previous_day_volume=1_000_000))
+        self.assertFalse(select_market_universe.passes_mode_filter(ordinary, "limit-down", min_previous_day_volume=1_000_000))
+        self.assertTrue(select_market_universe.passes_mode_filter(limit_up, "limit-up", min_previous_day_volume=1_000_000))
+        self.assertFalse(select_market_universe.passes_mode_filter(ordinary, "limit-up", min_previous_day_volume=1_000_000))
+
+        thin_drop = dict(drop)
+        thin_drop["previous_day_volume"] = 100_000
+        self.assertFalse(select_market_universe.passes_mode_filter(thin_drop, "limit-down", min_previous_day_volume=1_000_000))
+
+    def test_opening_universe_mode_fetches_quotes_after_filtering(self):
+        original_get_symbols = select_market_universe.get_active_tradable_symbols
+        original_get_bars = select_market_universe.get_daily_bars
+        original_get_quotes = select_market_universe.get_latest_quotes
+        captured = {}
+
+        def fake_get_symbols(settings, exchanges=None):
+            return ["DROP", "FLAT"]
+
+        def fake_get_bars(settings, symbols, lookback_days, batch_size):
+            return {
+                "DROP": self._market_universe_trend_bars(
+                    "DROP",
+                    final_close=100.0,
+                    final_low=99.5,
+                    final_high=143.0,
+                    final_volume=2_200_000,
+                ),
+                "FLAT": self._market_universe_trend_bars("FLAT", final_close=160.0),
+            }
+
+        def fake_get_quotes(settings, symbols, batch_size):
+            captured["quote_symbols"] = list(symbols)
+            return {
+                "DROP": Quote("DROP", bid=87.95, ask=88.05, bid_size=100, ask_size=100, timestamp_ms=0),
+            }
+
+        try:
+            select_market_universe.get_active_tradable_symbols = fake_get_symbols
+            select_market_universe.get_daily_bars = fake_get_bars
+            select_market_universe.get_latest_quotes = fake_get_quotes
+            result = select_market_universe.build_universe(
+                types.SimpleNamespace(
+                    top=10,
+                    output=None,
+                    mode="limit-down",
+                    lookback_days=80,
+                    batch_size=200,
+                    exchanges="NASDAQ,NYSE",
+                    min_price=5.0,
+                    max_price=500.0,
+                    min_average_volume=1_000_000.0,
+                        min_median_dollar_volume=20_000_000.0,
+                        max_spread_bps=12.0,
+                        min_ema20_slope_bps=0.0,
+                        min_ema40_slope_bps=0.0,
+                        min_ema60_slope_bps=0.0,
+                        require_price_above_ema20=False,
+                        require_ema_stack=False,
+                        require_price_above_ema60=False,
+                    limit_up_pct=0.295,
+                    limit_down_pct=-0.295,
+                    limit_close_near_high_min=0.95,
+                    limit_close_near_low_max=0.05,
+                    skip_quotes=False,
+                    min_previous_day_volume=1_000_000.0,
+                    alpaca_api_key="test",
+                    alpaca_secret_key="test",
+                )
+            )
+
+            self.assertEqual(result["selected_symbols"], ["DROP"])
+            self.assertEqual(captured["quote_symbols"], ["DROP"])
+        finally:
+            select_market_universe.get_active_tradable_symbols = original_get_symbols
+            select_market_universe.get_daily_bars = original_get_bars
+            select_market_universe.get_latest_quotes = original_get_quotes
 
     def test_opening_universe_builder_sorts_limits_and_writes_output(self):
         original_get_symbols = select_market_universe.get_active_tradable_symbols
@@ -1501,18 +1709,9 @@ class CoreTradingTests(unittest.TestCase):
             captured["lookback_days"] = lookback_days
             captured["batch_size"] = batch_size
             return {
-                "LOW": [
-                    daily_bar_with_volume("LOW", 50.0, 49.0, 52.0, 100_000, market_ms(2026, 4, 20, 9, 30)),
-                    daily_bar_with_volume("LOW", 51.0, 50.0, 53.0, 100_000, market_ms(2026, 4, 21, 9, 30)),
-                ],
-                "HIGH": [
-                    daily_bar_with_volume("HIGH", 100.0, 99.0, 101.0, 2_000_000, market_ms(2026, 4, 20, 9, 30)),
-                    daily_bar_with_volume("HIGH", 100.5, 99.5, 101.5, 2_000_000, market_ms(2026, 4, 21, 9, 30)),
-                ],
-                "FAIL": [
-                    daily_bar_with_volume("FAIL", 5.0, 4.9, 5.1, 500_000, market_ms(2026, 4, 20, 9, 30)),
-                    daily_bar_with_volume("FAIL", 5.1, 5.0, 5.2, 500_000, market_ms(2026, 4, 21, 9, 30)),
-                ],
+                "LOW": self._market_universe_trend_bars("LOW", volume=100_000),
+                "HIGH": self._market_universe_trend_bars("HIGH", volume=3_000_000),
+                "FAIL": self._market_universe_trend_bars("FAIL", volume=500_000),
             }
 
         def fake_get_quotes(settings, symbols, batch_size):
@@ -1528,21 +1727,27 @@ class CoreTradingTests(unittest.TestCase):
                     types.SimpleNamespace(
                         top=1,
                         output=output,
-                        lookback_days=25,
-                        base_lookback_days=5,
+                        mode="liquid",
+                        lookback_days=80,
                         batch_size=2,
                         exchanges="NASDAQ,NYSE",
                         min_price=5.0,
                         max_price=500.0,
                         min_average_volume=1_000_000.0,
+                        min_median_dollar_volume=20_000_000.0,
                         max_spread_bps=12.0,
-                        max_base_range_pct=0.15,
-                        min_breakout_day_pct=0.01,
-                        min_volume_ratio=1.10,
-                        max_extension_from_base_pct=0.12,
+                        min_ema20_slope_bps=0.0,
+                        min_ema40_slope_bps=0.0,
+                        min_ema60_slope_bps=0.0,
+                        require_price_above_ema20=True,
                         require_ema_stack=False,
-                        liquidity_only_ranking=False,
+                        require_price_above_ema60=False,
+                        limit_up_pct=0.295,
+                        limit_down_pct=-0.295,
+                        limit_close_near_high_min=0.95,
+                        limit_close_near_low_max=0.05,
                         skip_quotes=True,
+                        min_previous_day_volume=1_000_000.0,
                         alpaca_api_key="test",
                         alpaca_secret_key="test",
                     )
@@ -1551,7 +1756,7 @@ class CoreTradingTests(unittest.TestCase):
                 self.assertEqual(result["selected_symbols"], ["HIGH"])
                 self.assertEqual(output.read_text(), "HIGH\n")
                 self.assertEqual(captured["exchanges"], {"NASDAQ", "NYSE"})
-                self.assertEqual(captured["lookback_days"], 2)
+                self.assertEqual(captured["lookback_days"], 80)
                 self.assertEqual(captured["batch_size"], 2)
         finally:
             select_market_universe.get_active_tradable_symbols = original_get_symbols
@@ -1564,134 +1769,14 @@ class CoreTradingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             select_market_universe.build_universe(args)
 
-    def test_opening_universe_builder_prefers_breakout_setup_symbols(self):
-        start_ms = market_ms(2026, 5, 1, 9, 30)
-
-        def breakout_base_bars(symbol: str, base_days: int = 24, base_price: float = 15.0) -> list[Bar]:
-            bars: list[Bar] = []
-            for index in range(base_days):
-                close = base_price + (index % 3) * 0.05
-                bars.append(
-                    daily_bar_with_volume(
-                        symbol,
-                        close,
-                        close - 0.15,
-                        close + 0.15,
-                        2_000_000,
-                        start_ms + index * 86_400_000,
-                    )
-                )
-            prior_close = bars[-1].close
-            breakout_close = prior_close * 1.04
-            bars.append(
-                Bar(
-                    symbol=symbol,
-                    open=prior_close,
-                    high=breakout_close + 0.20,
-                    low=prior_close - 0.05,
-                    close=breakout_close,
-                    volume=4_000_000,
-                    vwap=breakout_close,
-                    start_ms=start_ms + base_days * 86_400_000,
-                    end_ms=start_ms + base_days * 86_400_000 + 86_400_000,
-                )
-            )
-            return bars
-
-        def flat_bars(symbol: str, price: float, days: int) -> list[Bar]:
-            return [
-                daily_bar_with_volume(symbol, price, price * 0.99, price * 1.01, 2_000_000, start_ms + index * 86_400_000)
-                for index in range(days)
-            ]
-
-        breakout_bars = breakout_base_bars("BRK")
-        flat = flat_bars("FLAT", 100.0, 25)
-        setup = breakout_setup_metrics(breakout_bars)
-        self.assertIsNotNone(setup)
-        assert setup is not None
-        self.assertTrue(setup["setup_ok"])
-
-        quote = Quote("BRK", bid=15.5, ask=15.6, bid_size=100, ask_size=100, timestamp_ms=0)
-        breakout_result = score_symbol(
-            "BRK",
-            breakout_bars,
-            quote=quote,
-            min_price=5.0,
-            max_price=500.0,
-            min_average_volume=1_000_000.0,
-            max_spread_bps=12.0,
-        )
-        flat_result = score_symbol(
-            "FLAT",
-            flat,
-            quote=quote,
-            min_price=5.0,
-            max_price=500.0,
-            min_average_volume=1_000_000.0,
-            max_spread_bps=12.0,
-        )
-        self.assertIsNotNone(breakout_result)
-        self.assertIsNotNone(flat_result)
-        assert breakout_result is not None
-        assert flat_result is not None
-        self.assertTrue(breakout_result["breakout_setup_ok"])
-        self.assertFalse(flat_result["breakout_setup_ok"])
-        self.assertGreater(breakout_result["score"], flat_result["score"])
-
-        selected = select_top_candidates([flat_result, breakout_result], top=2, prefer_breakout_setup=True)
-        self.assertEqual([item["symbol"] for item in selected], ["BRK", "FLAT"])
-
     def test_opening_universe_builder_fills_requested_top(self):
         candidates = [
-            {"symbol": f"S{i}", "score": float(i), "breakout_setup_ok": i >= 8}
+            {"symbol": f"S{i}", "score": float(i), "median_dollar_volume": float(i), "average_volume": float(i)}
             for i in range(10)
         ]
-        selected = select_top_candidates(candidates, top=5, prefer_breakout_setup=True, strict=False)
+        selected = select_top_candidates(candidates, top=5)
         self.assertEqual(len(selected), 5)
         self.assertEqual([item["symbol"] for item in selected[:3]], ["S9", "S8", "S7"])
-
-    def test_opening_universe_builder_strict_excludes_non_setup_symbols(self):
-        candidates = [
-            {"symbol": f"S{i}", "score": float(i), "breakout_setup_ok": i >= 8}
-            for i in range(10)
-        ]
-        selected = select_top_candidates(candidates, top=5, prefer_breakout_setup=True, strict=True)
-        self.assertEqual(len(selected), 2)
-        self.assertEqual([item["symbol"] for item in selected], ["S9", "S8"])
-
-    def test_opening_universe_builder_summarize_setup_gate_failures(self):
-        candidates = [
-            {
-                "symbol": "AAA",
-                "setup_checks": {
-                    "compressed": True,
-                    "breakout": False,
-                    "close_near_high": True,
-                    "volume_ok": True,
-                    "daily_change_ok": True,
-                    "price_above_ema20": True,
-                    "ema_aligned": True,
-                    "not_overextended": True,
-                },
-            },
-            {
-                "symbol": "BBB",
-                "setup_checks": {
-                    "compressed": True,
-                    "breakout": True,
-                    "close_near_high": False,
-                    "volume_ok": True,
-                    "daily_change_ok": True,
-                    "price_above_ema20": True,
-                    "ema_aligned": True,
-                    "not_overextended": True,
-                },
-            },
-        ]
-        summary = select_market_universe.summarize_setup_gate_failures(candidates)
-        self.assertEqual(summary["breakout"], 1)
-        self.assertEqual(summary["close_near_high"], 1)
-        self.assertEqual(summary["compressed"], 0)
 
     def test_maha7_selector_writes_plan_from_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:

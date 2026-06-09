@@ -161,6 +161,13 @@ Refresh a broad tradable/liquid universe weekly or periodically. This is the glo
 .venv/bin/python strategy_selectors/select_market_universe.py --top 300
 ```
 
+The market selector is a boundary-pool builder, not a strategy selector. Its core filters are liquidity, dollar volume, tradable price, and constructive chart EMA structure, especially EMA20/EMA40/EMA60 alignment and upward EMA40/EMA60 behavior. Use `--mode` only to narrow that same liquid pool by previous-day context:
+
+```bash
+.venv/bin/python strategy_selectors/select_market_universe.py --mode limit-up --top 300
+.venv/bin/python strategy_selectors/select_market_universe.py --mode limit-down --top 300
+```
+
 Before each market session, you can run the selector for the strategy you plan to trade. These selectors are optional pre-session tools that write strategy-local plan files; `main.py` does not run them automatically. For `opening_impulse`, rank the broad universe with opening-impulse criteria:
 
 ```bash
