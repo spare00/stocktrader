@@ -38,9 +38,10 @@ DEFAULT_DAYS = 3
 MIN_SESSION_BARS = 30
 AI_SCORE_DELTA_LIMIT = 2.0
 # Selector thresholds are softer than live strategy gates; runtime still uses LIQUIDITY_SCALPER_* env.
-DEFAULT_SELECTOR_MIN_BAR_DOLLAR_VOLUME = 500_000.0
-DEFAULT_SELECTOR_MIN_SESSION_DOLLAR_VOLUME = 5_000_000.0
+DEFAULT_SELECTOR_MIN_BAR_DOLLAR_VOLUME = 50_000.0
+DEFAULT_SELECTOR_MIN_SESSION_DOLLAR_VOLUME = 50_000.0
 DEFAULT_SELECTOR_MIN_RANGE_PCT = 0.010
+DEFAULT_SELECTOR_MAX_SPREAD_BPS = 100.0
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -423,11 +424,7 @@ def screen(args: argparse.Namespace) -> dict[str, Any]:
     quotes = get_latest_quotes(settings, universe)
     session_date_set = set(session_dates)
     top_limit = effective_top_limit(args.top, args.stream_symbol_limit)
-    max_spread_bps = (
-        args.max_spread_bps
-        if args.max_spread_bps is not None
-        else settings.liquidity_scalper_max_spread_bps
-    )
+    max_spread_bps = args.max_spread_bps
 
     candidates: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
@@ -698,13 +695,13 @@ def parse_args() -> argparse.Namespace:
         "--min-session-dollar-volume",
         type=float,
         default=DEFAULT_SELECTOR_MIN_SESSION_DOLLAR_VOLUME,
-        help="Selector floor for median prior-session dollar volume (default 5M; runtime gate is higher).",
+        help="Selector floor for median prior-session dollar volume (default 50K; runtime gate is higher).",
     )
     parser.add_argument(
         "--min-bar-dollar-volume",
         type=float,
         default=DEFAULT_SELECTOR_MIN_BAR_DOLLAR_VOLUME,
-        help="Selector floor for median minute-bar dollar volume (default 500K).",
+        help="Selector floor for median minute-bar dollar volume (default 50K).",
     )
     parser.add_argument(
         "--min-range-pct",
@@ -715,8 +712,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-spread-bps",
         type=float,
-        default=None,
-        help="Hard reject when a two-sided quote spread exceeds this (defaults to LIQUIDITY_SCALPER_MAX_SPREAD_BPS).",
+        default=DEFAULT_SELECTOR_MAX_SPREAD_BPS,
+        help="Hard reject when a two-sided premarket quote spread exceeds this (default 100 bps).",
     )
     parser.add_argument("--min-price", type=float, default=5.0, help="Minimum last/mid price.")
     parser.add_argument("--max-price", type=float, default=500.0, help="Maximum last/mid price.")

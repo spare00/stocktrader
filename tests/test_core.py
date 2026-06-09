@@ -7668,10 +7668,10 @@ class CoreTradingTests(unittest.TestCase):
             min_price=5.0,
             max_price=500.0,
             min_session_days=1,
-            min_session_dollar_volume=5_000_000.0,
-            min_bar_dollar_volume=500_000.0,
+            min_session_dollar_volume=50_000.0,
+            min_bar_dollar_volume=50_000.0,
             min_range_pct=0.01,
-            max_spread_bps=12.0,
+            max_spread_bps=100.0,
         )
         thin = select_liquidity_scalper.score_liquidity_scalper_candidate(
             "THIN",
@@ -7682,10 +7682,10 @@ class CoreTradingTests(unittest.TestCase):
             min_price=5.0,
             max_price=500.0,
             min_session_days=1,
-            min_session_dollar_volume=5_000_000.0,
-            min_bar_dollar_volume=500_000.0,
+            min_session_dollar_volume=50_000.0,
+            min_bar_dollar_volume=50_000.0,
             min_range_pct=0.01,
-            max_spread_bps=12.0,
+            max_spread_bps=100.0,
         )
         self.assertIsNotNone(liquid)
         self.assertIsNotNone(thin)
