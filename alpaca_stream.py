@@ -53,6 +53,36 @@ class AlpacaStreamEndedError(RuntimeError):
     pass
 
 
+def stream_bars_only_symbols(regime_symbols: set[str], tradable_symbols: set[str]) -> frozenset[str]:
+    """Regime ETFs that are not traded only need minute bars (unlimited on Basic IEX)."""
+    tradable = {symbol.strip().upper() for symbol in tradable_symbols if symbol.strip()}
+    return frozenset(
+        symbol.strip().upper()
+        for symbol in regime_symbols
+        if symbol.strip() and symbol.strip().upper() not in tradable
+    )
+
+
+def stream_trade_quote_channel_count(
+    symbols: list[str],
+    *,
+    bars_only_symbols: frozenset[str],
+    stream_trades: bool,
+) -> int:
+    full_symbols = [symbol for symbol in symbols if symbol.strip().upper() not in bars_only_symbols]
+    channels = len(full_symbols)
+    if stream_trades:
+        channels += len(full_symbols)
+    return channels
+
+
+def max_stream_trade_quote_symbols(channel_limit: int, *, stream_trades: bool) -> int:
+    if channel_limit <= 0:
+        return 0
+    per_symbol = 2 if stream_trades else 1
+    return channel_limit // per_symbol
+
+
 class AlpacaStreamLock:
     def __init__(self, settings: Settings):
         key = f"{settings.alpaca_api_key or 'missing'}:{settings.alpaca_data_feed}:{settings.alpaca_paper}"
@@ -176,14 +206,18 @@ class AlpacaRestPollingStream:
 
 
 class AlpacaStockStream:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, bars_only_symbols: frozenset[str] | None = None):
         self.settings = settings
+        self._bars_only_symbols = bars_only_symbols or frozenset()
         self._symbols: set[str] = {symbol.strip().upper() for symbol in settings.symbols if symbol.strip()}
         self._clients = None
         self._on_bar = None
         self._on_quote = None
         self._on_trade = None
         self._on_news = None
+
+    def _streams_quotes_and_trades(self, symbol: str) -> bool:
+        return symbol.strip().upper() not in self._bars_only_symbols
 
     def _should_stream_news(self) -> bool:
         return bool(self.settings.news_dynamic_symbols_enabled or self.settings.news_log_events)
@@ -198,14 +232,7 @@ class AlpacaStockStream:
         self._symbols.add(normalized)
         if self._clients is None or self._on_bar is None or self._on_quote is None:
             return
-        self._clients.stream.subscribe_bars(self._on_bar, normalized)
-        self._clients.stream.subscribe_quotes(self._on_quote, normalized)
-        if (
-            self._should_stream_trades()
-            and self._on_trade is not None
-            and hasattr(self._clients.stream, "subscribe_trades")
-        ):
-            self._clients.stream.subscribe_trades(self._on_trade, normalized)
+        self._subscribe_symbol(normalized)
 
     def remove_symbol(self, symbol: str) -> None:
         normalized = symbol.strip().upper()
@@ -221,6 +248,20 @@ class AlpacaStockStream:
             stream.unsubscribe_quotes(normalized)
         if hasattr(stream, "unsubscribe_trades"):
             stream.unsubscribe_trades(normalized)
+
+    def _subscribe_symbol(self, symbol: str) -> None:
+        if self._clients is None or self._on_bar is None or self._on_quote is None:
+            return
+        self._clients.stream.subscribe_bars(self._on_bar, symbol)
+        if not self._streams_quotes_and_trades(symbol):
+            return
+        self._clients.stream.subscribe_quotes(self._on_quote, symbol)
+        if (
+            self._should_stream_trades()
+            and self._on_trade is not None
+            and hasattr(self._clients.stream, "subscribe_trades")
+        ):
+            self._clients.stream.subscribe_trades(self._on_trade, symbol)
 
     async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote | Trade | NewsEvent]:
         queue: asyncio.Queue[Bar | Heartbeat | Quote | Trade | NewsEvent | BaseException | None] = asyncio.Queue()
@@ -282,10 +323,7 @@ class AlpacaStockStream:
                 await queue.put(Heartbeat(timestamp_ms=int(time.time() * 1000)))
 
         for symbol in sorted(self._symbols):
-            clients.stream.subscribe_bars(on_bar, symbol)
-            clients.stream.subscribe_quotes(on_quote, symbol)
-            if self._should_stream_trades() and hasattr(clients.stream, "subscribe_trades"):
-                clients.stream.subscribe_trades(on_trade, symbol)
+            self._subscribe_symbol(symbol)
         stream_news = self._should_stream_news()
         if stream_news:
             clients.news_stream.subscribe_news(on_news, "*")
@@ -350,7 +388,11 @@ class AlpacaStockStream:
             raise AlpacaStreamEndedError(f"timed out stopping {name} Alpaca websocket")
 
 
-def build_market_data_stream(settings: Settings) -> AlpacaStockStream | AlpacaRestPollingStream:
+def build_market_data_stream(
+    settings: Settings,
+    *,
+    bars_only_symbols: frozenset[str] | None = None,
+) -> AlpacaStockStream | AlpacaRestPollingStream:
     if settings.alpaca_market_data_mode == "rest":
         return AlpacaRestPollingStream(settings)
-    return AlpacaStockStream(settings)
+    return AlpacaStockStream(settings, bars_only_symbols=bars_only_symbols)

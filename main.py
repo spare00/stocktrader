@@ -18,7 +18,10 @@ from alpaca_stream import (
     AlpacaStreamConnectionLimitError,
     AlpacaStreamEndedError,
     build_market_data_stream,
+    max_stream_trade_quote_symbols,
     replay_clock_utc,
+    stream_bars_only_symbols,
+    stream_trade_quote_channel_count,
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca_client import get_bars_between, get_latest_quotes, get_recent_bars, make_clients
@@ -957,6 +960,10 @@ async def main(args: argparse.Namespace | None = None) -> None:
             )
     initial_symbols = sorted(tradable_symbols.union(regime_symbols))
     stream_symbols = sorted(set(initial_symbols).union(dynamic_execution_symbols))
+    stream_bars_only = stream_bars_only_symbols(regime_symbols, tradable_symbols)
+    stream_trades_enabled = bool(
+        settings.dynamic_execution_selector_enabled or settings.market_data_requires_trade_ticks
+    )
     if not tradable_symbols and not dynamic_execution_symbols and not settings.news_dynamic_symbols_enabled:
         print(
             "No symbols to trade: set SYMBOLS in `.env`/your profile, or add symbols under "
@@ -981,12 +988,40 @@ async def main(args: argparse.Namespace | None = None) -> None:
     }
     requested_market_data_mode = settings.alpaca_market_data_mode
     selected_market_data_mode = effective_market_data_mode(settings)
+    stream_trade_quote_channels = stream_trade_quote_channel_count(
+        stream_symbols,
+        bars_only_symbols=stream_bars_only,
+        stream_trades=stream_trades_enabled,
+    )
+    stream_channel_limit = settings.alpaca_stream_max_trade_quote_channels
+    if selected_market_data_mode == "stream" and stream_channel_limit > 0:
+        if stream_trade_quote_channels > stream_channel_limit:
+            max_symbols = max_stream_trade_quote_symbols(stream_channel_limit, stream_trades=stream_trades_enabled)
+            per_symbol = "quote+trade" if stream_trades_enabled else "quote"
+            print(
+                "Alpaca Basic IEX stream allows "
+                f"{stream_channel_limit} trade/quote channels ({max_symbols} symbols with {per_symbol} each). "
+                f"This run needs {stream_trade_quote_channels} channels for "
+                f"{len(stream_symbols) - len(stream_bars_only)} tradable symbols "
+                f"({len(stream_symbols)} total, {len(stream_bars_only)} bars-only regime). "
+                "Reduce SYMBOLS, disable MARKET_REGIME for unused ETFs, or set "
+                "ALPACA_STREAM_MAX_TRADE_QUOTE_CHANNELS=0 on Algo Trader Plus.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
     settings_snapshot = runtime_settings_snapshot(settings, effective_symbol_counts)
     settings_snapshot["alpaca_market_data_effective_mode"] = selected_market_data_mode
     settings_snapshot["alpaca_market_data_stream_reasons"] = realtime_stream_reasons(settings)
     settings_snapshot["global_symbols"] = list(settings.symbols)
     settings_snapshot["strategy_symbols"] = strategy_local_symbols
     settings_snapshot["dynamic_execution_symbols"] = dynamic_execution_symbols
+    settings_snapshot["alpaca_stream_subscriptions"] = {
+        "stream_symbols": stream_symbols,
+        "bars_only_symbols": sorted(stream_bars_only),
+        "trade_quote_channels": stream_trade_quote_channels,
+        "trade_quote_channel_limit": stream_channel_limit,
+        "stream_trades_enabled": stream_trades_enabled,
+    }
     settings_snapshot["market_regime"] = {
         "enabled": settings.market_regime_enabled,
         "symbols": list(settings.market_regime_symbols),
@@ -1020,7 +1055,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
 
     await asyncio.to_thread(preload_indicator_bars_for_states, stream_settings, states)
 
-    stream = build_market_data_stream(stream_settings)
+    stream = build_market_data_stream(stream_settings, bars_only_symbols=stream_bars_only)
     strategies = build_strategies(settings)
     symbol_manager = SymbolManager(
         states, stream, strategies, global_symbols=settings.symbols, settings=stream_settings
@@ -1053,6 +1088,14 @@ async def main(args: argparse.Namespace | None = None) -> None:
             requested_market_data_mode,
             selected_market_data_mode,
             "; ".join(realtime_stream_reasons(settings)),
+        )
+    if selected_market_data_mode == "stream":
+        logging.info(
+            "Alpaca stream subscriptions: %d symbols, %d bars-only regime, %d trade/quote channels (limit %d)",
+            len(stream_symbols),
+            len(stream_bars_only),
+            stream_trade_quote_channels,
+            stream_channel_limit,
         )
     logging.info("Runtime settings %s", json.dumps(settings_snapshot, sort_keys=True))
 

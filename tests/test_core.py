@@ -27,6 +27,9 @@ from alpaca_stream import (
     AlpacaStreamEndedError,
     AlpacaStreamLock,
     build_market_data_stream,
+    max_stream_trade_quote_symbols,
+    stream_bars_only_symbols,
+    stream_trade_quote_channel_count,
 )
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
@@ -7492,6 +7495,46 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsInstance(build_market_data_stream(stream_settings), AlpacaStockStream)
         self.assertIsInstance(build_market_data_stream(rest_settings), AlpacaRestPollingStream)
+
+    def test_stream_trade_quote_channel_count_respects_bars_only_regime_symbols(self):
+        bars_only = stream_bars_only_symbols({"SPY", "QQQ", "IWM"}, {"AAPL", "MSFT"})
+        self.assertEqual(bars_only, frozenset({"SPY", "QQQ", "IWM"}))
+        symbols = ["AAPL", "MSFT", "SPY", "QQQ", "IWM"]
+        self.assertEqual(
+            stream_trade_quote_channel_count(symbols, bars_only_symbols=bars_only, stream_trades=True),
+            4,
+        )
+        self.assertEqual(max_stream_trade_quote_symbols(30, stream_trades=True), 15)
+
+    def test_alpaca_stream_subscribes_bars_only_for_regime_symbols(self):
+        subscribed: dict[str, set[str]] = {"bars": set(), "quotes": set(), "trades": set()}
+
+        class FakeStream:
+            def subscribe_bars(self, callback, symbol):
+                subscribed["bars"].add(symbol)
+
+            def subscribe_quotes(self, callback, symbol):
+                subscribed["quotes"].add(symbol)
+
+            def subscribe_trades(self, callback, symbol):
+                subscribed["trades"].add(symbol)
+
+        settings = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            symbols=["AAPL", "SPY"],
+            market_data_requires_trade_ticks=True,
+        )
+        stream = AlpacaStockStream(settings, bars_only_symbols=frozenset({"SPY"}))
+        stream._clients = types.SimpleNamespace(stream=FakeStream())
+        stream._on_bar = object()
+        stream._on_quote = object()
+        stream._on_trade = object()
+        stream._subscribe_symbol("AAPL")
+        stream._subscribe_symbol("SPY")
+        self.assertEqual(subscribed["bars"], {"AAPL", "SPY"})
+        self.assertEqual(subscribed["quotes"], {"AAPL"})
+        self.assertEqual(subscribed["trades"], {"AAPL"})
 
     def test_rest_polling_stream_retries_after_quote_connection_error(self):
         class FailingHistorical:

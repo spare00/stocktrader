@@ -28,6 +28,7 @@ class Settings:
     alpaca_data_base_url: str | None = None
     alpaca_market_data_mode: str = "rest"
     alpaca_market_data_poll_seconds: float = 5.0
+    alpaca_stream_max_trade_quote_channels: int = 30
     market_data_requires_trade_ticks: bool = False
     replay_use_mock_clock: bool = False
     replay_closed_bars_only: bool = False
@@ -569,6 +570,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_data_base_url", "ALPACA_DATA_BASE_URL", _str_env, None),
     ("alpaca_market_data_mode", "ALPACA_MARKET_DATA_MODE", _lower_env, "rest"),
     ("alpaca_market_data_poll_seconds", "ALPACA_MARKET_DATA_POLL_SECONDS", _float_env, 1.0),
+    ("alpaca_stream_max_trade_quote_channels", "ALPACA_STREAM_MAX_TRADE_QUOTE_CHANNELS", _int_env, 30),
     ("replay_use_mock_clock", "REPLAY_USE_MOCK_CLOCK", _bool_env, False),
     ("replay_closed_bars_only", "REPLAY_CLOSED_BARS_ONLY", _bool_env, False),
     ("replay_clock_timeout_seconds", "REPLAY_CLOCK_TIMEOUT_SECONDS", _float_env, 0.5),
@@ -826,6 +828,8 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
         raise ValueError("ALPACA_MARKET_DATA_MODE must be 'stream' or 'rest'.")
     if settings.alpaca_market_data_poll_seconds <= 0:
         raise ValueError("ALPACA_MARKET_DATA_POLL_SECONDS must be greater than 0.")
+    if settings.alpaca_stream_max_trade_quote_channels < 0:
+        raise ValueError("ALPACA_STREAM_MAX_TRADE_QUOTE_CHANNELS must be >= 0 (0 disables the check).")
     if settings.replay_clock_timeout_seconds <= 0:
         raise ValueError("REPLAY_CLOCK_TIMEOUT_SECONDS must be greater than 0.")
 
