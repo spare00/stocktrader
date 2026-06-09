@@ -77,6 +77,7 @@ from strategy_selectors.select_market_universe import (
 )
 import strategy_selectors.select_opening_impulse as select_opening_impulse
 import strategy_selectors.select_steady_intraday as select_steady_intraday
+import strategy_selectors.select_liquidity_scalper as select_liquidity_scalper
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
 from strategies import available_strategy_names, build_strategies
 from strategies.registry import strategies_requiring_trade_ticks
@@ -514,6 +515,10 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(
             selector_command_for_strategy("ema_gap_cross"),
             ".venv/bin/python strategy_selectors/select_ema_gap_cross.py --top 12",
+        )
+        self.assertEqual(
+            selector_command_for_strategy("liquidity_scalper"),
+            ".venv/bin/python strategy_selectors/select_liquidity_scalper.py --top 12",
         )
 
     def test_opening_selector_ai_plan_is_bounded_to_screen_candidates(self):
@@ -7620,6 +7625,86 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(subscribed["bars"], {"AAPL", "SPY"})
         self.assertEqual(subscribed["quotes"], {"AAPL"})
         self.assertEqual(subscribed["trades"], {"AAPL"})
+
+    def test_liquidity_scalper_selector_effective_top_respects_stream_limit(self):
+        self.assertEqual(select_liquidity_scalper.effective_top_limit(20, 15), 15)
+        self.assertEqual(select_liquidity_scalper.effective_top_limit(12, 15), 12)
+        self.assertEqual(select_liquidity_scalper.effective_top_limit(20, 0), 20)
+
+    def test_liquidity_scalper_selector_ranks_liquid_symbols(self):
+        from datetime import date as date_type
+        from datetime import time as dt_time
+        from datetime import timedelta
+
+        session_date = date_type(2026, 5, 7)
+
+        def minute_bars(symbol: str, *, price: float, volume: int) -> list[Bar]:
+            open_at = datetime.combine(session_date, dt_time(9, 30), tzinfo=select_liquidity_scalper.MARKET_TZ)
+            bars = []
+            for minute in range(35):
+                start = open_at + timedelta(minutes=minute)
+                ms = int(start.timestamp() * 1000)
+                bars.append(Bar(symbol, price, price + 0.2, price - 0.1, price + 0.1, volume, price, ms, 0))
+            return bars
+
+        liquid_bars = minute_bars("BAC", price=40.0, volume=250_000)
+        thin_bars = minute_bars("THIN", price=40.0, volume=500)
+        session_rows_liquid = select_liquidity_scalper.regular_session_metrics_by_day(
+            liquid_bars,
+            {session_date},
+        )
+        session_rows_thin = select_liquidity_scalper.regular_session_metrics_by_day(
+            thin_bars,
+            {session_date},
+        )
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_min_session_dollar_volume=30_000_000.0,
+            liquidity_scalper_min_bar_dollar_volume=3_000_000.0,
+            liquidity_scalper_min_range_pct=0.015,
+            liquidity_scalper_max_spread_bps=12.0,
+        )
+        quote = Quote("BAC", 39.99, 40.01, 500, 500, 1_000)
+        liquid = select_liquidity_scalper.score_liquidity_scalper_candidate(
+            "BAC",
+            session_rows_liquid,
+            quote,
+            settings,
+            min_price=5.0,
+            max_price=500.0,
+            min_session_days=1,
+        )
+        thin = select_liquidity_scalper.score_liquidity_scalper_candidate(
+            "THIN",
+            session_rows_thin,
+            Quote("THIN", 39.99, 40.01, 10, 10, 1_000),
+            settings,
+            min_price=5.0,
+            max_price=500.0,
+            min_session_days=1,
+        )
+        self.assertIsNotNone(liquid)
+        self.assertIsNotNone(thin)
+        assert liquid is not None and thin is not None
+        self.assertFalse(liquid.hard_reject)
+        self.assertTrue(thin.hard_reject)
+        self.assertGreater(liquid.score, thin.score)
+
+    def test_liquidity_scalper_deterministic_plan_caps_symbols(self):
+        screen_result = {
+            "as_of": "2026-06-08T08:00:00-04:00",
+            "candidates": [
+                {"symbol": "BAC", "score": 9.0, "quality_flags": []},
+                {"symbol": "KRE", "score": 8.0, "quality_flags": []},
+                {"symbol": "XLF", "score": 7.0, "quality_flags": []},
+            ],
+            "rejected": [],
+        }
+        plan = select_liquidity_scalper.deterministic_plan(screen_result, 2)
+        self.assertEqual(plan["strategy"], "liquidity_scalper")
+        self.assertEqual(plan["symbols"], ["BAC", "KRE"])
 
     def test_rest_polling_stream_retries_after_quote_connection_error(self):
         class FailingHistorical:
