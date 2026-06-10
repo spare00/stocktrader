@@ -40,10 +40,10 @@ class OpeningImpulseStrategy(Strategy):
     name = "opening_impulse"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("opening_impulse_start_minute", "OPENING_IMPULSE_START_MINUTE", int_env, 0),
-        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", int_env, 150),
-        ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", int_env, 30),
+        ("opening_impulse_end_minute", "OPENING_IMPULSE_END_MINUTE", int_env, 360),
+        ("opening_impulse_window_seconds", "OPENING_IMPULSE_WINDOW_SECONDS", int_env, 60),
         ("opening_impulse_min_quotes", "OPENING_IMPULSE_MIN_QUOTES", int_env, 10),
-        ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", float_env, 0.009),
+        ("opening_impulse_change_pct", "OPENING_IMPULSE_CHANGE_PCT", float_env, 0.003),
         ("opening_impulse_skip_extended_pct", "OPENING_IMPULSE_SKIP_EXTENDED_PCT", float_env, 0.03),
         ("opening_impulse_volume_ratio", "OPENING_IMPULSE_VOLUME_RATIO", float_env, 1.5),
         ("opening_impulse_min_quote_move_seconds", "OPENING_IMPULSE_MIN_QUOTE_MOVE_SECONDS", int_env, 20),

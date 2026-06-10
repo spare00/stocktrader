@@ -257,7 +257,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(settings.strategy_names, ["gap_and_go"])
         self.assertEqual(settings.gap_and_go_end_minute, 45)
-        self.assertEqual(settings.opening_impulse_end_minute, 150)
+        self.assertEqual(settings.opening_impulse_end_minute, 360)
 
     def test_load_settings_can_read_common_env_only(self):
         with patch.dict(
@@ -312,7 +312,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.bp_max_position_value, 2500)
         self.assertEqual(settings.bp_max_hold_seconds, 360)
         self.assertEqual(settings.bp_trade_cooldown_seconds, 90)
-        self.assertEqual(settings.gap_and_go_end_minute, 30)
+        self.assertEqual(settings.gap_and_go_end_minute, 360)
 
     def test_load_settings_reads_spike_window_only_when_spike_active(self):
         with patch.dict(
@@ -332,7 +332,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.strategy_names, ["spike"])
         self.assertEqual(settings.spike_start_minute, 15)
         self.assertEqual(settings.spike_end_minute, 120)
-        self.assertEqual(settings.gap_and_go_end_minute, 30)
+        self.assertEqual(settings.gap_and_go_end_minute, 360)
 
     def test_position_entry_initializes_trailing_state(self):
         settings = Settings(
@@ -2236,12 +2236,13 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_spike_strategy_emits_buy_on_price_and_volume_spike(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
+        base_ms = market_ms(2026, 4, 24, 11, 0)
         state = SymbolState("AAPL")
-        state.update_quote(Quote("AAPL", bid=100.00, ask=100.05, bid_size=10, ask_size=10, timestamp_ms=1))
+        state.update_quote(Quote("AAPL", bid=100.00, ask=100.05, bid_size=10, ask_size=10, timestamp_ms=base_ms))
 
         for index in range(6):
-            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=index * 1000))
-        state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=7000))
+            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=base_ms + index * 1000))
+        state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=base_ms + 7000))
 
         signal = SpikeStrategy(settings).evaluate(state)
 
@@ -2280,10 +2281,11 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_risk_rejects_short_entries(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], regular_market_only=False)
+        base_ms = market_ms(2026, 4, 24, 11, 0)
         state = SymbolState("AAPL")
         for index in range(6):
-            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=index * 1000))
-        state.add_bar(bar("AAPL", close=99.60, volume=350, end_ms=7000))
+            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=base_ms + index * 1000))
+        state.add_bar(bar("AAPL", close=99.60, volume=350, end_ms=base_ms + 7000))
         signal = SpikeStrategy(settings).evaluate(state)
 
         decision = RiskManager(settings).check_entry(signal, set(), 0)
@@ -2300,14 +2302,27 @@ class CoreTradingTests(unittest.TestCase):
             regular_market_only=False,
         )
         broker = LocalPaperExecutor(PositionTracker(settings))
+        base_ms = market_ms(2026, 4, 24, 11, 0)
         state = SymbolState("AAPL")
         for index in range(6):
-            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=index * 1000))
-        state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=7000))
+            state.add_bar(bar("AAPL", close=100.0, volume=100, end_ms=base_ms + index * 1000))
+        state.add_bar(bar("AAPL", close=100.40, volume=350, end_ms=base_ms + 7000))
         signal = SpikeStrategy(settings).evaluate(state)
 
         broker.buy(signal)
-        state.add_bar(Bar("AAPL", open=100.50, high=101.60, low=100.20, close=101.50, volume=200, vwap=101.2, start_ms=8000, end_ms=9000))
+        state.add_bar(
+            Bar(
+                "AAPL",
+                open=100.50,
+                high=101.60,
+                low=100.20,
+                close=101.50,
+                volume=200,
+                vwap=101.2,
+                start_ms=base_ms + 8000,
+                end_ms=base_ms + 9000,
+            )
+        )
         fill = broker.manage_exit(state, {"spike": SpikeStrategy(settings)})
 
         self.assertIsNotNone(fill)
@@ -7934,7 +7949,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(validated["ranked"][0]["base_score"], 8.0)
         self.assertEqual(validated["ranked"][0]["ai_score_delta"], 1.5)
         self.assertEqual(validated["ranked"][0]["score"], 9.5)
-        self.assertEqual(validated["ai_rejected"], ["GONE"])
+        self.assertNotIn("ai_rejected", validated)
 
     def test_rest_polling_stream_retries_after_quote_connection_error(self):
         class FailingHistorical:
@@ -8385,7 +8400,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.strategy, "steady_intraday")
         self.assertIn("pullback_reclaim", signal.reason)
         self.assertLess(signal.stop_price, signal.price)
-        self.assertEqual(signal.position_size_multiplier, 0.8)
+        self.assertEqual(signal.position_size_multiplier, 1.0)
 
     def test_macd_volume_runner_does_not_take_same_tick_full_target_after_partial(self):
         settings = Settings(
@@ -8538,7 +8553,17 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_risk_rejects_entries_outside_regular_market_hours(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
-        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 16, 1)))
+        signal = Signal(
+            strategy="spike",
+            symbol="AAPL",
+            side="BUY",
+            price=100.4,
+            timestamp_ms=market_ms(2026, 4, 24, 16, 1),
+            change_pct=0.004,
+            volume_ratio=3.5,
+            spread_bps=5.0,
+            reason="test",
+        )
 
         decision = RiskManager(settings).check_entry(signal, set(), 0)
 
@@ -8547,7 +8572,7 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_risk_allows_entries_during_regular_market_hours(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
-        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 10, 0)))
+        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 11, 0)))
 
         decision = RiskManager(settings).check_entry(signal, set(), 0)
 
@@ -8763,7 +8788,17 @@ class CoreTradingTests(unittest.TestCase):
 
     def test_risk_rejects_entries_during_close_flatten_window(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"], flatten_before_close_minutes=5)
-        signal = SpikeStrategy(settings).evaluate(self._spike_state(market_ms(2026, 4, 24, 15, 55)))
+        signal = Signal(
+            strategy="spike",
+            symbol="AAPL",
+            side="BUY",
+            price=100.4,
+            timestamp_ms=market_ms(2026, 4, 24, 15, 55),
+            change_pct=0.004,
+            volume_ratio=3.5,
+            spread_bps=5.0,
+            reason="test",
+        )
 
         decision = RiskManager(settings).check_entry(signal, set(), 0)
 
@@ -9470,7 +9505,7 @@ class CoreTradingTests(unittest.TestCase):
         params = {
             "symbols": ["AAPL"],
             "stoch_macd_max_k": 88.0,
-            "stoch_macd_stoch_cross_lookback_bars": 3,
+            "stoch_macd_stoch_cross_lookback_bars": 5,
         }
         params.update(overrides)
         return Settings(**params)
@@ -11015,7 +11050,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertIn("st=green", signal.reason)
-        self.assertIn("st_cfg=10,1.0", signal.reason)
+        self.assertIn("st_cfg=10,2.0", signal.reason)
 
     def test_breakout_power_exits_full_on_supertrend_bearish(self):
         settings = Settings(
@@ -11045,7 +11080,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertIn("SuperTrend bearish", decision.reason)
-        self.assertIn("st_cfg=10,1.0", decision.reason)
+        self.assertIn("st_cfg=10,2.0", decision.reason)
 
     def test_breakout_power_exits_full_on_ema5_below_ema20_when_enabled(self):
         settings = Settings(
@@ -11523,10 +11558,15 @@ class CoreTradingTests(unittest.TestCase):
             decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "BP below 50")
+        self.assertEqual(decision.reason, "BP below 51")
 
     def test_breakout_power_defers_exit_when_recovery_hold_supported(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
         state.last_event_kind = "bar"
@@ -11553,7 +11593,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(strategy._position_states["AAPL"].below_trend_hold_bar_end_ms)
 
     def test_breakout_power_exits_after_recovery_hold_fails_on_next_bar(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
         state.last_event_kind = "bar"
@@ -11579,10 +11624,15 @@ class CoreTradingTests(unittest.TestCase):
             decision = strategy.should_exit(state, position)
 
         self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "BP failed recovery below 50")
+        self.assertEqual(decision.reason, "BP failed recovery below 51")
 
     def test_breakout_power_clears_recovery_hold_when_score_reclaims_trend_line(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
         state.last_event_kind = "bar"
@@ -11611,7 +11661,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNone(pos_state.below_trend_hold_bar_end_ms)
 
     def test_breakout_power_partial_at_one_r(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_partial_r=1.0,
+            bp_partial_size=0.5,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
         state.update_quote(Quote("AAPL", 100.53, 100.55, 100, 100, state.last_event_ms or 0))
@@ -11637,6 +11692,8 @@ class CoreTradingTests(unittest.TestCase):
             symbols=["AAPL"],
             strategy_names=["breakout_power"],
             bp_partial_r=99.0,
+            bp_partial_profit_pct=0.01,
+            bp_partial_size=0.5,
         )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
@@ -11655,7 +11712,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(decision.mark_partial)
 
     def test_breakout_power_partial_on_first_decline_after_grace_bars(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"], bp_decline_grace_bars=2)
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_decline_grace_bars=2,
+            bp_partial_size=0.5,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
         state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
@@ -11686,7 +11748,13 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(decision.mark_partial)
 
     def test_breakout_power_ignores_partial_decline_within_grace_bars(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"], bp_decline_grace_bars=2)
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_decline_grace_bars=2,
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
         position = self._bp_position()

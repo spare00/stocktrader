@@ -34,7 +34,7 @@ class GapAndGoStrategy(Strategy):
     name = "gap_and_go"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("gap_and_go_start_minute", "GAP_AND_GO_START_MINUTE", int_env, 0),
-        ("gap_and_go_end_minute", "GAP_AND_GO_END_MINUTE", int_env, 30),
+        ("gap_and_go_end_minute", "GAP_AND_GO_END_MINUTE", int_env, 360),
         ("gap_and_go_min_gap_pct", "GAP_AND_GO_MIN_GAP_PCT", float_env, 0.02),
         ("gap_and_go_premarket_volume_ratio", "GAP_AND_GO_PREMARKET_VOLUME_RATIO", float_env, 2.0),
         ("gap_and_go_max_spread_bps", "GAP_AND_GO_MAX_SPREAD_BPS", float_env, 10.0),
@@ -269,7 +269,7 @@ class GapAndGoStrategy(Strategy):
         elapsed = minutes - market_open
         # Entry window in minutes from regular session open.
         start = getattr(self.settings, "gap_and_go_start_minute", 0)
-        end = getattr(self.settings, "gap_and_go_end_minute", 30)
+        end = getattr(self.settings, "gap_and_go_end_minute", 360)
         return start <= elapsed <= end
 
     def _session_vwap(self, state: SymbolState) -> float | None:

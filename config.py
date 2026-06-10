@@ -42,7 +42,7 @@ class Settings:
     symbols: list[str] = field(default_factory=list)
 
     gap_and_go_start_minute: int = 0
-    gap_and_go_end_minute: int = 30
+    gap_and_go_end_minute: int = 360
     gap_and_go_min_gap_pct: float = 0.02
     gap_and_go_premarket_volume_ratio: float = 2.0
     gap_and_go_max_spread_bps: float = 10.0
@@ -59,8 +59,8 @@ class Settings:
 
     spike_lookback_seconds: int = 5
     spike_change_pct: float = 0.0025
-    spike_start_minute: int | None = None
-    spike_end_minute: int | None = None
+    spike_start_minute: int | None = 30
+    spike_end_minute: int | None = 330
     spike_consecutive_loss_pause_count: int | None = None
     spike_consecutive_loss_pause_minutes: int | None = None
     spike_consecutive_loss_stop_count: int | None = None
@@ -143,8 +143,8 @@ class Settings:
     macd_max_position_value: float = 0.0
     macd_max_hold_seconds: int = 0
     macd_trade_cooldown_seconds: int = 0
-    macd_burst_max_entries: int = 0
-    macd_burst_window_seconds: int = 0
+    macd_burst_max_entries: int = 1
+    macd_burst_window_seconds: int = 300
     macd_consecutive_loss_pause_count: int | None = None
     macd_consecutive_loss_pause_minutes: int | None = None
     macd_consecutive_loss_stop_count: int | None = None
@@ -199,10 +199,10 @@ class Settings:
     indicator_include_afterhours: bool = False
 
     opening_impulse_start_minute: int = 0
-    opening_impulse_end_minute: int = 150
-    opening_impulse_window_seconds: int = 30
+    opening_impulse_end_minute: int = 360
+    opening_impulse_window_seconds: int = 60
     opening_impulse_min_quotes: int = 10
-    opening_impulse_change_pct: float = 0.009
+    opening_impulse_change_pct: float = 0.003
     opening_impulse_skip_extended_pct: float = 0.03
     opening_impulse_volume_ratio: float = 1.5
     opening_impulse_min_quote_move_seconds: int = 20
@@ -328,9 +328,9 @@ class Settings:
     steady_intraday_lost_vwap_min_hold_seconds: int = 900
     steady_intraday_stall_minutes: int = 25
     steady_intraday_stall_min_r: float = 0.35
-    steady_intraday_position_size_multiplier: float = 0.8
+    steady_intraday_position_size_multiplier: float = 1.0
     steady_intraday_max_trades_per_symbol_per_session: int = 2
-    steady_intraday_symbol_loss_lock_count: int = 1
+    steady_intraday_symbol_loss_lock_count: int = 2
     steady_intraday_allow_orb_breakout: bool = True
     steady_intraday_allow_pullback_reclaim: bool = True
 
@@ -409,8 +409,8 @@ class Settings:
     stoch_macd_supertrend_enabled: bool = True
     stoch_macd_require_ema_above_supertrend: bool = False
     stoch_macd_supertrend_buffer_pct: float = 0.0005
-    stoch_macd_supertrend_period: int = 7
-    stoch_macd_supertrend_multiplier: float = 3.0
+    stoch_macd_supertrend_period: int = 10
+    stoch_macd_supertrend_multiplier: float = 2.0
     stoch_macd_min_volume_ratio: float = 0.20
     stoch_macd_max_spread_bps: float = 20.0
     stoch_macd_vwap_enabled: bool = True
@@ -419,7 +419,7 @@ class Settings:
     stoch_macd_min_hist_norm: float = 0.00005
     stoch_macd_hist_rise_bars: int = 2
     stoch_macd_macd_rise_bars: int = 2
-    stoch_macd_stoch_cross_lookback_bars: int = 3
+    stoch_macd_stoch_cross_lookback_bars: int = 5
     stoch_macd_max_k: float = 88.0
     stoch_macd_allow_overbought_expansion: bool = False
     stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
@@ -674,8 +674,8 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("macd_max_position_value", "MACD_MAX_POSITION_VALUE", _float_env, 0.0),
     ("macd_max_hold_seconds", "MACD_MAX_HOLD_SECONDS", _int_env, 0),
     ("macd_trade_cooldown_seconds", "MACD_TRADE_COOLDOWN_SECONDS", _int_env, 0),
-    ("macd_burst_max_entries", "MACD_BURST_MAX_ENTRIES", _int_env, 0),
-    ("macd_burst_window_seconds", "MACD_BURST_WINDOW_SECONDS", _int_env, 0),
+    ("macd_burst_max_entries", "MACD_BURST_MAX_ENTRIES", _int_env, 1),
+    ("macd_burst_window_seconds", "MACD_BURST_WINDOW_SECONDS", _int_env, 300),
     ("macd_consecutive_loss_pause_count", "MACD_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
     ("macd_consecutive_loss_pause_minutes", "MACD_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
     ("macd_consecutive_loss_stop_count", "MACD_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),

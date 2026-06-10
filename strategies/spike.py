@@ -18,8 +18,8 @@ class SpikeStrategy(Strategy):
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("spike_lookback_seconds", "SPIKE_LOOKBACK_SECONDS", int_env, 5),
         ("spike_change_pct", "SPIKE_CHANGE_PCT", float_env, 0.0025),
-        ("spike_start_minute", "SPIKE_START_MINUTE", optional_int_env, None),
-        ("spike_end_minute", "SPIKE_END_MINUTE", optional_int_env, None),
+        ("spike_start_minute", "SPIKE_START_MINUTE", optional_int_env, 30),
+        ("spike_end_minute", "SPIKE_END_MINUTE", optional_int_env, 330),
         ("volume_ratio", "VOLUME_RATIO", float_env, 2.0),
         ("max_spread_bps", "MAX_SPREAD_BPS", float_env, 12.0),
     )
