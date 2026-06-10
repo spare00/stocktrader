@@ -161,7 +161,7 @@ Refresh a broad tradable/liquid universe weekly or periodically. This is the glo
 .venv/bin/python strategy_selectors/select_market_universe.py --top 300
 ```
 
-The market selector is a boundary-pool builder, not a strategy selector. Its core filters are liquidity, dollar volume, tradable price, and constructive chart EMA structure, especially EMA20/EMA40/EMA60 alignment and upward EMA40/EMA60 behavior. Use `--mode` only to narrow that same liquid pool by previous-day context:
+The market selector is a boundary-pool builder, not a strategy selector. Its core filters are liquidity, dollar volume, tradable price, and constructive daily EMA structure: established EMA40/EMA60 uptrends or early recovery near EMA60 with improving EMA gaps. Use `--mode` only to narrow that same liquid pool by previous-day context:
 
 ```bash
 .venv/bin/python strategy_selectors/select_market_universe.py --mode limit-up --top 300
@@ -299,6 +299,20 @@ DYNAMIC_EXECUTION_SELECTOR_TOP_DOLLAR_VOLUME_COUNT=30
 ```
 
 REST polling has no trade ticks for true execution-strength calculation, so enabling this selector automatically upgrades the effective runtime market-data mode to `stream`.
+
+The liquidity scalper dynamic mover promotion layer is separate and enabled by default when `liquidity_scalper` is one of the active strategies. It reads a constrained candidate list from `data/dynamic_mover_universe.txt`, subscribes those candidates as bars-only stream symbols, and promotes a symbol into the tradable global universe only when its recent move, dollar volume, RVOL, and spread pass the configured thresholds:
+
+```bash
+DYNAMIC_MOVER_ENABLED=true
+DYNAMIC_MOVER_LOOKBACK_MINUTES=5
+DYNAMIC_MOVER_MIN_MOVE_PCT=0.02
+DYNAMIC_MOVER_MIN_DOLLAR_VOLUME=1000000
+DYNAMIC_MOVER_MIN_RVOL=3.0
+DYNAMIC_MOVER_MAX_SPREAD_BPS=80
+DYNAMIC_MOVER_MAX_DYNAMIC_SYMBOLS=10
+```
+
+On Alpaca Basic IEX, trade+quote subscriptions are limited by `ALPACA_STREAM_MAX_TRADE_QUOTE_CHANNELS` (`30` by default, effectively 15 symbols when trades are enabled). Dynamic mover candidates do not consume trade/quote channels while bars-only; promotion is rejected and logged when the active tradable set is already at the limit. TTL expiry is logged, but promoted symbols remain subscribed for the session so the runtime does not accidentally drop their bars-only candidate feed.
 
 Runtime news expansion is separate and opt-in:
 

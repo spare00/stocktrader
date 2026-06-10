@@ -37,6 +37,7 @@ import main as trading_main
 from market_regime import MarketRegime, MarketRegimeMonitor
 from modules.symbol_manager import SymbolManager
 from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
+from modules.dynamic_mover_selector import DynamicMoverSelector
 from models import Bar, Heartbeat, NewsEvent, Quote, Signal, Trade
 from order_prefixes import (
     CLIENT_ORDER_ID_ROOT,
@@ -1535,6 +1536,17 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(result["trend_60d_bps"], 200.0)
         self.assertEqual(result["trend_track"], "established")
 
+    def test_opening_universe_builder_rejects_missing_quote_when_spread_checked(self):
+        bars = self._market_universe_trend_bars("AAPL")
+        result = score_symbol(
+            symbol="AAPL",
+            bars=bars,
+            quote=None,
+            **self._universe_score_kwargs(reject_wide_spread=True),
+        )
+
+        self.assertIsNone(result)
+
     def test_opening_universe_builder_accepts_recovery_uptrend_without_full_stack(self):
         bars = self._market_universe_trend_bars("RCVR", start=90.0, daily_step=0.35, days=80)
         for offset, close in enumerate([152.0, 153.5, 155.0, 156.5, 158.0]):
@@ -1674,14 +1686,14 @@ class CoreTradingTests(unittest.TestCase):
                     min_price=5.0,
                     max_price=500.0,
                     min_average_volume=1_000_000.0,
-                        min_median_dollar_volume=20_000_000.0,
-                        max_spread_bps=12.0,
-                        min_ema20_slope_bps=0.0,
-                        min_ema40_slope_bps=0.0,
-                        min_ema60_slope_bps=0.0,
-                        require_price_above_ema20=False,
-                        require_ema_stack=False,
-                        require_price_above_ema60=False,
+                    min_median_dollar_volume=20_000_000.0,
+                    max_spread_bps=12.0,
+                    min_ema20_slope_bps=0.0,
+                    min_ema40_slope_bps=0.0,
+                    min_ema60_slope_bps=0.0,
+                    require_price_above_ema20=False,
+                    require_ema_stack=False,
+                    require_price_above_ema60=False,
                     limit_up_pct=0.295,
                     limit_down_pct=-0.295,
                     limit_close_near_high_min=0.95,
@@ -7380,6 +7392,147 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertEqual(symbols, ["AAPL", "MSFT", "NVDA"])
 
+    def test_dynamic_mover_selector_selects_strong_liquid_move(self):
+        selector = DynamicMoverSelector(
+            ["IONQ"],
+            lookback_minutes=5,
+            min_move_pct=0.02,
+            min_dollar_volume=1_000_000.0,
+            min_rvol=3.0,
+            max_spread_bps=80.0,
+        )
+        start = market_ms(2026, 4, 24, 10, 0)
+        for index in range(10):
+            end_ms = start + (index + 1) * 60_000
+            selector.record_bar(Bar("IONQ", 100, 100, 100, 100, 100, 100, end_ms - 60_000, end_ms))
+        for index, close in enumerate([100.5, 101.0, 102.0, 102.7, 103.2]):
+            end_ms = start + (10 + index + 1) * 60_000
+            selector.record_bar(Bar("IONQ", 100, close, 100, close, 4_000, close, end_ms - 60_000, end_ms))
+        selector.record_quote(Quote("IONQ", bid=103.15, ask=103.25, bid_size=100, ask_size=100, timestamp_ms=end_ms))
+
+        selection = selector.evaluate("IONQ", timestamp_ms=end_ms)
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.symbol, "IONQ")
+        self.assertGreaterEqual(selection.move_pct, 0.02)
+        self.assertGreaterEqual(selection.dollar_volume, 1_000_000)
+        self.assertGreaterEqual(selection.rvol, 3.0)
+        self.assertLessEqual(selection.spread_bps, 80.0)
+        self.assertGreater(selection.score, 0)
+
+    def test_dynamic_mover_selector_rejects_wide_spread_and_cooldown(self):
+        selector = DynamicMoverSelector(
+            ["IONQ"],
+            lookback_minutes=5,
+            min_move_pct=0.02,
+            min_dollar_volume=1.0,
+            min_rvol=1.0,
+            max_spread_bps=20.0,
+            cooldown_seconds=1800,
+            symbol_ttl_minutes=0,
+        )
+        start = market_ms(2026, 4, 24, 10, 0)
+        for index in range(10):
+            end_ms = start + (index + 1) * 60_000
+            selector.record_bar(Bar("IONQ", 100, 100, 100, 100, 100, 100, end_ms - 60_000, end_ms))
+        for index, close in enumerate([101, 102, 103, 104, 105]):
+            end_ms = start + (10 + index + 1) * 60_000
+            selector.record_bar(Bar("IONQ", 100, close, 100, close, 500, close, end_ms - 60_000, end_ms))
+
+        selector.record_quote(Quote("IONQ", bid=100.0, ask=106.0, bid_size=100, ask_size=100, timestamp_ms=end_ms))
+        self.assertIsNone(selector.evaluate("IONQ", timestamp_ms=end_ms))
+
+        selector.record_quote(Quote("IONQ", bid=104.95, ask=105.05, bid_size=100, ask_size=100, timestamp_ms=end_ms))
+        first = selector.evaluate("IONQ", timestamp_ms=end_ms)
+        self.assertIsNotNone(first)
+        self.assertIsNone(selector.evaluate("IONQ", timestamp_ms=end_ms + 1_000))
+
+    def test_dynamic_mover_selector_ranks_candidates_by_score(self):
+        selector = DynamicMoverSelector(
+            ["IONQ", "RGTI"],
+            lookback_minutes=5,
+            min_move_pct=0.02,
+            min_dollar_volume=1.0,
+            min_rvol=1.0,
+            max_spread_bps=80.0,
+        )
+        start = market_ms(2026, 4, 24, 10, 0)
+        for symbol, recent_volume, final_close in [("IONQ", 500, 103), ("RGTI", 2_000, 106)]:
+            for index in range(10):
+                end_ms = start + (index + 1) * 60_000
+                selector.record_bar(Bar(symbol, 100, 100, 100, 100, 100, 100, end_ms - 60_000, end_ms))
+            for index in range(5):
+                end_ms = start + (10 + index + 1) * 60_000
+                close = 100 + ((final_close - 100) * (index + 1) / 5)
+                selector.record_bar(Bar(symbol, 100, close, 100, close, recent_volume, close, end_ms - 60_000, end_ms))
+            selector.record_quote(Quote(symbol, bid=final_close - 0.01, ask=final_close + 0.01, bid_size=100, ask_size=100, timestamp_ms=end_ms))
+
+        ranked = selector.ranked_candidates(end_ms)
+
+        self.assertEqual([item.symbol for item in ranked], ["RGTI", "IONQ"])
+
+    def test_stream_promotes_existing_bars_only_symbol_to_quote_trade(self):
+        class RawStream:
+            def __init__(self):
+                self.quotes = []
+                self.trades = []
+
+            def subscribe_quotes(self, callback, symbol):
+                self.quotes.append(symbol)
+
+            def subscribe_trades(self, callback, symbol):
+                self.trades.append(symbol)
+
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["IONQ"],
+            dynamic_mover_enabled=True,
+            market_data_requires_trade_ticks=True,
+        )
+        stream = AlpacaStockStream(settings, bars_only_symbols=frozenset({"IONQ"}))
+        raw_stream = RawStream()
+        stream._clients = types.SimpleNamespace(stream=raw_stream)
+        stream._on_quote = object()
+        stream._on_trade = object()
+
+        stream.add_symbol("IONQ")
+
+        self.assertEqual(raw_stream.quotes, ["IONQ"])
+        self.assertEqual(raw_stream.trades, ["IONQ"])
+
+    def test_dynamic_mover_promotion_respects_basic_iex_symbol_limit(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_stream_max_trade_quote_channels=30,
+        )
+
+        self.assertTrue(
+            trading_main.can_promote_dynamic_symbol(
+                settings,
+                {f"S{i}" for i in range(14)},
+                "IONQ",
+                stream_trades=True,
+            )
+        )
+        self.assertFalse(
+            trading_main.can_promote_dynamic_symbol(
+                settings,
+                {f"S{i}" for i in range(15)},
+                "IONQ",
+                stream_trades=True,
+            )
+        )
+        self.assertTrue(
+            trading_main.can_promote_dynamic_symbol(
+                settings,
+                {f"S{i}" for i in range(15)},
+                "S1",
+                stream_trades=True,
+            )
+        )
+
     def test_symbol_manager_keeps_shared_stream_until_last_owner_removes_symbol(self):
         class Stream:
             def __init__(self):
@@ -7507,6 +7660,25 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(trading_main.effective_market_data_mode(base), "rest")
         self.assertEqual(trading_main.effective_market_data_mode(dynamic), "stream")
         self.assertEqual(trading_main.effective_market_data_mode(news), "stream")
+
+    def test_dynamic_mover_only_upgrades_stream_for_liquidity_scalper(self):
+        inactive = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            dynamic_mover_enabled=True,
+            strategy_names=["opening_impulse"],
+        )
+        active = Settings(
+            alpaca_api_key="test-key",
+            alpaca_secret_key="test",
+            dynamic_mover_enabled=True,
+            strategy_names=["liquidity_scalper"],
+        )
+
+        self.assertFalse(trading_main.dynamic_mover_runtime_enabled(inactive))
+        self.assertTrue(trading_main.dynamic_mover_runtime_enabled(active))
+        self.assertEqual(trading_main.effective_market_data_mode(inactive), "rest")
+        self.assertEqual(trading_main.effective_market_data_mode(active), "stream")
 
     def test_alpaca_stream_error_filter_rewrites_dns_traceback(self):
         log_filter = trading_main.FriendlyAlpacaStreamErrorFilter(min_interval_seconds=60)

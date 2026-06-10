@@ -208,7 +208,7 @@ class AlpacaRestPollingStream:
 class AlpacaStockStream:
     def __init__(self, settings: Settings, *, bars_only_symbols: frozenset[str] | None = None):
         self.settings = settings
-        self._bars_only_symbols = bars_only_symbols or frozenset()
+        self._bars_only_symbols = set(bars_only_symbols or frozenset())
         self._symbols: set[str] = {symbol.strip().upper() for symbol in settings.symbols if symbol.strip()}
         self._clients = None
         self._on_bar = None
@@ -223,11 +223,32 @@ class AlpacaStockStream:
         return bool(self.settings.news_dynamic_symbols_enabled or self.settings.news_log_events)
 
     def _should_stream_trades(self) -> bool:
-        return bool(self.settings.dynamic_execution_selector_enabled or self.settings.market_data_requires_trade_ticks)
+        return bool(
+            self.settings.dynamic_execution_selector_enabled
+            or (
+                self.settings.dynamic_mover_enabled
+                and any(strategy.strip().lower() == "liquidity_scalper" for strategy in self.settings.strategy_names)
+            )
+            or self.settings.market_data_requires_trade_ticks
+        )
 
     def add_symbol(self, symbol: str) -> None:
         normalized = symbol.strip().upper()
-        if not normalized or normalized in self._symbols:
+        if not normalized:
+            return
+        if normalized in self._symbols:
+            if normalized not in self._bars_only_symbols:
+                return
+            self._bars_only_symbols.discard(normalized)
+            if self._clients is None or self._on_quote is None:
+                return
+            self._clients.stream.subscribe_quotes(self._on_quote, normalized)
+            if (
+                self._should_stream_trades()
+                and self._on_trade is not None
+                and hasattr(self._clients.stream, "subscribe_trades")
+            ):
+                self._clients.stream.subscribe_trades(self._on_trade, normalized)
             return
         self._symbols.add(normalized)
         if self._clients is None or self._on_bar is None or self._on_quote is None:
@@ -239,6 +260,7 @@ class AlpacaStockStream:
         if not normalized or normalized not in self._symbols:
             return
         self._symbols.remove(normalized)
+        self._bars_only_symbols.discard(normalized)
         if self._clients is None:
             return
         stream = self._clients.stream

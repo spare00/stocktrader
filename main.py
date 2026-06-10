@@ -31,6 +31,7 @@ from execution import build_executor, set_source_commit
 from market_hours import MARKET_TZ, is_regular_market_time
 from market_regime import MarketRegimeMonitor
 from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
+from modules.dynamic_mover_selector import DynamicMoverSelector, Selection as DynamicMoverSelection
 from modules.news_listener import NewsListener
 from modules.symbol_manager import SymbolManager
 from models import Bar, Heartbeat, NewsEvent, Quote, Trade
@@ -585,6 +586,19 @@ def runtime_settings_snapshot(settings, strategy_symbol_counts: dict[str, int] |
             "min_dollar_volume": settings.dynamic_execution_selector_min_dollar_volume,
             "cooldown_seconds": settings.dynamic_execution_selector_cooldown_seconds,
         },
+        "dynamic_mover": {
+            "enabled": settings.dynamic_mover_enabled,
+            "runtime_enabled": dynamic_mover_runtime_enabled(settings),
+            "universe_file": settings.dynamic_mover_universe_file,
+            "lookback_minutes": settings.dynamic_mover_lookback_minutes,
+            "min_move_pct": settings.dynamic_mover_min_move_pct,
+            "min_dollar_volume": settings.dynamic_mover_min_dollar_volume,
+            "min_rvol": settings.dynamic_mover_min_rvol,
+            "max_spread_bps": settings.dynamic_mover_max_spread_bps,
+            "cooldown_seconds": settings.dynamic_mover_cooldown_seconds,
+            "max_dynamic_symbols": settings.dynamic_mover_max_dynamic_symbols,
+            "symbol_ttl_minutes": settings.dynamic_mover_symbol_ttl_minutes,
+        },
         "openai_model": settings.openai_model if settings.ai_review else None,
         "risk": {
             "target_profit_pct": settings.target_profit_pct,
@@ -687,11 +701,20 @@ def realtime_stream_reasons(settings: Settings) -> list[str]:
         reasons.append("active strategy requires trade ticks")
     if settings.dynamic_execution_selector_enabled:
         reasons.append("dynamic execution selector requires trade ticks")
+    if dynamic_mover_runtime_enabled(settings):
+        reasons.append("dynamic mover selector requires stream bars")
     if settings.news_dynamic_symbols_enabled:
         reasons.append("dynamic news symbols require news stream")
     if settings.news_log_events:
         reasons.append("news logging requires news stream")
     return reasons
+
+
+def dynamic_mover_runtime_enabled(settings: Settings) -> bool:
+    return bool(
+        settings.dynamic_mover_enabled
+        and any(strategy.strip().lower() == "liquidity_scalper" for strategy in settings.strategy_names)
+    )
 
 
 def effective_market_data_mode(settings: Settings) -> str:
@@ -702,6 +725,20 @@ def effective_market_data_mode(settings: Settings) -> str:
 
 def should_manage_exits_on_heartbeat(settings) -> bool:
     return not settings.replay_market_data
+
+
+def dynamic_trade_quote_symbol_limit(settings: Settings, *, stream_trades: bool) -> int:
+    if settings.alpaca_stream_max_trade_quote_channels <= 0:
+        return 0
+    return max_stream_trade_quote_symbols(settings.alpaca_stream_max_trade_quote_channels, stream_trades=stream_trades)
+
+
+def can_promote_dynamic_symbol(settings: Settings, active_symbols: set[str], symbol: str, *, stream_trades: bool) -> bool:
+    limit = dynamic_trade_quote_symbol_limit(settings, stream_trades=stream_trades)
+    if limit <= 0:
+        return True
+    normalized = symbol.strip().upper()
+    return normalized in active_symbols or len(active_symbols) < limit
 
 
 def strategy_log_file(settings) -> Path:
@@ -958,17 +995,42 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 min_dollar_volume=settings.dynamic_execution_selector_min_dollar_volume,
                 cooldown_seconds=settings.dynamic_execution_selector_cooldown_seconds,
             )
+    dynamic_mover_symbols: list[str] = []
+    dynamic_mover_selector: DynamicMoverSelector | None = None
+    dynamic_mover_enabled = dynamic_mover_runtime_enabled(settings)
+    if dynamic_mover_enabled:
+        dynamic_mover_symbols = load_candidate_symbols(settings.dynamic_mover_universe_file, 0)
+        if dynamic_mover_symbols:
+            dynamic_mover_selector = DynamicMoverSelector(
+                dynamic_mover_symbols,
+                lookback_minutes=settings.dynamic_mover_lookback_minutes,
+                min_move_pct=settings.dynamic_mover_min_move_pct,
+                min_dollar_volume=settings.dynamic_mover_min_dollar_volume,
+                min_rvol=settings.dynamic_mover_min_rvol,
+                max_spread_bps=settings.dynamic_mover_max_spread_bps,
+                cooldown_seconds=settings.dynamic_mover_cooldown_seconds,
+                max_dynamic_symbols=settings.dynamic_mover_max_dynamic_symbols,
+                symbol_ttl_minutes=settings.dynamic_mover_symbol_ttl_minutes,
+            )
     initial_symbols = sorted(tradable_symbols.union(regime_symbols))
-    stream_symbols = sorted(set(initial_symbols).union(dynamic_execution_symbols))
-    stream_bars_only = stream_bars_only_symbols(regime_symbols, tradable_symbols)
-    stream_trades_enabled = bool(
-        settings.dynamic_execution_selector_enabled or settings.market_data_requires_trade_ticks
+    stream_symbols = sorted(set(initial_symbols).union(dynamic_execution_symbols).union(dynamic_mover_symbols))
+    stream_bars_only = frozenset(
+        set(stream_bars_only_symbols(regime_symbols, tradable_symbols))
+        | (set(dynamic_mover_symbols) - set(tradable_symbols) - set(dynamic_execution_symbols))
     )
-    if not tradable_symbols and not dynamic_execution_symbols and not settings.news_dynamic_symbols_enabled:
+    stream_trades_enabled = bool(
+        settings.dynamic_execution_selector_enabled or dynamic_mover_enabled or settings.market_data_requires_trade_ticks
+    )
+    if (
+        not tradable_symbols
+        and not dynamic_execution_symbols
+        and not dynamic_mover_symbols
+        and not settings.news_dynamic_symbols_enabled
+    ):
         print(
             "No symbols to trade: set SYMBOLS in `.env`/your profile, or add symbols under "
             "data/<strategy>_plan.json for each active strategy (see strategies registry), or enable "
-            "DYNAMIC_EXECUTION_SELECTOR_ENABLED with a populated universe file, or enable NEWS_DYNAMIC_SYMBOLS_ENABLED.",
+            "DYNAMIC_EXECUTION_SELECTOR_ENABLED/DYNAMIC_MOVER_ENABLED with populated universe files, or enable NEWS_DYNAMIC_SYMBOLS_ENABLED.",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -1015,6 +1077,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
     settings_snapshot["global_symbols"] = list(settings.symbols)
     settings_snapshot["strategy_symbols"] = strategy_local_symbols
     settings_snapshot["dynamic_execution_symbols"] = dynamic_execution_symbols
+    settings_snapshot["dynamic_mover_symbols"] = dynamic_mover_symbols
     settings_snapshot["alpaca_stream_subscriptions"] = {
         "stream_symbols": stream_symbols,
         "bars_only_symbols": sorted(stream_bars_only),
@@ -1075,6 +1138,7 @@ async def main(args: argparse.Namespace | None = None) -> None:
     market_regime = MarketRegimeMonitor(settings)
     rejection_logs = RejectionLogThrottler()
     heartbeat = HeartbeatReporter()
+    dynamic_promoted_symbols: set[str] = set()
 
     logging.info(
         "Monitoring %s with execution mode %s and strategies %s",
@@ -1108,10 +1172,57 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 except Exception:
                     logging.exception("bootstrap_states failed for %s", getattr(strategy, "name", "?"))
 
+        async def _promote_dynamic_mover(selection: DynamicMoverSelection) -> bool:
+            active_symbols = symbol_manager.all_symbols()
+            if selection.symbol in active_symbols:
+                logging.info("Dynamic mover skipped: already tradable symbol=%s", selection.symbol)
+                return False
+            if not can_promote_dynamic_symbol(
+                settings,
+                active_symbols,
+                selection.symbol,
+                stream_trades=stream_trades_enabled,
+            ):
+                limit = dynamic_trade_quote_symbol_limit(settings, stream_trades=stream_trades_enabled)
+                logging.info(
+                    "Dynamic mover rejected: channel limit reached symbol=%s active=%d limit=%d",
+                    selection.symbol,
+                    len(active_symbols),
+                    limit,
+                )
+                return False
+
+            dynamic_mover_selector.confirm_selection(selection)
+            added = symbol_manager.add_symbol(selection.symbol)
+            state = states.get(selection.symbol)
+            if added:
+                dynamic_promoted_symbols.add(selection.symbol)
+                logging.info('Added dynamic mover %s reason="%s"', selection.symbol, selection.reason)
+            if added and state is not None:
+                warmed = await asyncio.to_thread(
+                    warm_dynamic_news_symbol,
+                    settings,
+                    state,
+                    selection.symbol,
+                )
+                if warmed:
+                    logging.info("Warmed dynamic mover %s from recent market data", selection.symbol)
+            return added
+
         await asyncio.to_thread(_bootstrap_all_strategies)
         async for event in stream.events():
             if isinstance(event, Heartbeat):
                 heartbeat.record_heartbeat()
+                if dynamic_mover_selector is not None:
+                    expired = dynamic_mover_selector.expire(event.timestamp_ms)
+                    for symbol in expired:
+                        logging.info("Dynamic mover TTL expired symbol=%s", symbol)
+                        if symbol in dynamic_promoted_symbols:
+                            logging.info(
+                                "Dynamic mover retained after TTL symbol=%s; channel remains allocated",
+                                symbol,
+                            )
+                            dynamic_promoted_symbols.discard(symbol)
                 if should_manage_exits_on_heartbeat(settings):
                     manage_all_exits(executor, states, strategies_by_name, event.timestamp_ms, risk)
                 heartbeat.emit(settings, states, executor)
@@ -1180,6 +1291,35 @@ async def main(args: argparse.Namespace | None = None) -> None:
                         )
                         if warmed:
                             logging.info("Warmed symbol %s from recent market data", selection.symbol)
+            if dynamic_mover_selector is not None:
+                if isinstance(event, Quote):
+                    dynamic_mover_selector.record_quote(event)
+                elif isinstance(event, Trade):
+                    dynamic_mover_selector.record_trade(event)
+                elif isinstance(event, Bar):
+                    dynamic_mover_selector.record_bar(event)
+                    if is_regular_market_time(event.end_ms):
+                        candidates = dynamic_mover_selector.ranked_candidates(
+                            event.end_ms,
+                            allow_missing_spread=True,
+                        )
+                        for candidate in candidates:
+                            try:
+                                quotes = await asyncio.to_thread(get_latest_quotes, settings, [candidate.symbol])
+                            except Exception:
+                                logging.debug("Could not fetch quote for dynamic mover %s", candidate.symbol, exc_info=True)
+                                quotes = {}
+                            quote = quotes.get(candidate.symbol)
+                            if quote is not None:
+                                dynamic_mover_selector.record_quote(quote)
+                            selection = dynamic_mover_selector.evaluate(
+                                candidate.symbol,
+                                timestamp_ms=event.end_ms,
+                                reserve=False,
+                            )
+                            if selection is None:
+                                continue
+                            await _promote_dynamic_mover(selection)
             state = states.get(event.symbol)
             if state is None:
                 logging.debug("Ignoring market data for unsubscribed symbol %s", event.symbol)

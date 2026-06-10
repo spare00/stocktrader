@@ -19,9 +19,6 @@ from strategy_selectors.select_opening_impulse import usable_quote
 
 MARKET_TZ = ZoneInfo("America/New_York")
 DEFAULT_LOOKBACK_DAYS = 80
-DEFAULT_MIN_TREND_BPS = 300.0
-DEFAULT_MIN_20D_TREND_BPS = 100.0
-DEFAULT_MIN_5D_TREND_BPS = 0.0
 DEFAULT_MIN_EMA20_SLOPE_BPS = 1.0
 DEFAULT_MIN_EMA40_SLOPE_BPS = 0.0
 DEFAULT_MIN_EMA60_SLOPE_BPS = 0.0
@@ -535,8 +532,9 @@ def score_symbol(
         return None
 
     spread_bps = _quote_spread_bps(quote)
-    if reject_wide_spread and spread_bps is not None and spread_bps > max_spread_bps:
-        return None
+    if reject_wide_spread:
+        if spread_bps is None or spread_bps > max_spread_bps:
+            return None
 
     liquidity_score = min(math.log10(metrics["average_volume"] / min_average_volume + 1.0), 6.0)
     dollar_score = min(math.log10(metrics["median_dollar_volume"] / min_median_dollar_volume + 1.0), 6.0)
@@ -788,27 +786,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-average-volume", type=float, default=DEFAULT_MIN_AVERAGE_VOLUME)
     parser.add_argument("--min-median-dollar-volume", type=float, default=DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME)
     parser.add_argument("--max-spread-bps", type=float, default=12.0)
-    parser.add_argument(
-        "--min-trend-bps",
-        type=float,
-        default=DEFAULT_MIN_TREND_BPS,
-        help="Reference threshold used in ranking/diagnostics only (not a hard gate).",
-    )
-    parser.add_argument(
-        "--min-20d-trend-bps",
-        type=float,
-        default=DEFAULT_MIN_20D_TREND_BPS,
-        help="Reference threshold used in ranking/diagnostics only (not a hard gate).",
-    )
-    parser.add_argument(
-        "--min-5d-trend-bps",
-        type=float,
-        default=None,
-        help="Reference threshold used in ranking/diagnostics only (not a hard gate).",
-    )
     parser.add_argument("--min-ema20-slope-bps", type=float, default=DEFAULT_MIN_EMA20_SLOPE_BPS)
     parser.add_argument("--min-ema40-slope-bps", type=float, default=DEFAULT_MIN_EMA40_SLOPE_BPS)
     parser.add_argument("--min-ema60-slope-bps", type=float, default=DEFAULT_MIN_EMA60_SLOPE_BPS)
+    parser.add_argument("--min-trend-bps", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--min-20d-trend-bps", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--min-5d-trend-bps", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--allow-below-ema20",
         dest="require_price_above_ema20",

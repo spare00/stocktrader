@@ -558,6 +558,16 @@ class Settings:
     dynamic_execution_selector_lookback_seconds: int = 60
     dynamic_execution_selector_min_dollar_volume: float = 500_000.0
     dynamic_execution_selector_cooldown_seconds: int = 600
+    dynamic_mover_enabled: bool = True
+    dynamic_mover_universe_file: str = "data/dynamic_mover_universe.txt"
+    dynamic_mover_lookback_minutes: int = 5
+    dynamic_mover_min_move_pct: float = 0.02
+    dynamic_mover_min_dollar_volume: float = 1_000_000.0
+    dynamic_mover_min_rvol: float = 3.0
+    dynamic_mover_max_spread_bps: float = 80.0
+    dynamic_mover_cooldown_seconds: int = 1800
+    dynamic_mover_max_dynamic_symbols: int = 10
+    dynamic_mover_symbol_ttl_minutes: int = 30
 
 
 COMMON_ENV: tuple[EnvSpec, ...] = (
@@ -790,6 +800,21 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
         _int_env,
         600,
     ),
+    ("dynamic_mover_enabled", "DYNAMIC_MOVER_ENABLED", _bool_env, True),
+    (
+        "dynamic_mover_universe_file",
+        "DYNAMIC_MOVER_UNIVERSE_FILE",
+        _str_env,
+        "data/dynamic_mover_universe.txt",
+    ),
+    ("dynamic_mover_lookback_minutes", "DYNAMIC_MOVER_LOOKBACK_MINUTES", _int_env, 5),
+    ("dynamic_mover_min_move_pct", "DYNAMIC_MOVER_MIN_MOVE_PCT", _float_env, 0.02),
+    ("dynamic_mover_min_dollar_volume", "DYNAMIC_MOVER_MIN_DOLLAR_VOLUME", _float_env, 1_000_000.0),
+    ("dynamic_mover_min_rvol", "DYNAMIC_MOVER_MIN_RVOL", _float_env, 3.0),
+    ("dynamic_mover_max_spread_bps", "DYNAMIC_MOVER_MAX_SPREAD_BPS", _float_env, 80.0),
+    ("dynamic_mover_cooldown_seconds", "DYNAMIC_MOVER_COOLDOWN_SECONDS", _int_env, 1800),
+    ("dynamic_mover_max_dynamic_symbols", "DYNAMIC_MOVER_MAX_DYNAMIC_SYMBOLS", _int_env, 10),
+    ("dynamic_mover_symbol_ttl_minutes", "DYNAMIC_MOVER_SYMBOL_TTL_MINUTES", _int_env, 30),
 )
 
 
@@ -830,6 +855,10 @@ def load_settings(strategy_names: list[str] | None = None, validate: bool = True
         raise ValueError("ALPACA_MARKET_DATA_POLL_SECONDS must be greater than 0.")
     if settings.alpaca_stream_max_trade_quote_channels < 0:
         raise ValueError("ALPACA_STREAM_MAX_TRADE_QUOTE_CHANNELS must be >= 0 (0 disables the check).")
+    if settings.dynamic_mover_lookback_minutes <= 0:
+        raise ValueError("DYNAMIC_MOVER_LOOKBACK_MINUTES must be greater than 0.")
+    if settings.dynamic_mover_max_dynamic_symbols < 0:
+        raise ValueError("DYNAMIC_MOVER_MAX_DYNAMIC_SYMBOLS must be >= 0.")
     if settings.replay_clock_timeout_seconds <= 0:
         raise ValueError("REPLAY_CLOCK_TIMEOUT_SECONDS must be greater than 0.")
 
