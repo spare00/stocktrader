@@ -230,6 +230,7 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_max_trades_per_symbol_per_session", "BP_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 2),
         ("bp_symbol_loss_lock_count", "BP_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("bp_respect_consecutive_loss_limits", "BP_RESPECT_CONSECUTIVE_LOSS_LIMITS", bool_env, True),
+        ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", int_env, 900),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.breakout_power",)
 
@@ -260,6 +261,7 @@ class BreakoutPowerStrategy(Strategy):
             "stop_buffer_pct": settings.bp_stop_buffer_pct,
             "stop_loss_pct": settings.bp_stop_loss_pct,
             "min_hold_seconds": settings.bp_min_hold_seconds,
+            "max_hold_defer_seconds": settings.bp_max_hold_defer_seconds,
             "max_trades_per_symbol_per_session": settings.bp_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.bp_symbol_loss_lock_count,
             "respect_consecutive_loss_limits": bool(settings.bp_respect_consecutive_loss_limits),
@@ -397,6 +399,9 @@ class BreakoutPowerStrategy(Strategy):
 
         event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
+        if self._max_hold_cap_due(age_seconds):
+            self._clear_position_state(position.symbol)
+            return ExitDecision("BP max hold cap")
         if age_seconds < self.settings.bp_min_hold_seconds:
             return None
 
@@ -563,6 +568,17 @@ class BreakoutPowerStrategy(Strategy):
         if getattr(position, "strategy", "") != self.name:
             return True
 
+        if self._max_hold_cap_due(age_seconds):
+            LOG.debug(
+                "Max hold cap reached %s [breakout_power]: age=%.1fs max_hold=%ss defer=%ss pnl=%.3f%%",
+                state.symbol,
+                age_seconds,
+                self._configured_max_hold_seconds(),
+                max(0, self.settings.bp_max_hold_defer_seconds),
+                pnl_pct * 100,
+            )
+            return True
+
         bp = self._compute_bp(self._indicator_bars(state))
         if len(bp.scores) < 2:
             return True
@@ -583,6 +599,17 @@ class BreakoutPowerStrategy(Strategy):
             return False
 
         return True
+
+    def _configured_max_hold_seconds(self) -> int:
+        strategy_max = int(getattr(self.settings, "bp_max_hold_seconds", 0) or 0)
+        return max(0, strategy_max)
+
+    def _max_hold_cap_due(self, age_seconds: float) -> bool:
+        max_hold_seconds = self._configured_max_hold_seconds()
+        if max_hold_seconds <= 0:
+            return False
+        defer_seconds = max(0, int(self.settings.bp_max_hold_defer_seconds))
+        return age_seconds >= max_hold_seconds + defer_seconds
 
     def _compute_bp(self, bars: list) -> BPSeries:
         return compute_breakout_power_series(

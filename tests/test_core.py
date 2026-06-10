@@ -284,6 +284,7 @@ class CoreTradingTests(unittest.TestCase):
                 "BP_MAX_OPEN_POSITIONS": "8",
                 "BP_MAX_POSITION_VALUE": "2500",
                 "BP_MAX_HOLD_SECONDS": "360",
+                "BP_MAX_HOLD_DEFER_SECONDS": "120",
                 "BP_TRADE_COOLDOWN_SECONDS": "90",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
@@ -311,6 +312,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.bp_max_open_positions, 8)
         self.assertEqual(settings.bp_max_position_value, 2500)
         self.assertEqual(settings.bp_max_hold_seconds, 360)
+        self.assertEqual(settings.bp_max_hold_defer_seconds, 120)
         self.assertEqual(settings.bp_trade_cooldown_seconds, 90)
         self.assertEqual(settings.gap_and_go_end_minute, 360)
 
@@ -12053,6 +12055,48 @@ class CoreTradingTests(unittest.TestCase):
             allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=-0.001)
 
         self.assertFalse(allow_exit)
+
+    def test_breakout_power_allows_max_hold_after_defer_cap_even_when_constructive(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_max_hold_seconds=600,
+            bp_max_hold_defer_seconds=120,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 52.0],
+                momentums=[50.0, 100.0],
+                avg_momentums=[60.0, 70.0],
+            ),
+        ):
+            allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=721.0, pnl_pct=-0.001)
+
+        self.assertTrue(allow_exit)
+
+    def test_breakout_power_exits_on_strategy_max_hold_cap(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_max_hold_seconds=600,
+            bp_max_hold_defer_seconds=120,
+            bp_partial_r=99.0,
+            bp_partial_profit_pct=99.0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
+        position = self._bp_position(entry_ms=(state.last_event_ms or 0) - 721_000)
+
+        decision = strategy.should_exit(state, position)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "BP max hold cap")
 
     def test_breakout_power_allows_max_hold_when_bp_not_constructive(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])

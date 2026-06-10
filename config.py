@@ -506,6 +506,7 @@ class Settings:
     bp_max_open_positions: int = 0
     bp_max_position_value: float = 0.0
     bp_max_hold_seconds: int = 0
+    bp_max_hold_defer_seconds: int = 900
     bp_trade_cooldown_seconds: int = 0
     bp_consecutive_loss_pause_count: int | None = None
     bp_consecutive_loss_pause_minutes: int | None = None
@@ -705,6 +706,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("bp_max_open_positions", "BP_MAX_OPEN_POSITIONS", _int_env, 0),
     ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
     ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),
+    ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", _int_env, 900),
     ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", _int_env, 0),
     ("bp_consecutive_loss_pause_count", "BP_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
