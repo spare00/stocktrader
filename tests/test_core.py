@@ -7783,6 +7783,29 @@ class CoreTradingTests(unittest.TestCase):
         )
         self.assertEqual(max_stream_trade_quote_symbols(30, stream_trades=True), 15)
 
+    def test_mixed_strategy_stream_only_uses_trade_quote_for_stream_required_symbols(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=[],
+            strategy_names=["liquidity_scalper", "steady_intraday"],
+        )
+        local_symbols = {
+            "liquidity_scalper": ["AAPL"],
+            "steady_intraday": ["MSFT", "NVDA"],
+        }
+
+        full_stream = trading_main.symbols_requiring_trade_quote_stream(settings, local_symbols)
+        stream_symbols = sorted({"AAPL", "MSFT", "NVDA"})
+        bars_only = frozenset(set(stream_symbols) - full_stream)
+
+        self.assertEqual(full_stream, {"AAPL"})
+        self.assertEqual(bars_only, frozenset({"MSFT", "NVDA"}))
+        self.assertEqual(
+            stream_trade_quote_channel_count(stream_symbols, bars_only_symbols=bars_only, stream_trades=True),
+            2,
+        )
+
     def test_alpaca_stream_subscribes_bars_only_for_regime_symbols(self):
         subscribed: dict[str, set[str]] = {"bars": set(), "quotes": set(), "trades": set()}
 

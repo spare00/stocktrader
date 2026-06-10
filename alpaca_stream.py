@@ -410,6 +410,51 @@ class AlpacaStockStream:
             raise AlpacaStreamEndedError(f"timed out stopping {name} Alpaca websocket")
 
 
+class MergedMarketDataStream:
+    """Merge a websocket stream with REST polling for symbols that do not need stream."""
+
+    def __init__(self, primary_stream, rest_stream: AlpacaRestPollingStream):
+        self.primary_stream = primary_stream
+        self.rest_stream = rest_stream
+
+    def add_symbol(self, symbol: str) -> None:
+        if hasattr(self.primary_stream, "add_symbol"):
+            self.primary_stream.add_symbol(symbol)
+
+    def remove_symbol(self, symbol: str) -> None:
+        if hasattr(self.primary_stream, "remove_symbol"):
+            self.primary_stream.remove_symbol(symbol)
+        if hasattr(self.rest_stream, "remove_symbol"):
+            self.rest_stream.remove_symbol(symbol)
+
+    async def events(self) -> AsyncIterator[Bar | Heartbeat | Quote | Trade | NewsEvent]:
+        queue: asyncio.Queue[Bar | Heartbeat | Quote | Trade | NewsEvent | BaseException | None] = asyncio.Queue()
+
+        async def pump(source) -> None:
+            try:
+                async for item in source.events():
+                    await queue.put(item)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                await queue.put(exc)
+
+        tasks = [
+            asyncio.create_task(pump(self.primary_stream)),
+            asyncio.create_task(pump(self.rest_stream)),
+        ]
+        try:
+            while True:
+                item = await queue.get()
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def build_market_data_stream(
     settings: Settings,
     *,
