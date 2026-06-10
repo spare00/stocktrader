@@ -91,7 +91,8 @@ class Settings:
     liquidity_scalper_reclaim_pct: float = 0.003
     liquidity_scalper_breakout_lookback_bars: int = 5
     liquidity_scalper_breakout_buffer_pct: float = 0.0005
-    liquidity_scalper_max_spread_bps: float = 12.0
+    liquidity_scalper_max_spread_bps: float = 6.0
+    liquidity_scalper_min_net_edge_bps: float = 6.0
     liquidity_scalper_min_hold_seconds: int = 1
     liquidity_scalper_micro_profit_pct: float = 0.0015
     liquidity_scalper_quick_profit_pct: float = 0.003

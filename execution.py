@@ -576,7 +576,7 @@ class AlpacaPaperExecutor:
     def buy(self, signal: Signal, state=None) -> Fill | None:
         from alpaca.common.exceptions import APIError
         from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading.requests import MarketOrderRequest
+        from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
         self._failed_entry_symbol = None
         self._failed_entry_reason = ""
@@ -610,13 +610,24 @@ class AlpacaPaperExecutor:
             )
             return None
 
-        request = MarketOrderRequest(
-            symbol=signal.symbol,
-            qty=shares,
-            side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY,
-            client_order_id=self._new_client_order_id(signal.symbol, signal.strategy, "buy", signal.timestamp_ms),
-        )
+        client_order_id = self._new_client_order_id(signal.symbol, signal.strategy, "buy", signal.timestamp_ms)
+        if self._uses_entry_limit(signal.strategy):
+            request = LimitOrderRequest(
+                symbol=signal.symbol,
+                qty=shares,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+                limit_price=self._rounded_limit_price(fresh_price or signal.price),
+                client_order_id=client_order_id,
+            )
+        else:
+            request = MarketOrderRequest(
+                symbol=signal.symbol,
+                qty=shares,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
+            )
         started = time.monotonic()
         try:
             order = self.clients.trading.submit_order(order_data=request)
@@ -748,6 +759,7 @@ class AlpacaPaperExecutor:
             reason,
             event_ms,
             mark_partial,
+            limit_price=self._exit_limit_price_from_state(state, position, reason),
             allow_retry=True,
         )
 
@@ -760,19 +772,31 @@ class AlpacaPaperExecutor:
         event_ms: int,
         mark_partial: bool,
         *,
+        limit_price: float | None,
         allow_retry: bool,
     ) -> Fill | None:
         from alpaca.common.exceptions import APIError
         from alpaca.trading.enums import OrderSide, TimeInForce
-        from alpaca.trading.requests import MarketOrderRequest
+        from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
-        request = MarketOrderRequest(
-            symbol=symbol,
-            qty=shares_to_sell,
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.DAY,
-            client_order_id=self._new_client_order_id(symbol, position.strategy, "sell", event_ms),
-        )
+        client_order_id = self._new_client_order_id(symbol, position.strategy, "sell", event_ms)
+        if limit_price is not None:
+            request = LimitOrderRequest(
+                symbol=symbol,
+                qty=shares_to_sell,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                limit_price=limit_price,
+                client_order_id=client_order_id,
+            )
+        else:
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=shares_to_sell,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
+            )
         try:
             order = self.clients.trading.submit_order(order_data=request)
         except APIError as exc:
@@ -806,6 +830,7 @@ class AlpacaPaperExecutor:
                             reason,
                             event_ms,
                             mark_partial,
+                            limit_price=limit_price,
                             allow_retry=False,
                         )
             self._log_sell_rejection_throttled(
@@ -954,6 +979,25 @@ class AlpacaPaperExecutor:
         prefix = strategy_order_prefix(strategy)
         side_code = "s" if side.lower().startswith("s") else "b"
         return f"{CLIENT_ORDER_ID_ROOT}-{prefix}-{symbol.lower()}-{timestamp_ms}-{side_code}-{nonce}"
+
+    @staticmethod
+    def _uses_entry_limit(strategy: str) -> bool:
+        return strategy == "liquidity_scalper"
+
+    def _exit_limit_price_from_state(self, state, position: Position, reason: str) -> float | None:
+        if position.strategy != "liquidity_scalper":
+            return None
+        risk_reasons = {"stop loss", "max trade loss", "end-of-day flatten"}
+        if reason in risk_reasons:
+            return None
+        quote = getattr(state, "quote", None)
+        if quote is None or getattr(quote, "bid", 0.0) <= 0:
+            return None
+        return self._rounded_limit_price(float(quote.bid))
+
+    @staticmethod
+    def _rounded_limit_price(price: float) -> float:
+        return round(max(0.01, price), 2)
 
     def _sync_account_cash(self) -> None:
         try:

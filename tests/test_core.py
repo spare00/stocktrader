@@ -3548,6 +3548,44 @@ class CoreTradingTests(unittest.TestCase):
         finally:
             remove_fake_alpaca_modules()
 
+    def test_alpaca_liquidity_scalper_buy_uses_limit_order(self):
+        install_fake_alpaca_modules()
+        try:
+            settings = Settings(
+                alpaca_api_key="test",
+                alpaca_secret_key="test",
+                symbols=["FAST"],
+                regular_market_only=False,
+            )
+            executor = AlpacaPaperExecutor.__new__(AlpacaPaperExecutor)
+            executor.settings = settings
+            executor.tracker = PositionTracker(settings)
+            executor.clients = FakeClients(
+                [FakeOrder("buy-1", status="filled", filled_qty="5", filled_avg_price="100.02")],
+                latest_quotes={"FAST": types.SimpleNamespace(ask_price="100.02")},
+            )
+            signal = Signal(
+                symbol="FAST",
+                side="BUY",
+                price=100.0,
+                change_pct=0.001,
+                volume_ratio=2.5,
+                spread_bps=4.0,
+                reason="test",
+                timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+                strategy="liquidity_scalper",
+                stop_price=99.70,
+            )
+
+            fill = executor.buy(signal)
+
+            self.assertIsNotNone(fill)
+            submitted = executor.clients.trading.submitted_orders[0]
+            self.assertEqual(submitted.__class__.__name__, "LimitOrderRequest")
+            self.assertEqual(submitted.limit_price, 100.02)
+        finally:
+            remove_fake_alpaca_modules()
+
     def test_alpaca_cancel_unfilled_order_ignores_already_filled_race(self):
         install_fake_alpaca_modules()
         try:
@@ -8304,6 +8342,34 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("trade_tape", signal.reason)
         self.assertGreater(signal.volume_ratio, 1.5)
 
+    def test_liquidity_scalper_rejects_spread_that_consumes_micro_edge(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FAST"],
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_max_spread_bps=12.0,
+            liquidity_scalper_min_net_edge_bps=6.0,
+            liquidity_scalper_min_session_dollar_volume=0.0,
+            liquidity_scalper_min_range_pct=0.0,
+            liquidity_scalper_min_tape_trades=3,
+            liquidity_scalper_min_tape_dollar_volume=10_000.0,
+            liquidity_scalper_min_trade_dollar_volume=2_000.0,
+            liquidity_scalper_min_buy_sell_ratio=1.5,
+            liquidity_scalper_min_tape_price_move_pct=0.0001,
+            liquidity_scalper_min_ask_prints=2,
+            liquidity_scalper_tape_accel_min_ratio=1.0,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        state = SymbolState("FAST")
+        ts = market_ms(2026, 5, 8, 9, 34)
+        for index, price in enumerate([100.02, 100.03, 100.04, 100.06]):
+            trade_ts = ts - (3 - index) * 600
+            state.update_quote(Quote("FAST", bid=price - 0.12, ask=price, bid_size=100, ask_size=100, timestamp_ms=trade_ts))
+            state.update_trade(Trade("FAST", price, 100, trade_ts))
+
+        self.assertIsNone(strategy.evaluate(state))
+
     def test_liquidity_scalper_exits_on_tape_reversal(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -12404,6 +12470,15 @@ def install_fake_alpaca_modules() -> None:
             self.time_in_force = time_in_force
             self.client_order_id = client_order_id
 
+    class LimitOrderRequest:
+        def __init__(self, symbol, qty, side, time_in_force, limit_price, client_order_id):
+            self.symbol = symbol
+            self.qty = qty
+            self.side = side
+            self.time_in_force = time_in_force
+            self.limit_price = limit_price
+            self.client_order_id = client_order_id
+
     class StockLatestQuoteRequest:
         def __init__(self, symbol_or_symbols, feed):
             self.symbol_or_symbols = symbol_or_symbols
@@ -12415,6 +12490,7 @@ def install_fake_alpaca_modules() -> None:
     FakeAPIError = APIError
     exceptions.APIError = APIError
     requests.MarketOrderRequest = MarketOrderRequest
+    requests.LimitOrderRequest = LimitOrderRequest
     data_requests.StockLatestQuoteRequest = StockLatestQuoteRequest
     sys.modules["alpaca"] = alpaca
     sys.modules["alpaca.common"] = common

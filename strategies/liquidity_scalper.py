@@ -64,7 +64,8 @@ class LiquidityScalperStrategy(Strategy):
         ("liquidity_scalper_reclaim_pct", "LIQUIDITY_SCALPER_RECLAIM_PCT", float_env, 0.003),
         ("liquidity_scalper_breakout_lookback_bars", "LIQUIDITY_SCALPER_BREAKOUT_LOOKBACK_BARS", int_env, 5),
         ("liquidity_scalper_breakout_buffer_pct", "LIQUIDITY_SCALPER_BREAKOUT_BUFFER_PCT", float_env, 0.0005),
-        ("liquidity_scalper_max_spread_bps", "LIQUIDITY_SCALPER_MAX_SPREAD_BPS", float_env, 12.0),
+        ("liquidity_scalper_max_spread_bps", "LIQUIDITY_SCALPER_MAX_SPREAD_BPS", float_env, 6.0),
+        ("liquidity_scalper_min_net_edge_bps", "LIQUIDITY_SCALPER_MIN_NET_EDGE_BPS", float_env, 6.0),
         ("liquidity_scalper_min_hold_seconds", "LIQUIDITY_SCALPER_MIN_HOLD_SECONDS", int_env, 1),
         ("liquidity_scalper_micro_profit_pct", "LIQUIDITY_SCALPER_MICRO_PROFIT_PCT", float_env, 0.0015),
         ("liquidity_scalper_quick_profit_pct", "LIQUIDITY_SCALPER_QUICK_PROFIT_PCT", float_env, 0.003),
@@ -101,6 +102,7 @@ class LiquidityScalperStrategy(Strategy):
             "quick_profit_pct": settings.liquidity_scalper_quick_profit_pct,
             "exit_tape_reversal_ratio": settings.liquidity_scalper_exit_tape_reversal_ratio,
             "max_spread_bps": settings.liquidity_scalper_max_spread_bps,
+            "min_net_edge_bps": settings.liquidity_scalper_min_net_edge_bps,
             "stall_seconds": settings.liquidity_scalper_stall_seconds,
             "stop_loss_pct": settings.liquidity_scalper_stop_loss_pct,
             "max_trades_per_symbol_per_session": settings.liquidity_scalper_max_trades_per_symbol_per_session,
@@ -184,6 +186,8 @@ class LiquidityScalperStrategy(Strategy):
         spread_bps = quote.spread_bps
         if spread_bps > self.settings.liquidity_scalper_max_spread_bps:
             return None
+        if not self._has_minimum_net_edge(spread_bps):
+            return None
 
         trade_dollar_volume = trade.price * trade.size
         if trade_dollar_volume < self.settings.liquidity_scalper_min_trade_dollar_volume:
@@ -249,6 +253,8 @@ class LiquidityScalperStrategy(Strategy):
         quote = state.quote
         spread_bps = quote.spread_bps if quote is not None else None
         if spread_bps is not None and spread_bps > self.settings.liquidity_scalper_max_spread_bps:
+            return None
+        if spread_bps is not None and not self._has_minimum_net_edge(spread_bps):
             return None
 
         bar_dollar_volume = last.close * last.volume
@@ -427,6 +433,11 @@ class LiquidityScalperStrategy(Strategy):
     @staticmethod
     def _is_aggressive_sell(trade: Trade, quote: Quote) -> bool:
         return trade.price <= quote.bid
+
+    def _has_minimum_net_edge(self, spread_bps: float) -> bool:
+        gross_micro_bps = self.settings.liquidity_scalper_micro_profit_pct * 10_000
+        net_edge_bps = gross_micro_bps - max(0.0, spread_bps)
+        return net_edge_bps >= self.settings.liquidity_scalper_min_net_edge_bps
 
     def _flush_reclaim_setup(self, bars: list[Bar]) -> str | None:
         lookback = max(2, self.settings.liquidity_scalper_flush_lookback_bars)
