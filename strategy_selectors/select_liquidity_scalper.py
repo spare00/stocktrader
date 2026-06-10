@@ -40,6 +40,7 @@ AI_SCORE_DELTA_LIMIT = 2.0
 # Selector thresholds are softer than live strategy gates; runtime still uses LIQUIDITY_SCALPER_* env.
 DEFAULT_SELECTOR_MIN_BAR_DOLLAR_VOLUME = 50_000.0
 DEFAULT_SELECTOR_MIN_SESSION_DOLLAR_VOLUME = 50_000.0
+DEFAULT_SELECTOR_MIN_P75_BAR_DOLLAR_VOLUME = 250_000.0
 DEFAULT_SELECTOR_MIN_RANGE_PCT = 0.010
 DEFAULT_SELECTOR_MAX_SPREAD_BPS = 100.0
 
@@ -231,6 +232,7 @@ def score_liquidity_scalper_candidate(
     min_session_days: int,
     min_session_dollar_volume: float,
     min_bar_dollar_volume: float,
+    min_p75_bar_dollar_volume: float,
     min_range_pct: float,
     max_spread_bps: float,
 ) -> LiquidityScalperCandidate | None:
@@ -252,15 +254,18 @@ def score_liquidity_scalper_candidate(
         quality_flags.append(f"spread {spread_bps:.2f}bps > {max_spread_bps:.2f}bps")
         hard_reject = True
 
-    if len(session_rows) < min_session_days:
-        quality_flags.append(f"session history {len(session_rows)} < {min_session_days}")
-
     median_session_dv = median(row["session_dollar_volume"] for row in session_rows) if session_rows else 0.0
     median_range_pct = median(row["range_pct"] for row in session_rows) if session_rows else 0.0
     median_bar_dv = median(row["median_bar_dollar_volume"] for row in session_rows) if session_rows else 0.0
     p75_bar_dv = median(row["p75_bar_dollar_volume"] for row in session_rows) if session_rows else 0.0
     median_minute_dv = median(row["median_minute_dollar_volume"] for row in session_rows) if session_rows else 0.0
     today_premarket_dv = premarket_dollar_volume(premarket_bars, as_of.date())
+
+    if len(session_rows) < min_session_days:
+        quality_flags.append(f"session history {len(session_rows)} < {min_session_days}")
+    if p75_bar_dv < min_p75_bar_dollar_volume:
+        quality_flags.append(f"p75 bar_dv ${p75_bar_dv:,.0f} < ${min_p75_bar_dollar_volume:,.0f}")
+        hard_reject = True
 
     liquidity_penalty = 0.0
     if median_session_dv < min_session_dollar_volume:
@@ -284,8 +289,8 @@ def score_liquidity_scalper_candidate(
         liquidity_penalty += 1.0
 
     liquidity_score = math.log10(max(median_session_dv, 1.0) / 1_000_000.0) * 4.0
-    range_score = median_range_pct * 200.0
-    tape_proxy = math.log10(max(p75_bar_dv, 1.0) / 1_000.0) * 2.5
+    range_score = median_range_pct * 120.0
+    tape_proxy = math.log10(max(p75_bar_dv, 1.0) / 1_000.0) * 4.0
     premarket_score = min(math.log10(max(today_premarket_dv, 1.0) / 100_000.0), 2.5)
     spread_penalty = (spread_bps / max(max_spread_bps, 0.1)) if spread_bps is not None else 0.5
     quote_depth_bonus = min(quote_size / 200.0, 2.0)
@@ -441,6 +446,7 @@ def screen(args: argparse.Namespace) -> dict[str, Any]:
             min_session_days=args.min_session_days,
             min_session_dollar_volume=args.min_session_dollar_volume,
             min_bar_dollar_volume=args.min_bar_dollar_volume,
+            min_p75_bar_dollar_volume=args.min_p75_bar_dollar_volume,
             min_range_pct=args.min_range_pct,
             max_spread_bps=max_spread_bps,
         )
@@ -477,6 +483,7 @@ def screen(args: argparse.Namespace) -> dict[str, Any]:
         "thresholds": {
             "min_session_dollar_volume": args.min_session_dollar_volume,
             "min_bar_dollar_volume": args.min_bar_dollar_volume,
+            "min_p75_bar_dollar_volume": args.min_p75_bar_dollar_volume,
             "min_range_pct": args.min_range_pct,
             "max_spread_bps": max_spread_bps,
             "runtime_strategy_thresholds": {
@@ -702,6 +709,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_SELECTOR_MIN_BAR_DOLLAR_VOLUME,
         help="Selector floor for median minute-bar dollar volume (default 50K).",
+    )
+    parser.add_argument(
+        "--min-p75-bar-dollar-volume",
+        type=float,
+        default=DEFAULT_SELECTOR_MIN_P75_BAR_DOLLAR_VOLUME,
+        help="Hard reject when prior-session p75 bar dollar volume is below this (default 250K).",
     )
     parser.add_argument(
         "--min-range-pct",

@@ -78,9 +78,9 @@ class Settings:
     liquidity_scalper_tape_window_seconds: int = 3
     liquidity_scalper_exit_tape_window_seconds: int = 2
     liquidity_scalper_min_tape_trades: int = 3
-    liquidity_scalper_min_tape_dollar_volume: float = 150_000.0
-    liquidity_scalper_min_trade_dollar_volume: float = 15_000.0
-    liquidity_scalper_min_buy_sell_ratio: float = 1.5
+    liquidity_scalper_min_tape_dollar_volume: float = 100_000.0
+    liquidity_scalper_min_trade_dollar_volume: float = 10_000.0
+    liquidity_scalper_min_buy_sell_ratio: float = 1.35
     liquidity_scalper_min_tape_price_move_pct: float = 0.0004
     liquidity_scalper_quote_max_lag_ms: int = 500
     liquidity_scalper_min_ask_prints: int = 2
@@ -91,8 +91,8 @@ class Settings:
     liquidity_scalper_reclaim_pct: float = 0.003
     liquidity_scalper_breakout_lookback_bars: int = 5
     liquidity_scalper_breakout_buffer_pct: float = 0.0005
-    liquidity_scalper_max_spread_bps: float = 6.0
-    liquidity_scalper_min_net_edge_bps: float = 6.0
+    liquidity_scalper_max_spread_bps: float = 12.0
+    liquidity_scalper_min_net_edge_bps: float = 3.0
     liquidity_scalper_min_hold_seconds: int = 1
     liquidity_scalper_micro_profit_pct: float = 0.0015
     liquidity_scalper_quick_profit_pct: float = 0.003

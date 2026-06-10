@@ -201,7 +201,7 @@ For `liquidity_scalper`, rank liquid names before the open (premarket-safe; defa
 .venv/bin/python strategy_selectors/select_liquidity_scalper.py --top 12 --use-ai
 ```
 
-Selector defaults are softer than live runtime gates (`--min-bar-dollar-volume` / `--min-session-dollar-volume` default 50K vs runtime $3M / $30M; `--max-spread-bps` default 100). It uses prior regular-session bars, today's premarket activity, and falls back to bar close when IEX quotes are one-sided premarket — same pattern as `opening_impulse` / `gap_and_go`.
+Selector defaults are softer than live runtime gates (`--min-bar-dollar-volume` / `--min-session-dollar-volume` default 50K vs runtime $3M / $30M; `--min-p75-bar-dollar-volume` default 250K; `--max-spread-bps` default 100). Paper profile bypasses market-regime panic for `liquidity_scalper` and sets spread/tape entry overrides in `profiles/paper.env`.
 
 This selector is pre-market only: it ranks symbols using previous-day bars,
 premarket bars, and the current premarket quote. It does not depend on the

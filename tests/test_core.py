@@ -7920,6 +7920,7 @@ class CoreTradingTests(unittest.TestCase):
             min_session_days=1,
             min_session_dollar_volume=50_000.0,
             min_bar_dollar_volume=50_000.0,
+            min_p75_bar_dollar_volume=10_000.0,
             min_range_pct=0.01,
             max_spread_bps=100.0,
         )
@@ -7934,6 +7935,7 @@ class CoreTradingTests(unittest.TestCase):
             min_session_days=1,
             min_session_dollar_volume=50_000.0,
             min_bar_dollar_volume=50_000.0,
+            min_p75_bar_dollar_volume=10_000.0,
             min_range_pct=0.01,
             max_spread_bps=100.0,
         )
