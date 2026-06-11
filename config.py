@@ -323,12 +323,18 @@ class Settings:
     steady_intraday_partial_size: float = 0.5
     steady_intraday_target_r: float = 2.0
     steady_intraday_runner_pullback_pct: float = 0.009
+    steady_intraday_runner_pullback_grace_bars: int = 2
     steady_intraday_min_hold_seconds: int = 30
     steady_intraday_breakdown_bars: int = 2
     steady_intraday_breakdown_min_hold_seconds: int = 900
     steady_intraday_lost_vwap_min_hold_seconds: int = 900
     steady_intraday_stall_minutes: int = 25
     steady_intraday_stall_min_r: float = 0.35
+    steady_intraday_stall_require_weakness: bool = True
+    steady_intraday_reclaim_tolerance_pct: float = 0.002
+    steady_intraday_support_tolerance_pct: float = 0.003
+    steady_intraday_ema_lookback_bars: int = 3
+    steady_intraday_vwap_lookback_bars: int = 5
     steady_intraday_position_size_multiplier: float = 1.0
     steady_intraday_max_trades_per_symbol_per_session: int = 2
     steady_intraday_symbol_loss_lock_count: int = 2
@@ -706,6 +712,12 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
         _optional_int_env,
         None,
     ),
+    ("steady_intraday_runner_pullback_grace_bars", "STEADY_INTRADAY_RUNNER_PULLBACK_GRACE_BARS", _int_env, 2),
+    ("steady_intraday_stall_require_weakness", "STEADY_INTRADAY_STALL_REQUIRE_WEAKNESS", _bool_env, True),
+    ("steady_intraday_reclaim_tolerance_pct", "STEADY_INTRADAY_RECLAIM_TOLERANCE_PCT", _float_env, 0.002),
+    ("steady_intraday_support_tolerance_pct", "STEADY_INTRADAY_SUPPORT_TOLERANCE_PCT", _float_env, 0.003),
+    ("steady_intraday_ema_lookback_bars", "STEADY_INTRADAY_EMA_LOOKBACK_BARS", _int_env, 3),
+    ("steady_intraday_vwap_lookback_bars", "STEADY_INTRADAY_VWAP_LOOKBACK_BARS", _int_env, 5),
     ("bp_max_open_positions", "BP_MAX_OPEN_POSITIONS", _int_env, 0),
     ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
     ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),

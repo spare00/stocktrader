@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, time
 import logging
 from statistics import mean
@@ -17,8 +18,32 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 
 
+@dataclass
+class _PositionState:
+    """Track per-symbol position state for grace period logic."""
+    entry_ms: int
+    bars_since_partial: int = 0
+    last_processed_bar_end_ms: int | None = None
+
+
 class SteadyIntradayStrategy(Strategy):
-    """VWAP/EMA trend-following day strategy with ATR risk and same-day exits."""
+    """VWAP/EMA trend-following day strategy with ATR risk and same-day exits.
+
+    Entry Logic:
+    - Bullish EMA9 > EMA20 > EMA50 stack with rising EMA20 and VWAP
+    - ATR in acceptable range (0.18% - 1.5%)
+    - Not too extended from VWAP (< 2.5%) or EMA20 (< 1.2%)
+    - Triggers: pullback reclaim (previous <= EMA9, current > previous high & EMA9)
+                OR opening range breakout continuation
+    - Volume confirmation on trigger
+
+    Exit Logic:
+    - Partial at 1R (default 50%), target at 2R
+    - Runner pullback: 0.9% from peak after partial (with grace period)
+    - EMA9 breakdown: N bars below EMA9 (uses per-bar EMA values)
+    - VWAP loss: price drops below session VWAP
+    - Stall: 25+ minutes with < 0.35R AND showing weakness (price < EMA9 or declining)
+    """
 
     name = "steady_intraday"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
@@ -48,9 +73,15 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_partial_size", "STEADY_INTRADAY_PARTIAL_SIZE", float_env, 0.5),
         ("steady_intraday_target_r", "STEADY_INTRADAY_TARGET_R", float_env, 2.0),
         ("steady_intraday_runner_pullback_pct", "STEADY_INTRADAY_RUNNER_PULLBACK_PCT", float_env, 0.009),
+        ("steady_intraday_runner_pullback_grace_bars", "STEADY_INTRADAY_RUNNER_PULLBACK_GRACE_BARS", int_env, 2),
         ("steady_intraday_breakdown_bars", "STEADY_INTRADAY_BREAKDOWN_BARS", int_env, 2),
         ("steady_intraday_stall_minutes", "STEADY_INTRADAY_STALL_MINUTES", int_env, 25),
         ("steady_intraday_stall_min_r", "STEADY_INTRADAY_STALL_MIN_R", float_env, 0.35),
+        ("steady_intraday_stall_require_weakness", "STEADY_INTRADAY_STALL_REQUIRE_WEAKNESS", bool_env, True),
+        ("steady_intraday_reclaim_tolerance_pct", "STEADY_INTRADAY_RECLAIM_TOLERANCE_PCT", float_env, 0.002),
+        ("steady_intraday_support_tolerance_pct", "STEADY_INTRADAY_SUPPORT_TOLERANCE_PCT", float_env, 0.003),
+        ("steady_intraday_ema_lookback_bars", "STEADY_INTRADAY_EMA_LOOKBACK_BARS", int_env, 3),
+        ("steady_intraday_vwap_lookback_bars", "STEADY_INTRADAY_VWAP_LOOKBACK_BARS", int_env, 5),
         ("steady_intraday_position_size_multiplier", "STEADY_INTRADAY_POSITION_SIZE_MULTIPLIER", float_env, 1.0),
         (
             "steady_intraday_max_trades_per_symbol_per_session",
@@ -89,11 +120,21 @@ class SteadyIntradayStrategy(Strategy):
             "max_vwap_extension_pct": settings.steady_intraday_max_vwap_extension_pct,
             "max_ema_extension_pct": settings.steady_intraday_max_ema_extension_pct,
             "stop_atr_multiple": settings.steady_intraday_stop_atr_multiple,
+            "stop_buffer_pct": settings.steady_intraday_stop_buffer_pct,
             "min_r_pct": settings.steady_intraday_min_r_pct,
             "max_r_pct": settings.steady_intraday_max_r_pct,
             "partial_r": settings.steady_intraday_partial_r,
             "target_r": settings.steady_intraday_target_r,
             "runner_pullback_pct": settings.steady_intraday_runner_pullback_pct,
+            "runner_pullback_grace_bars": settings.steady_intraday_runner_pullback_grace_bars,
+            "breakdown_bars": settings.steady_intraday_breakdown_bars,
+            "stall_minutes": settings.steady_intraday_stall_minutes,
+            "stall_min_r": settings.steady_intraday_stall_min_r,
+            "stall_require_weakness": bool(settings.steady_intraday_stall_require_weakness),
+            "reclaim_tolerance_pct": settings.steady_intraday_reclaim_tolerance_pct,
+            "support_tolerance_pct": settings.steady_intraday_support_tolerance_pct,
+            "ema_lookback_bars": settings.steady_intraday_ema_lookback_bars,
+            "vwap_lookback_bars": settings.steady_intraday_vwap_lookback_bars,
             "position_size_multiplier": settings.steady_intraday_position_size_multiplier,
             "max_trades_per_symbol_per_session": settings.steady_intraday_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.steady_intraday_symbol_loss_lock_count,
@@ -103,6 +144,7 @@ class SteadyIntradayStrategy(Strategy):
         self.settings = settings
         self.market_tz = MARKET_TZ
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
+        self._position_states: dict[str, _PositionState] = {}
 
     def evaluate(self, state: SymbolState) -> Signal | None:
         if not self.is_symbol_allowed(state.symbol):
@@ -129,15 +171,28 @@ class SteadyIntradayStrategy(Strategy):
             return self._reject(state, "spread", f"spread {spread_bps:.2f}bps too wide")
 
         closes = [bar.close for bar in bars]
-        ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
-        ema_mid = self._ema(closes, self.settings.steady_intraday_ema_mid)
-        ema_slow = self._ema(closes, self.settings.steady_intraday_ema_slow)
-        prev_ema_mid = self._ema(closes[:-3], self.settings.steady_intraday_ema_mid)
-        if None in {ema_fast, ema_mid, ema_slow, prev_ema_mid}:
+        ema_fast_series = self._ema_series(closes, self.settings.steady_intraday_ema_fast)
+        ema_mid_series = self._ema_series(closes, self.settings.steady_intraday_ema_mid)
+        ema_slow_series = self._ema_series(closes, self.settings.steady_intraday_ema_slow)
+        if ema_fast_series is None or ema_mid_series is None or ema_slow_series is None:
             return self._reject(state, "history", "insufficient EMA history")
 
+        ema_fast = ema_fast_series[-1]
+        ema_mid = ema_mid_series[-1]
+        ema_slow = ema_slow_series[-1]
+
+        # Check EMA20 rising by comparing to N bars ago (configurable lookback)
+        ema_lookback = max(1, self.settings.steady_intraday_ema_lookback_bars)
+        if len(ema_mid_series) <= ema_lookback:
+            return self._reject(state, "history", "insufficient EMA history for rising check")
+        prev_ema_mid = ema_mid_series[-1 - ema_lookback]
+
+        # Calculate session VWAP series for rising check
+        vwap_lookback = max(1, self.settings.steady_intraday_vwap_lookback_bars)
+        if len(bars) <= vwap_lookback:
+            return self._reject(state, "history", "insufficient bars for VWAP rising check")
         session_vwap = self._session_vwap(bars)
-        prev_vwap = self._session_vwap(bars[:-5])
+        prev_vwap = self._session_vwap(bars[:-vwap_lookback])
         if session_vwap is None or prev_vwap is None:
             return self._reject(state, "vwap", "missing session VWAP")
 
@@ -202,6 +257,15 @@ class SteadyIntradayStrategy(Strategy):
             position_size_multiplier=self.settings.steady_intraday_position_size_multiplier,
         )
 
+    def on_entry_fill(self, fill) -> None:
+        """Track position state for grace period logic."""
+        if getattr(fill, "strategy", "") != self.name:
+            return
+        symbol = str(getattr(fill, "symbol", "")).strip().upper()
+        timestamp_ms = getattr(fill, "timestamp_ms", None)
+        if symbol and timestamp_ms is not None:
+            self._position_states[symbol] = _PositionState(entry_ms=int(timestamp_ms))
+
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
         if state.last_event_kind not in {"quote", "bar"} or position.strategy != self.name:
             return None
@@ -215,6 +279,7 @@ class SteadyIntradayStrategy(Strategy):
         if r_initial <= 0:
             return None
 
+        # Partial exit at target R-multiple
         if not position.partial_exit_taken and position.shares > 1:
             partial_level = position.entry_price + r_initial * self.settings.steady_intraday_partial_r
             if price >= partial_level:
@@ -222,34 +287,79 @@ class SteadyIntradayStrategy(Strategy):
                 shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
                 return ExitDecision(f"partial {self.settings.steady_intraday_partial_r:.1f}R", shares=shares, mark_partial=True)
 
+        # Full exit at target R-multiple
         target_level = position.entry_price + r_initial * self.settings.steady_intraday_target_r
         if price >= target_level:
             return ExitDecision(f"target {self.settings.steady_intraday_target_r:.1f}R")
 
+        # Runner pullback exit (with grace period after partial)
         if position.partial_exit_taken:
-            peak = position.max_price if position.max_price > 0 else position.entry_price
-            if peak > 0 and price <= peak * (1 - self.settings.steady_intraday_runner_pullback_pct):
-                return ExitDecision("runner pullback")
+            symbol = position.symbol.strip().upper()
+            pos_state = self._position_states.get(symbol)
+            grace_bars = max(0, self.settings.steady_intraday_runner_pullback_grace_bars)
 
+            # Sync bar count on bar events
+            if state.last_event_kind == "bar" and pos_state is not None:
+                self._sync_position_bar_state(state, pos_state)
+
+            # Apply grace period before runner pullback can fire
+            can_exit_runner = pos_state is None or pos_state.bars_since_partial > grace_bars
+
+            if can_exit_runner:
+                peak = position.max_price if position.max_price > 0 else position.entry_price
+                if peak > 0 and price <= peak * (1 - self.settings.steady_intraday_runner_pullback_pct):
+                    self._clear_position_state(symbol)
+                    return ExitDecision("runner pullback")
+
+        # Structural exits: EMA9 breakdown and VWAP loss
         bars = self._regular_bars(state)
         if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2):
             closes = [bar.close for bar in bars]
-            ema_fast = self._ema(closes, self.settings.steady_intraday_ema_fast)
+            ema_fast_series = self._ema_series(closes, self.settings.steady_intraday_ema_fast)
             session_vwap = self._session_vwap(bars)
+
+            # EMA9 breakdown: use per-bar EMA values, not final value
             breakdown_bars = max(1, self.settings.steady_intraday_breakdown_bars)
-            if ema_fast and self._last_n_closes_below(bars, ema_fast, breakdown_bars):
-                return ExitDecision("EMA fast breakdown")
+            if ema_fast_series and len(bars) >= breakdown_bars and len(ema_fast_series) == len(bars):
+                if self._last_n_closes_below_ema_series(bars, ema_fast_series, breakdown_bars):
+                    symbol = position.symbol.strip().upper()
+                    self._clear_position_state(symbol)
+                    return ExitDecision("EMA fast breakdown")
+
+            # VWAP loss
             if session_vwap and price < session_vwap:
+                symbol = position.symbol.strip().upper()
+                self._clear_position_state(symbol)
                 return ExitDecision("lost VWAP")
 
+        # Stall exit (with optional weakness requirement)
         event_ms = state.last_event_ms or position.entry_ms
         age_minutes = (event_ms - position.entry_ms) / 60_000
         current_r = (price - position.entry_price) / r_initial
+
         if (
             age_minutes >= self.settings.steady_intraday_stall_minutes
             and current_r < self.settings.steady_intraday_stall_min_r
         ):
-            return ExitDecision("stalled")
+            # Optional: require weakness signal (price below EMA9 or declining from peak)
+            if self.settings.steady_intraday_stall_require_weakness:
+                bars = self._regular_bars(state)
+                if len(bars) >= max(3, self.settings.steady_intraday_ema_fast + 2):
+                    closes = [bar.close for bar in bars]
+                    ema_fast_series = self._ema_series(closes, self.settings.steady_intraday_ema_fast)
+                    if ema_fast_series:
+                        ema_fast = ema_fast_series[-1]
+                        peak = position.max_price if position.max_price > 0 else position.entry_price
+                        is_weak = price < ema_fast or (peak > 0 and price < peak * 0.998)
+                        if is_weak:
+                            symbol = position.symbol.strip().upper()
+                            self._clear_position_state(symbol)
+                            return ExitDecision("stalled (weak)")
+            else:
+                # Stall without weakness check
+                symbol = position.symbol.strip().upper()
+                self._clear_position_state(symbol)
+                return ExitDecision("stalled")
 
         return None
 
@@ -274,11 +384,24 @@ class SteadyIntradayStrategy(Strategy):
         session_vwap: float,
         volume_ratio: float,
     ) -> str | None:
+        """Detect entry trigger: pullback reclaim or ORB continuation.
+
+        Pullback reclaim: previous bar at/below EMA9, current bar closes above both
+        previous high and EMA9, held support at EMA20/VWAP, bullish close near high.
+
+        ORB continuation: breaks above opening range high with bullish structure.
+        """
         latest = bars[-1]
         previous = bars[-2]
-        reclaimed_fast = previous.close <= ema_fast * 1.002 and latest.close > max(previous.high, ema_fast)
-        held_mid = latest.low >= min(ema_mid, session_vwap) * 0.997
+
+        # Use configurable tolerances instead of hardcoded values
+        reclaim_tolerance = 1.0 + max(0.0, self.settings.steady_intraday_reclaim_tolerance_pct)
+        support_tolerance = 1.0 - max(0.0, self.settings.steady_intraday_support_tolerance_pct)
+
+        reclaimed_fast = previous.close <= ema_fast * reclaim_tolerance and latest.close > max(previous.high, ema_fast)
+        held_mid = latest.low >= min(ema_mid, session_vwap) * support_tolerance
         bullish_close = latest.close > latest.open and self._close_near_high(latest)
+
         if (
             self.settings.steady_intraday_allow_pullback_reclaim
             and reclaimed_fast
@@ -293,7 +416,7 @@ class SteadyIntradayStrategy(Strategy):
             if (
                 opening_high is not None
                 and latest.close > opening_high
-                and previous.close <= opening_high * 1.002
+                and previous.close <= opening_high * reclaim_tolerance
                 and bullish_close
                 and volume_ratio >= self.settings.steady_intraday_breakout_volume_ratio
             ):
@@ -338,6 +461,7 @@ class SteadyIntradayStrategy(Strategy):
 
     @staticmethod
     def _ema(values: list[float], period: int) -> float | None:
+        """Calculate final EMA value. For series, use _ema_series()."""
         if period <= 0 or len(values) < period:
             return None
         alpha = 2 / (period + 1)
@@ -345,6 +469,23 @@ class SteadyIntradayStrategy(Strategy):
         for value in values[period:]:
             ema = (value * alpha) + (ema * (1 - alpha))
         return ema
+
+    @staticmethod
+    def _ema_series(values: list[float], period: int) -> list[float] | None:
+        """Calculate full EMA series for all values."""
+        if period <= 0 or len(values) < period:
+            return None
+        alpha = 2 / (period + 1)
+        series = []
+        ema = sum(values[:period]) / period
+        # Add initial SMA value for first period bars
+        for _ in range(period):
+            series.append(ema)
+        # Calculate EMA for remaining values
+        for value in values[period:]:
+            ema = (value * alpha) + (ema * (1 - alpha))
+            series.append(ema)
+        return series
 
     @staticmethod
     def _atr(bars, period: int) -> float | None:
@@ -388,9 +529,37 @@ class SteadyIntradayStrategy(Strategy):
 
     @staticmethod
     def _last_n_closes_below(bars, level: float, n: int) -> bool:
+        """Check if last N bar closes are below a fixed level."""
         if len(bars) < n:
             return False
         return all(bar.close < level for bar in bars[-n:])
+
+    @staticmethod
+    def _last_n_closes_below_ema_series(bars, ema_series: list[float], n: int) -> bool:
+        """Check if last N bar closes are below their corresponding EMA values.
+
+        This correctly compares each bar's close to its EMA value, not to the final EMA.
+        """
+        if len(bars) < n or len(ema_series) < n or len(bars) != len(ema_series):
+            return False
+        for i in range(-n, 0):
+            if bars[i].close >= ema_series[i]:
+                return False
+        return True
+
+    def _sync_position_bar_state(self, state: SymbolState, pos_state: _PositionState) -> None:
+        """Update bars_since_partial counter on new bar completion."""
+        if not state.bars:
+            return
+        bar_end_ms = state.bars[-1].end_ms
+        if bar_end_ms == pos_state.last_processed_bar_end_ms:
+            return
+        pos_state.last_processed_bar_end_ms = bar_end_ms
+        pos_state.bars_since_partial += 1
+
+    def _clear_position_state(self, symbol: str) -> None:
+        """Clear position state on exit."""
+        self._position_states.pop(symbol.strip().upper(), None)
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
