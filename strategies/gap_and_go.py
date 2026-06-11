@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 import logging
+from statistics import mean
 from typing import Any, ClassVar
 
 from candle import SymbolState
 from config import Settings
-from env_vars import EnvSpec, float_env, int_env
+from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategy_selectors.select_gap_and_go import (
@@ -25,12 +26,21 @@ LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
 PREMARKET_OPEN = time(4, 0)
 
-# --- Breakout confirmation (disabled: selector handles screening) ---
-GAP_AND_GO_CONFIRM_BREAKOUT = False
-GAP_AND_GO_CONFIRM_BARS = 2
-
 
 class GapAndGoStrategy(Strategy):
+    """Gap-up breakout strategy with opening range fallback.
+
+    Entry: Gap ≥2% + premarket volume ≥2x, then:
+    - Breakout mode: price > premarket high (priority)
+    - Reclaim mode: price ≥95% of premarket high
+    - ORB fallback: price breaks above first 5 min opening range
+
+    Quality filters: min price ($5), max spread (10 bps), optional premarket
+    exhaustion check (max PM extension), R-based risk management.
+
+    Exit: R-based stop loss (swing low or 3%); partial at 1R; lost open/VWAP;
+    trailing stop (0.8% from recent high); volume collapse. Min hold 15s.
+    """
     name = "gap_and_go"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("gap_and_go_start_minute", "GAP_AND_GO_START_MINUTE", int_env, 0),
@@ -40,6 +50,21 @@ class GapAndGoStrategy(Strategy):
         ("gap_and_go_max_spread_bps", "GAP_AND_GO_MAX_SPREAD_BPS", float_env, 10.0),
         ("gap_and_go_min_price", "GAP_AND_GO_MIN_PRICE", float_env, 5.0),
         ("gap_and_go_breakout_buffer_pct", "GAP_AND_GO_BREAKOUT_BUFFER_PCT", float_env, 0.0),
+        ("gap_and_go_reclaim_pct", "GAP_AND_GO_RECLAIM_PCT", float_env, 0.95),
+        ("gap_and_go_confirm_breakout", "GAP_AND_GO_CONFIRM_BREAKOUT", bool_env, False),
+        ("gap_and_go_confirm_bars", "GAP_AND_GO_CONFIRM_BARS", int_env, 2),
+        ("gap_and_go_use_stop_loss", "GAP_AND_GO_USE_STOP_LOSS", bool_env, True),
+        ("gap_and_go_stop_loss_pct", "GAP_AND_GO_STOP_LOSS_PCT", float_env, 0.03),
+        ("gap_and_go_swing_lookback", "GAP_AND_GO_SWING_LOOKBACK", int_env, 5),
+        ("gap_and_go_stop_buffer_pct", "GAP_AND_GO_STOP_BUFFER_PCT", float_env, 0.001),
+        ("gap_and_go_min_r_pct", "GAP_AND_GO_MIN_R_PCT", float_env, 0.005),
+        ("gap_and_go_max_r_pct", "GAP_AND_GO_MAX_R_PCT", float_env, 0.04),
+        ("gap_and_go_partial_r", "GAP_AND_GO_PARTIAL_R", float_env, 1.0),
+        ("gap_and_go_partial_size", "GAP_AND_GO_PARTIAL_SIZE", float_env, 0.5),
+        ("gap_and_go_volume_collapse_enabled", "GAP_AND_GO_VOLUME_COLLAPSE_ENABLED", bool_env, True),
+        ("gap_and_go_volume_collapse_ratio", "GAP_AND_GO_VOLUME_COLLAPSE_RATIO", float_env, 0.3),
+        ("gap_and_go_volume_collapse_min_bars", "GAP_AND_GO_VOLUME_COLLAPSE_MIN_BARS", int_env, 3),
+        ("gap_and_go_max_premarket_extension_pct", "GAP_AND_GO_MAX_PREMARKET_EXTENSION_PCT", float_env, 0.10),
         ("gap_and_go_exit_activation_delay_seconds", "GAP_AND_GO_EXIT_ACTIVATION_DELAY_SECONDS", int_env, 15),
         ("gap_and_go_trailing_retrace_pct", "GAP_AND_GO_TRAILING_RETRACE_PCT", float_env, 0.008),
         ("gap_and_go_bar_window", "GAP_AND_GO_BAR_WINDOW", int_env, 5),
@@ -61,6 +86,21 @@ class GapAndGoStrategy(Strategy):
             "max_spread_bps": settings.gap_and_go_max_spread_bps,
             "min_price": settings.gap_and_go_min_price,
             "breakout_buffer_pct": settings.gap_and_go_breakout_buffer_pct,
+            "reclaim_pct": settings.gap_and_go_reclaim_pct,
+            "confirm_breakout": settings.gap_and_go_confirm_breakout,
+            "confirm_bars": settings.gap_and_go_confirm_bars,
+            "use_stop_loss": settings.gap_and_go_use_stop_loss,
+            "stop_loss_pct": settings.gap_and_go_stop_loss_pct,
+            "swing_lookback": settings.gap_and_go_swing_lookback,
+            "stop_buffer_pct": settings.gap_and_go_stop_buffer_pct,
+            "min_r_pct": settings.gap_and_go_min_r_pct,
+            "max_r_pct": settings.gap_and_go_max_r_pct,
+            "partial_r": settings.gap_and_go_partial_r,
+            "partial_size": settings.gap_and_go_partial_size,
+            "volume_collapse_enabled": settings.gap_and_go_volume_collapse_enabled,
+            "volume_collapse_ratio": settings.gap_and_go_volume_collapse_ratio,
+            "volume_collapse_min_bars": settings.gap_and_go_volume_collapse_min_bars,
+            "max_premarket_extension_pct": settings.gap_and_go_max_premarket_extension_pct,
             "exit_activation_delay_seconds": settings.gap_and_go_exit_activation_delay_seconds,
             "trailing_retrace_pct": settings.gap_and_go_trailing_retrace_pct,
             "bar_window": settings.gap_and_go_bar_window,
@@ -144,6 +184,18 @@ class GapAndGoStrategy(Strategy):
 
         premarket_volume = self._premarket_volume_ratio(state)
         gap_pct = (last.ask - prev_close) / prev_close
+
+        # Premarket exhaustion filter: reject if PM already ran too much
+        if self.settings.gap_and_go_max_premarket_extension_pct > 0:
+            pm_low = self._premarket_low(state)
+            if premarket_high and pm_low and pm_low > 0:
+                pm_range_pct = (premarket_high - pm_low) / pm_low
+                if pm_range_pct > self.settings.gap_and_go_max_premarket_extension_pct:
+                    return self._reject(
+                        state,
+                        "premarket_exhausted",
+                        f"PM range {pm_range_pct:.2%} > max {self.settings.gap_and_go_max_premarket_extension_pct:.2%}",
+                    )
         if last.ask < self.settings.gap_and_go_min_price:
             return self._reject(state, "price", f"price {last.ask:.2f} below min {self.settings.gap_and_go_min_price:.2f}")
         if gap_pct < self.settings.gap_and_go_min_gap_pct:
@@ -167,55 +219,97 @@ class GapAndGoStrategy(Strategy):
 
         buffer = self.settings.gap_and_go_breakout_buffer_pct
         breakout_level = premarket_high * (1 + buffer)
-        reclaim_level = premarket_high * 0.95
-        LOG.debug(
-            "GNG %s ask=%.2f pm_high=%.2f breakout=%.2f reclaim=%.2f",
-            state.symbol,
-            last.ask,
-            premarket_high,
-            breakout_level,
-            reclaim_level,
-        )
-        if last.ask >= reclaim_level:
-            breakout_ok = True
-            entry_type = "reclaim"
-        elif last.ask >= breakout_level:
+        reclaim_level = premarket_high * self.settings.gap_and_go_reclaim_pct
+
+        # Priority: Breakout (above PM high) > Reclaim (approaching PM high) > None
+        if last.ask >= breakout_level:
             breakout_ok = True
             entry_type = "breakout"
+        elif last.ask >= reclaim_level:
+            breakout_ok = True
+            entry_type = "reclaim"
         else:
             breakout_ok = False
             entry_type = "none"
 
-        # --- Change #6: Confirm breakout with N consecutive closes above premarket high ---
-        if GAP_AND_GO_CONFIRM_BREAKOUT and entry_type == "breakout":
+        # Optional breakout confirmation: require N consecutive closes above PM high
+        if self.settings.gap_and_go_confirm_breakout and entry_type == "breakout":
             recent_bars = self._regular_bars(state)
-            last_n = recent_bars[-GAP_AND_GO_CONFIRM_BARS:] if len(recent_bars) >= GAP_AND_GO_CONFIRM_BARS else []
+            confirm_bars = max(1, self.settings.gap_and_go_confirm_bars)
+            last_n = recent_bars[-confirm_bars:] if len(recent_bars) >= confirm_bars else []
             if not last_n or not all(bar.close > premarket_high for bar in last_n):
                 return self._reject(
                     state,
                     "confirm_breakout",
-                    f"breakout not confirmed over last {GAP_AND_GO_CONFIRM_BARS} bars above {premarket_high:.2f}",
+                    f"breakout not confirmed over last {confirm_bars} bars above {premarket_high:.2f}",
                 )
 
-        # --- Change #7: Fallback ORB entry ---
+        # Fallback ORB entry: if no premarket breakout/reclaim, check opening range
         opening_range_bars = self._opening_range_bars(state, minutes=5)
         opening_range_high = max((bar.high for bar in opening_range_bars), default=None)
         if opening_range_high and last.ask > opening_range_high:
             if not breakout_ok:
                 breakout_ok = True
                 entry_type = "orb"
+
         if not breakout_ok:
             return self._reject(
                 state,
                 "breakout",
-                f"no breakout/reclaim: {last.ask:.2f} (premarket high {premarket_high:.2f})",
+                f"no breakout/reclaim/ORB: ask={last.ask:.2f} pm_high={premarket_high:.2f} orb_high={opening_range_high}",
             )
 
-        # --- Change #8: Extended reason log ---
+        # R-based stop loss calculation
+        session_bars = self._regular_bars(state)
+        stop_price = None
+        r_pct = 0.0
+
+        if self.settings.gap_and_go_use_stop_loss:
+            swing_lookback = max(1, self.settings.gap_and_go_swing_lookback)
+            swing_low = self._recent_swing_low(session_bars, swing_lookback)
+            if swing_low and swing_low < last.ask:
+                buffer = max(0.0, self.settings.gap_and_go_stop_buffer_pct)
+                stop_price = swing_low * (1 - buffer)
+            else:
+                stop_price = last.ask * (1 - self.settings.gap_and_go_stop_loss_pct)
+
+            r_dist = last.ask - stop_price
+            if r_dist <= 0:
+                return self._reject(state, "risk", "invalid R (stop >= entry)")
+
+            r_pct = r_dist / last.ask if last.ask > 0 else 0.0
+            min_r = self.settings.gap_and_go_min_r_pct
+            max_r = self.settings.gap_and_go_max_r_pct
+            if r_pct < min_r:
+                return self._reject(state, "risk", f"R too small: {r_pct:.2%} < {min_r:.2%}")
+            if r_pct > max_r:
+                return self._reject(state, "risk", f"R too wide: {r_pct:.2%} > {max_r:.2%}")
+
+        # Enhanced logging
+        pm_low = self._premarket_low(state)
+        LOG.debug(
+            "GNG %s ask=%.2f pm_high=%.2f pm_low=%.2f pm_vol=%.1fx gap=%.2%% "
+            "breakout=%.2f reclaim=%.2f orb_high=%s stop=%.2f r=%.2%%",
+            state.symbol,
+            last.ask,
+            premarket_high,
+            pm_low or 0.0,
+            premarket_volume,
+            gap_pct * 100,
+            breakout_level,
+            reclaim_level,
+            f"{opening_range_high:.2f}" if opening_range_high else "N/A",
+            stop_price or 0.0,
+            r_pct * 100,
+        )
+
         reason = (
             f"gap_and_go gap {gap_pct:.2%}, vol {premarket_volume:.1f}x, "
             f"premarket_high {premarket_high:.2f}, entry_type={entry_type}"
         )
+        if stop_price:
+            reason += f", stop={stop_price:.2f} r={r_pct:.2%}"
+
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -226,6 +320,7 @@ class GapAndGoStrategy(Strategy):
             volume_ratio=premarket_volume,
             spread_bps=last.spread_bps,
             reason=reason,
+            stop_price=stop_price,
         )
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
@@ -241,13 +336,52 @@ class GapAndGoStrategy(Strategy):
         if age_seconds < self.exit_activation_delay_seconds(position):
             return None
 
+        # R-based stop loss
+        if self.settings.gap_and_go_use_stop_loss:
+            stop_price = position.stop_price
+            if stop_price and price <= stop_price:
+                return ExitDecision("stop loss")
+
+        # Partial exit at 1R profit
+        initial_stop = getattr(position, "initial_stop_price", None)
+        if initial_stop is None:
+            initial_stop = position.stop_price
+        r_initial = position.entry_price - initial_stop if initial_stop else 0.0
+        if (
+            r_initial > 0
+            and not position.partial_exit_taken
+            and position.shares >= 2
+            and price >= position.entry_price + (r_initial * self.settings.gap_and_go_partial_r)
+        ):
+            frac = min(1.0, max(0.0, self.settings.gap_and_go_partial_size))
+            shares = max(1, min(position.shares - 1, int(position.shares * frac)))
+            return ExitDecision(f"partial {self.settings.gap_and_go_partial_r:.1f}R", shares=shares, mark_partial=True)
+
+        # Lost open
         open_price = self._regular_open_price(state)
-        session_vwap = self._session_vwap(state)
         if open_price and price < open_price:
             return ExitDecision("lost open")
+
+        # Lost VWAP
+        session_vwap = self._session_vwap(state)
         if session_vwap and price < session_vwap:
             return ExitDecision("lost vwap")
 
+        # Volume collapse
+        if self.settings.gap_and_go_volume_collapse_enabled:
+            session_bars = self._regular_bars(state)
+            min_bars = max(2, self.settings.gap_and_go_volume_collapse_min_bars)
+            if len(session_bars) >= min_bars:
+                recent_bars = session_bars[-min_bars:]
+                if len(recent_bars) >= min_bars:
+                    baseline_vols = [b.volume for b in recent_bars[:-1] if b.volume > 0]
+                    if baseline_vols:
+                        avg_volume = mean(baseline_vols)
+                        latest_volume = recent_bars[-1].volume
+                        if latest_volume < avg_volume * self.settings.gap_and_go_volume_collapse_ratio:
+                            return ExitDecision("volume collapse")
+
+        # Trailing stop (only in profit)
         recent_bars = self._regular_bars(state)[-max(3, self.settings.gap_and_go_bar_window) :]
         if len(recent_bars) >= 2:
             recent_high = max(bar.high for bar in recent_bars)
@@ -286,6 +420,19 @@ class GapAndGoStrategy(Strategy):
     def _premarket_high(self, state: SymbolState) -> float | None:
         return premarket_high_price(state)
 
+    def _premarket_low(self, state: SymbolState) -> float | None:
+        """Get premarket low (4am-9:30am ET)."""
+        premarket_bars = [
+            bar
+            for bar in state.bars
+            if PREMARKET_OPEN
+            <= datetime.fromtimestamp(bar.start_ms / 1000, tz=self.market_tz).time()
+            < MARKET_OPEN
+        ]
+        if not premarket_bars:
+            return None
+        return min(bar.low for bar in premarket_bars)
+
     def _premarket_volume_ratio(self, state: SymbolState) -> float:
         return premarket_volume_ratio(state)
 
@@ -320,6 +467,25 @@ class GapAndGoStrategy(Strategy):
             if current.date() < session_date and current.time() >= MARKET_OPEN:
                 previous_close = bar.close
         return previous_close
+
+    @staticmethod
+    def _recent_swing_low(bars, lookback: int) -> float | None:
+        """Find swing low pivot in last N bars (excluding current bar)."""
+        if lookback < 1 or len(bars) < lookback + 1:
+            return None
+        search = bars[-(lookback + 1) : -1]
+        if not search:
+            return None
+        if len(search) < 3:
+            return min(b.low for b in search)
+        # Find pivot: bar whose low <= both neighbors
+        for index in range(1, len(search) - 1):
+            previous_bar = search[index - 1]
+            current = search[index]
+            next_bar = search[index + 1]
+            if current.low <= previous_bar.low and current.low <= next_bar.low:
+                return current.low
+        return min(b.low for b in search)
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0
