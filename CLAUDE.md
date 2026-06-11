@@ -273,6 +273,22 @@ Optional runtime expansion: subscribes to Alpaca news feed, dynamically adds sym
 - **Paper mode guard**: `scripts/run_paper.sh` refuses to run unless `EXECUTION_MODE=alpaca_paper`.
 - **No shell exports**: `run_paper.sh` unsets `SYMBOLS` and `STRATEGIES` to prevent stale exports; configure in files only.
 
+## Liquidity Scalper Threshold Warning
+
+**CRITICAL**: Default `liquidity_scalper` runtime thresholds are **institutional-level** ($3M bar volume, $30M session volume). These will reject all symbols except SPY/QQQ/AAPL level liquidity.
+
+**For paper/retail trading**, override in `profiles/paper.env`:
+```bash
+LIQUIDITY_SCALPER_MIN_BAR_DOLLAR_VOLUME=250000        # Down from $3M
+LIQUIDITY_SCALPER_MIN_SESSION_DOLLAR_VOLUME=5000000   # Down from $30M
+LIQUIDITY_SCALPER_MIN_RANGE_PCT=0.012                 # Down from 1.5%
+LIQUIDITY_SCALPER_MAX_SPREAD_BPS=20                   # Up from 12 bps
+LIQUIDITY_SCALPER_MIN_TAPE_DOLLAR_VOLUME=50000        # Down from $100K
+LIQUIDITY_SCALPER_MIN_TRADE_DOLLAR_VOLUME=5000        # Down from $10K
+```
+
+Without these overrides, the strategy will generate **zero trades** because selector thresholds ($50K) are 600x lower than runtime thresholds ($30M).
+
 ## Log Files
 
 - **`logs/trader.log`**: Rotating log with INFO console output and DEBUG file diagnostics
