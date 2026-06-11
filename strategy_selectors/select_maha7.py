@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from ai_client import request_json_response
 from config import Settings, load_settings
+from strategy_selectors.cli import selector_argument_parser
 from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
 from models import Bar, Quote
@@ -485,7 +486,7 @@ def write_plan(plan: dict, path: Path) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Rank Maha7 pullback reclaim candidates from the liquid universe.")
+    parser = selector_argument_parser(description="Rank Maha7 pullback reclaim candidates from the liquid universe.")
     parser.add_argument("--universe", type=Path, default=DEFAULT_UNIVERSE_FILE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--top", type=int, default=12)

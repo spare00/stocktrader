@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from ai_client import request_json_response
 from config import Settings, load_settings
+from strategy_selectors.cli import selector_argument_parser
 from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
 from models import Bar
@@ -536,7 +537,7 @@ def validated_macd_selection(plan: dict[str, Any], ranked: list[dict[str, Any]],
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build macd_early_impulse plan from daily close MACD reclaim candidates.")
+    parser = selector_argument_parser(description="Build macd_early_impulse plan from daily close MACD reclaim candidates.")
     parser.add_argument(
         "--universe-file",
         type=Path,

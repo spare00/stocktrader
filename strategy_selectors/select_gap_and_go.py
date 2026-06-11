@@ -12,11 +12,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ai_client import request_json_response
-from alpaca.data.timeframe import TimeFrame
-
-from alpaca_client import get_bars_between, get_latest_quotes, make_clients
 from candle import SymbolState
 from config import Settings, load_settings
+from strategy_selectors.cli import selector_argument_parser
 from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
 from opening_plan import default_plan_file_for_strategy
@@ -548,6 +546,10 @@ def load_states(
     symbols: list[str],
     now: datetime | None = None,
 ) -> tuple[dict[str, SymbolState], dict[str, float]]:
+    from alpaca.data.timeframe import TimeFrame
+
+    from alpaca_client import get_bars_between, get_latest_quotes, make_clients
+
     clients = make_clients(settings)
     now = now.astimezone(MARKET_TZ) if now else datetime.now(tz=MARKET_TZ)
     previous_start = datetime.combine((now - timedelta(days=5)).date(), time.min, tzinfo=MARKET_TZ)
@@ -579,7 +581,7 @@ def load_states(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = selector_argument_parser(
         description="Rank pre-market gap-and-go candidates from the current universe."
     )
     parser.add_argument("--symbols", default="", help="Comma-separated symbols. Overrides --universe-file when set.")

@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from ai_client import request_json_response
 from config import Settings, load_settings
+from strategy_selectors.cli import selector_argument_parser
 from env_vars import format_symbols_env_line
 from models import Bar, Quote
 from opening_plan import default_plan_file_for_strategy
@@ -670,7 +671,7 @@ def maybe_apply_ai_selection(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = selector_argument_parser(
         description=(
             "Pre-market REST screener for liquidity_scalper. "
             "Ranks liquid names using prior regular sessions, today's premarket bars, "

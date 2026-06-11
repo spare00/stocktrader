@@ -16,6 +16,38 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from strategy_selectors.cli import help_requested, print_help_and_exit, selector_argument_parser
+
+DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
+DEFAULT_DAILY_LOOKBACK_DAYS = 140
+
+
+def build_parser() -> argparse.ArgumentParser:
+    from opening_plan import default_plan_file_for_strategy
+
+    parser = selector_argument_parser(description="Build breakout_power plan from daily BreakOut Power candidates.")
+    parser.add_argument(
+        "--universe-file",
+        type=Path,
+        default=DEFAULT_UNIVERSE_FILE,
+        help="Universe file (default data/opening_universe.txt when present).",
+    )
+    parser.add_argument("--symbols", default="", help="Comma-separated symbols; overrides universe file.")
+    parser.add_argument("--top", type=int, default=12, help="Max symbols to include.")
+    parser.add_argument("--daily-lookback-days", type=int, default=DEFAULT_DAILY_LOOKBACK_DAYS)
+    parser.add_argument(
+        "--plan-output",
+        type=Path,
+        default=default_plan_file_for_strategy("breakout_power"),
+        help="Output JSON path (default data/breakout_power_plan.json).",
+    )
+    parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
+    return parser
+
+
+if __name__ == "__main__" and help_requested():
+    print_help_and_exit(build_parser)
+
 from ai_client import request_json_response
 from config import Settings, load_settings
 from env_vars import format_symbols_env_line
@@ -28,10 +60,7 @@ from strategies.breakout_power import (
     recent_breakout_power_cross,
 )
 
-
-DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("breakout_power")
-DEFAULT_DAILY_LOOKBACK_DAYS = 140
 MIN_DAILY_BAR_COUNT = 45
 DAILY_CROSS_LOOKBACK = 5
 DAILY_GREEN_THRESHOLD = 65.0
@@ -533,24 +562,7 @@ def validated_breakout_power_selection(plan: dict[str, Any], ranked: list[dict[s
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build breakout_power plan from daily BreakOut Power candidates.")
-    parser.add_argument(
-        "--universe-file",
-        type=Path,
-        default=DEFAULT_UNIVERSE_FILE,
-        help="Universe file (default data/opening_universe.txt when present).",
-    )
-    parser.add_argument("--symbols", default="", help="Comma-separated symbols; overrides universe file.")
-    parser.add_argument("--top", type=int, default=12, help="Max symbols to include.")
-    parser.add_argument("--daily-lookback-days", type=int, default=DEFAULT_DAILY_LOOKBACK_DAYS)
-    parser.add_argument(
-        "--plan-output",
-        type=Path,
-        default=DEFAULT_PLAN_FILE,
-        help="Output JSON path (default data/breakout_power_plan.json).",
-    )
-    parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
-    args = parser.parse_args()
+    args = build_parser().parse_args()
 
     symbols = load_universe(args.universe_file, args.symbols)
     settings = _selector_settings()

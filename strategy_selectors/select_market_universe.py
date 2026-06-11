@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import Settings, load_settings
+from strategy_selectors.cli import selector_argument_parser
 from env_vars import format_symbols_env_line
 from models import Bar, Quote
 from strategy_selectors.select_opening_impulse import usable_quote
@@ -769,7 +770,7 @@ def build_universe(args: argparse.Namespace) -> dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = selector_argument_parser(
         description=(
             "REST-only broad market universe builder. Creates a liquid, tradable boundary pool "
             "with established or early-recovery daily uptrend structure for downstream strategy selectors."

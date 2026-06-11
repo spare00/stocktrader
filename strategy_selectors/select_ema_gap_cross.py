@@ -17,6 +17,45 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from strategy_selectors.cli import help_requested, print_help_and_exit, selector_argument_parser
+
+DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
+DEFAULT_DAILY_LOOKBACK_DAYS = 120
+DAILY_CROSS_LOOKBACK = 10
+
+
+def build_parser() -> argparse.ArgumentParser:
+    from opening_plan import default_plan_file_for_strategy
+
+    parser = selector_argument_parser(description="Build ema_gap_cross plan from daily EMA golden-cross candidates.")
+    parser.add_argument(
+        "--universe-file",
+        type=Path,
+        default=DEFAULT_UNIVERSE_FILE,
+        help="Universe file (default data/opening_universe.txt when present).",
+    )
+    parser.add_argument("--symbols", default="", help="Comma-separated symbols; overrides universe file.")
+    parser.add_argument("--top", type=int, default=12, help="Max symbols to include.")
+    parser.add_argument(
+        "--cross-lookback",
+        type=int,
+        default=DAILY_CROSS_LOOKBACK,
+        help="Golden-cross lookback in trading days (default 10).",
+    )
+    parser.add_argument("--daily-lookback-days", type=int, default=DEFAULT_DAILY_LOOKBACK_DAYS)
+    parser.add_argument(
+        "--plan-output",
+        type=Path,
+        default=default_plan_file_for_strategy("ema_gap_cross"),
+        help="Output JSON path (default data/ema_gap_cross_plan.json).",
+    )
+    parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
+    return parser
+
+
+if __name__ == "__main__" and help_requested():
+    print_help_and_exit(build_parser)
+
 from ai_client import request_json_response
 from config import Settings, load_settings
 from env_vars import format_symbols_env_line
@@ -26,12 +65,8 @@ from opening_plan import default_plan_file_for_strategy
 from strategies.ema_gap_cross import recent_ema_cross_above
 from strategies.macd_early_impulse import _ema_series
 
-
-DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_PLAN_FILE = default_plan_file_for_strategy("ema_gap_cross")
-DEFAULT_DAILY_LOOKBACK_DAYS = 120
 MIN_DAILY_BAR_COUNT = 30
-DAILY_CROSS_LOOKBACK = 10
 DAILY_EMA_FAST = 5
 DAILY_EMA_MID = 10
 DAILY_EMA_SLOW = 20
@@ -599,30 +634,7 @@ def validated_ema_gap_cross_selection(plan: dict[str, Any], ranked: list[dict[st
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build ema_gap_cross plan from daily EMA golden-cross candidates.")
-    parser.add_argument(
-        "--universe-file",
-        type=Path,
-        default=DEFAULT_UNIVERSE_FILE,
-        help="Universe file (default data/opening_universe.txt when present).",
-    )
-    parser.add_argument("--symbols", default="", help="Comma-separated symbols; overrides universe file.")
-    parser.add_argument("--top", type=int, default=12, help="Max symbols to include.")
-    parser.add_argument(
-        "--cross-lookback",
-        type=int,
-        default=DAILY_CROSS_LOOKBACK,
-        help="Golden-cross lookback in trading days (default 10).",
-    )
-    parser.add_argument("--daily-lookback-days", type=int, default=DEFAULT_DAILY_LOOKBACK_DAYS)
-    parser.add_argument(
-        "--plan-output",
-        type=Path,
-        default=DEFAULT_PLAN_FILE,
-        help="Output JSON path (default data/ema_gap_cross_plan.json).",
-    )
-    parser.add_argument("--use-ai", action="store_true", help="Use OpenAI to refine the final ranked symbol list.")
-    args = parser.parse_args()
+    args = build_parser().parse_args()
 
     symbols = load_universe(args.universe_file, args.symbols)
     settings = _selector_settings()
