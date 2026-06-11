@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 import logging
-from statistics import mean
+from statistics import mean, median
 from typing import Any, ClassVar
 
 from candle import SymbolState
@@ -18,6 +18,19 @@ MARKET_OPEN = time(9, 30)
 
 
 class Maha7Strategy(Strategy):
+    """MA7/MA20 pullback/continuation strategy.
+
+    Entry: MA7 > MA20 (rising) for min 3 bars, price > MA7, then either:
+    - Pullback mode: price within 0.3% of MA7, reclaims previous high
+    - Continuation mode: strong bull bar closing near high, volume ≥1.35x
+
+    Quality filters: chop detection (tight MA spacing + compressed range),
+    min 30m range, higher-low structure, chase prevention.
+
+    Exit: -1R stop; partial at 0.5R; target at 2R (optional); runner pullback
+    1.2% from peak; MA7 confirmed breakdown (2 bars below MA7 + slope ≤ 0).
+    Breakeven stop after partial (if enabled).
+    """
     name = "maha7"
     env_specs: ClassVar[tuple[EnvSpec, ...]] = (
         ("maha7_start_minute", "MAHA7_START_MINUTE", int_env, 30),
@@ -89,6 +102,7 @@ class Maha7Strategy(Strategy):
         ("maha7_recent_high_lookback", "MAHA7_RECENT_HIGH_LOOKBACK", int_env, 20),
         ("maha7_momentum_green_bars", "MAHA7_MOMENTUM_GREEN_BARS", int_env, 2),
         ("maha7_disable_ma7_exit", "MAHA7_DISABLE_MA7_EXIT", bool_env, False),
+        ("maha7_volume_use_median", "MAHA7_VOLUME_USE_MEDIAN", bool_env, True),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.maha7",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_maha7.py --top 12"
@@ -143,6 +157,7 @@ class Maha7Strategy(Strategy):
             "recent_high_lookback": s.maha7_recent_high_lookback,
             "momentum_green_bars": s.maha7_momentum_green_bars,
             "disable_ma7_exit": s.maha7_disable_ma7_exit,
+            "volume_use_median": s.maha7_volume_use_median,
         }
 
     def __init__(self, settings: Settings):
@@ -164,17 +179,22 @@ class Maha7Strategy(Strategy):
             return self._reject(state, "history", "insufficient bar history")
 
         closes = [bar.close for bar in bars]
-        ma7 = self._sma(closes, 7)
-        ma20 = self._sma(closes, 20)
-        prev_ma7 = self._sma(closes[:-1], 7)
-        prev_ma20 = self._sma(closes[:-1], 20)
-        if None in {ma7, ma20, prev_ma7, prev_ma20}:
+
+        # Calculate MA series for point-in-time comparisons (not subset recalculation)
+        ma7_series = self._sma_series(closes, 7)
+        ma20_series = self._sma_series(closes, 20)
+        if ma7_series is None or ma20_series is None or len(ma7_series) < 2 or len(ma20_series) < 2:
             return self._reject(state, "history", "insufficient moving-average history")
+
+        ma7 = ma7_series[-1]
+        ma20 = ma20_series[-1]
+        prev_ma7 = ma7_series[-2]
+        prev_ma20 = ma20_series[-2]
 
         latest = bars[-1]
         entry_price = latest.close
 
-        ma7_slope_pct = (ma7 - prev_ma7) / prev_ma7 if prev_ma7 else 0.0
+        ma7_slope_pct = (ma7 - prev_ma7) / prev_ma7 if prev_ma7 > 0 else 0.0
         if ma7 <= ma20:
             return self._reject(state, "trend", "trend not aligned (MA7 not above MA20)")
         if ma7_slope_pct <= 0:
@@ -215,12 +235,16 @@ class Maha7Strategy(Strategy):
             return self._reject(state, "risk", "R too large (chasing)")
 
         pullback_max = self.settings.maha7_pullback_ma7_distance_pct
-        distance_to_ma7_pct = abs(entry_price - ma7) / ma7 if ma7 else float("inf")
+        distance_to_ma7_pct = abs(entry_price - ma7) / ma7 if ma7 > 0 else float("inf")
         pullback_ok = distance_to_ma7_pct <= pullback_max
 
+        # Volume baseline: median (robust to outliers) or mean (sensitive to spikes)
         base_vols = [bar.volume for bar in bars[-4:-1] if bar.volume > 0]
-        vol_denom = mean(base_vols) if base_vols else (latest.volume or 1)
-        volume_ratio = latest.volume / vol_denom if vol_denom else 1.0
+        if self.settings.maha7_volume_use_median:
+            vol_denom = median(base_vols) if base_vols else (latest.volume or 1)
+        else:
+            vol_denom = mean(base_vols) if base_vols else (latest.volume or 1)
+        volume_ratio = latest.volume / vol_denom if vol_denom > 0 else 1.0
         cvol = self.settings.maha7_continuation_volume_ratio
         continuation_ok = (
             self.settings.maha7_allow_continuation
@@ -243,7 +267,11 @@ class Maha7Strategy(Strategy):
         if recent_high > 0:
             distance_from_recent_high = (recent_high - entry_price) / recent_high
             if distance_from_recent_high < self.settings.maha7_max_chase_pct:
-                return self._reject(state, "chase", "too close to high (late chase)")
+                return self._reject(
+                    state,
+                    "chase",
+                    f"too close to recent high ({distance_from_recent_high:.2%} < {self.settings.maha7_max_chase_pct:.2%})",
+                )
 
         n_green = max(1, self.settings.maha7_momentum_green_bars)
         if not self._last_n_green_bars(bars, n_green):
@@ -330,10 +358,9 @@ class Maha7Strategy(Strategy):
             return None
 
         if not skip_ma7_exit:
-            # Sustained closes below SMA7 + MA7 slope <= 0 (no single-bar MA7 cross).
+            # Sustained closes below point-in-time SMA7 + MA7 slope <= 0 (no single-bar whipsaw).
             breakdown_n = max(1, self.settings.maha7_runner_confirm_break_bars)
-            ma7 = self._sma(closes, 7) if len(closes) >= 7 else None
-            if ma7 is not None and self._last_n_bars_below_ma7(bars, breakdown_n) and self._ma7_slope_not_positive(
+            if len(closes) >= 8 and self._last_n_bars_below_ma7(bars, breakdown_n) and self._ma7_slope_not_positive(
                 closes
             ):
                 return ExitDecision("MA7 confirmed breakdown")
@@ -399,79 +426,17 @@ class Maha7Strategy(Strategy):
         lows = [bar.low for bar in bars[-6:]]
         return lows[-1] > lows[-3] and lows[-2] >= lows[-4] * 0.998
 
-    def _continuation_entry_ready(self, bars, closes: list[float], ma7: float) -> bool:
-        if len(bars) < 12 or len(closes) < 12:
-            return False
-        if not self._higher_low_structure(bars):
-            return False
-        recent = bars[-12:-1]
-        peak = max(b.high for b in recent)
-        if peak <= 0:
-            return False
-        depth = (peak - bars[-1].close) / peak
-        lo = self.settings.maha7_continuation_pullback_min_pct
-        hi = self.settings.maha7_continuation_pullback_max_pct
-        if not (lo <= depth <= hi):
-            return False
-        b1, b0 = bars[-2], bars[-1]
-        if b0.close <= b1.close:
-            return False
-        return b0.close > ma7
 
-    def _early_trend_pullback_ready(
-        self, bars, closes: list[float], period: int, bars_since_crossover: int | None
-    ) -> bool:
-        if bars_since_crossover is None:
-            return False
-        mx = self.settings.maha7_early_trend_max_bars_since_cross
-        if not (self.settings.maha7_trend_min_bars <= bars_since_crossover <= mx):
-            return False
-        if not self._recent_pullback_to_ma7(bars):
-            return False
-        if not self._recent_rsi_pullback(closes, period):
-            return False
-        rsi_min_bars = self.settings.maha7_rsi_above_min_bars
-        if not self._rsi_above_duration(closes, period, 55, rsi_min_bars):
-            return False
-        return True
-
-    def _reclaim_entry_ready(
-        self, bars, closes: list[float], ma7: float, period: int, latest_rsi: float, previous_rsi: float
-    ) -> bool:
-        if not self._recent_pullback_to_ma7(bars):
-            return False
-        if not self._recent_rsi_pullback(closes, period):
-            return False
-        rsi_min_bars = self.settings.maha7_rsi_above_min_bars
-        if not self._rsi_above_duration(closes, period, 55, rsi_min_bars):
-            return False
-        buf = self.settings.maha7_reclaim_buffer_pct
-        if self._ma7_price_reclaim(closes, buf):
-            return True
-        return self._recent_rsi_cross_above(closes, period, 55, rsi_min_bars + 1)
-
-    def _ma7_price_reclaim(self, closes: list[float], buffer_pct: float) -> bool:
-        if len(closes) < 8:
-            return False
-        ma7_now = self._sma(closes, 7)
-        ma7_prev = self._sma(closes[:-1], 7)
-        if ma7_now is None or ma7_prev is None:
-            return False
-        last = closes[-1]
-        prev = closes[-2]
-        threshold_now = ma7_now * (1 + buffer_pct)
-        threshold_prev = ma7_prev * (1 + buffer_pct)
-        return prev <= threshold_prev and last > threshold_now
 
     def _ma7_slope_not_positive(self, closes: list[float]) -> bool:
-        """True when MA7 slope <= 0 (flat or down): SMA7(now) <= SMA7(previous bar)."""
-        if len(closes) < 8:
+        """True when MA7 slope <= 0 (flat or down): SMA7(now) <= SMA7(previous bar).
+
+        Uses point-in-time MA7 series, not subset recalculation.
+        """
+        ma7_series = self._sma_series(closes, 7)
+        if ma7_series is None or len(ma7_series) < 2:
             return False
-        ma7_now = self._sma(closes, 7)
-        ma7_prev = self._sma(closes[:-1], 7)
-        if ma7_now is None or ma7_prev is None:
-            return False
-        return ma7_now <= ma7_prev
+        return ma7_series[-1] <= ma7_series[-2]
 
     def _last_n_bars_below_ma7(self, bars, n: int) -> bool:
         """Each of the last ``n`` completed bars closes below that bar's SMA7 (point-in-time)."""
@@ -487,24 +452,30 @@ class Maha7Strategy(Strategy):
 
     @staticmethod
     def _sma(values: list[float], window: int) -> float | None:
+        """Calculate single SMA value (last window only)."""
         if len(values) < window:
             return None
         return mean(values[-window:])
 
     @staticmethod
-    def _rsi(closes: list[float], period: int) -> float | None:
-        if len(closes) <= period:
+    def _sma_series(values: list[float], window: int) -> list[float] | None:
+        """Calculate full SMA series for all values (point-in-time calculation).
+
+        Each SMA value is calculated using only the data available at that bar,
+        preventing lookahead bias and enabling correct historical comparisons.
+        """
+        if len(values) < window:
             return None
-        changes = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
-        recent = changes[-period:]
-        gains = [max(change, 0.0) for change in recent]
-        losses = [abs(min(change, 0.0)) for change in recent]
-        average_gain = mean(gains)
-        average_loss = mean(losses)
-        if average_loss == 0:
-            return 100.0 if average_gain > 0 else 50.0
-        relative_strength = average_gain / average_loss
-        return 100 - (100 / (1 + relative_strength))
+        series = []
+        for i in range(len(values)):
+            if i + 1 < window:
+                # Partial window for early bars (use all available data)
+                series.append(mean(values[:i + 1]))
+            else:
+                # Full window
+                series.append(mean(values[i + 1 - window : i + 1]))
+        return series
+
 
     @staticmethod
     def _session_vwap(bars) -> float:
@@ -513,30 +484,25 @@ class Maha7Strategy(Strategy):
             return bars[-1].vwap
         return sum(bar.vwap * bar.volume for bar in bars if bar.volume > 0) / volume
 
-    @staticmethod
-    def _strong_uptrend(bars, closes: list[float], ma7: float, prev_ma7: float, last_close: float) -> bool:
-        if len(bars) < 3:
-            return False
-        highs = [bar.high for bar in bars[-6:]] if len(bars) >= 6 else [bar.high for bar in bars]
-        higher_high = highs[-1] > highs[-2]
-        ma7_slope_positive = prev_ma7 > 0 and ma7 > prev_ma7
-        grind = last_close > ma7 and ma7_slope_positive
-        return higher_high or grind
 
     def _bars_since_ma7_cross_above_ma20(self, closes: list[float]) -> int | None:
+        """Count bars since MA7 crossed above MA20 (optimized with series calculation)."""
         if len(closes) < 20:
             return None
 
-        above_flags = []
-        for end_index in range(20, len(closes) + 1):
-            prefix = closes[:end_index]
-            ma7 = self._sma(prefix, 7)
-            ma20 = self._sma(prefix, 20)
-            above_flags.append(bool(ma7 is not None and ma20 is not None and ma7 > ma20))
+        # Calculate full series once instead of recalculating for each bar
+        ma7_series = self._sma_series(closes, 7)
+        ma20_series = self._sma_series(closes, 20)
+        if ma7_series is None or ma20_series is None:
+            return None
+
+        # Compare MA7 > MA20 for bars where both are available (from bar 20 onward)
+        above_flags = [ma7 > ma20 for ma7, ma20 in zip(ma7_series[20:], ma20_series[20:])]
 
         if not above_flags or not above_flags[-1]:
             return None
 
+        # Count consecutive bars where MA7 > MA20
         streak = 0
         for is_above in reversed(above_flags):
             if not is_above:
@@ -545,73 +511,7 @@ class Maha7Strategy(Strategy):
 
         return max(0, streak - 1)
 
-    def _recent_pullback_to_ma7(self, bars) -> bool:
-        distance_limit = self.settings.maha7_pullback_ma7_distance_pct
-        closes = [bar.close for bar in bars]
-        start = max(7, len(bars) - 8)
-        for index in range(start, len(bars) - 1):
-            bar = bars[index]
-            ma7 = self._sma(closes[: index + 1], 7)
-            distance = abs(bar.close - ma7) / ma7 if ma7 else float("inf")
-            if distance < distance_limit:
-                return True
-        return False
 
-    def _rsi_consolidated(self, closes: list[float], period: int) -> bool:
-        candle_count = self.settings.maha7_consolidation_candles
-        if len(closes) < period + candle_count + 1:
-            return False
-        recent_rsis = [self._rsi(closes[:index], period) for index in range(len(closes) - candle_count, len(closes) + 1)]
-        valid_rsis = [value for value in recent_rsis if value is not None]
-        return len(valid_rsis) > candle_count and all(45 <= value <= 55 for value in valid_rsis)
-
-    def _recent_rsi_pullback(self, closes: list[float], period: int) -> bool:
-        if len(closes) < period + 6:
-            return False
-        recent_rsis = [self._rsi(closes[:index], period) for index in range(len(closes) - 5, len(closes))]
-        valid_rsis = [value for value in recent_rsis if value is not None]
-        return any(45 < value < 55 for value in valid_rsis)
-
-    def _rsi_above_duration(self, closes: list[float], period: int, threshold: float, min_bars: int) -> bool:
-        count = 0
-        for index in range(len(closes), 0, -1):
-            rsi = self._rsi(closes[:index], period)
-            if rsi is None or rsi < threshold:
-                break
-            count += 1
-        return count >= min_bars
-
-    def _recent_rsi_cross_above(self, closes: list[float], period: int, threshold: float, lookback_bars: int) -> bool:
-        start = max(period + 1, len(closes) - lookback_bars)
-        for index in range(start, len(closes) + 1):
-            previous = self._rsi(closes[: index - 1], period)
-            current = self._rsi(closes[:index], period)
-            if previous is not None and current is not None and previous <= threshold < current:
-                return True
-        return False
-
-    def _volume_confirmed(self, bars) -> bool:
-        if len(bars) < 10:
-            return False
-        latest = bars[-1]
-        volumes = [bar.volume for bar in bars[-10:] if bar.volume > 0]
-        if not volumes:
-            return False
-        average_volume = mean(volumes)
-        return latest.volume >= average_volume * self.settings.maha7_volume_min_ratio
-
-    @staticmethod
-    def _previous_swing_low(bars) -> float | None:
-        if len(bars) < 5:
-            return None
-        search = bars[-8:-1] if len(bars) >= 8 else bars[:-1]
-        for index in range(len(search) - 2, 0, -1):
-            previous_bar = search[index - 1]
-            current = search[index]
-            next_bar = search[index + 1]
-            if current.low <= previous_bar.low and current.low <= next_bar.low:
-                return current.low
-        return min(bar.low for bar in search) if search else None
 
     @staticmethod
     def _recent_swing_low(bars, lookback: int) -> float | None:

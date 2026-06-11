@@ -296,6 +296,7 @@ class Settings:
     maha7_recent_high_lookback: int = 20
     maha7_momentum_green_bars: int = 2
     maha7_disable_ma7_exit: bool = False
+    maha7_volume_use_median: bool = True
 
     steady_intraday_start_minute: int = 15
     steady_intraday_end_minute: int = 330
