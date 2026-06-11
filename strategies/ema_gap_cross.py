@@ -169,7 +169,24 @@ def ema20_first_decline_from_peak(ema20: list[float], peak: float | None) -> tup
 
 
 class EmaGapCrossStrategy(Strategy):
-    """EMA5/EMA10/EMA20: golden cross entry, EMA20-peak partial, death cross remainder."""
+    """EMA5/EMA10/EMA20: golden cross entry, EMA20-peak partial, death cross remainder.
+
+    Entry Logic:
+    - EMA5 crosses above EMA20 after staying at/below for N bars (egc_entry_below_bars, default 2)
+    - Requires bullish EMA5 > EMA10 > EMA20 stack (if egc_require_ema_stack=True)
+    - Multiple quality filters: VWAP, spread, EMA20 rising, recent death cross blocker, etc.
+
+    Exit Logic:
+    - Partial exit (default 50%) on first EMA20 decline from peak after grace period
+    - Optional grace-period profit-taking if price exceeds egc_grace_profit_pct (bypasses grace)
+    - Final exit when EMA5 stays below EMA20 for N bars (egc_death_cross_confirm_bars, default 2)
+    - Stop loss: lesser of swing low or percentage-based stop
+    - Note: Stop loss fires immediately, not delayed by min_hold_seconds
+
+    Volume Filter:
+    - Optional cross-bar volume requirement (egc_min_cross_bar_volume_ratio, default 0 = disabled)
+    - Compares cross bar volume to recent average (egc_cross_bar_volume_lookback, default 20)
+    """
 
     name = "ema_gap_cross"
     requires_plan: ClassVar[bool] = False
@@ -183,6 +200,7 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_partial_size", "EGC_PARTIAL_SIZE", float_env, 0.5),
         ("egc_min_hold_seconds", "EGC_MIN_HOLD_SECONDS", int_env, 180),
         ("egc_partial_grace_bars", "EGC_PARTIAL_GRACE_BARS", int_env, 3),
+        ("egc_grace_profit_pct", "EGC_GRACE_PROFIT_PCT", float_env, 0.006),
         ("egc_entry_below_bars", "EGC_ENTRY_BELOW_BARS", int_env, 2),
         ("egc_cross_lookback_bars", "EGC_CROSS_LOOKBACK_BARS", int_env, 3),
         ("egc_require_ema20_rising", "EGC_REQUIRE_EMA20_RISING", bool_env, True),
@@ -192,7 +210,7 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_vwap_buffer_pct", "EGC_VWAP_BUFFER_PCT", float_env, 0.0),
         ("egc_require_bullish_cross_bar", "EGC_REQUIRE_BULLISH_CROSS_BAR", bool_env, True),
         ("egc_block_open_minutes", "EGC_BLOCK_OPEN_MINUTES", int_env, 0),
-        ("egc_max_bars_since_cross", "EGC_MAX_BARS_SINCE_CROSS", int_env, 1),
+        ("egc_max_bars_since_cross", "EGC_MAX_BARS_SINCE_CROSS", int_env, 2),
         ("egc_stale_cross_min_gap_pct", "EGC_STALE_CROSS_MIN_GAP_PCT", float_env, 0.0008),
         ("egc_require_bullish_entry_bar", "EGC_REQUIRE_BULLISH_ENTRY_BAR", bool_env, True),
         ("egc_require_ema5_rising", "EGC_REQUIRE_EMA5_RISING", bool_env, True),
@@ -206,6 +224,8 @@ class EmaGapCrossStrategy(Strategy):
         ("egc_symbol_loss_lock_count", "EGC_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
         ("egc_respect_consecutive_loss_limits", "EGC_RESPECT_CONSECUTIVE_LOSS_LIMITS", bool_env, True),
         ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", int_env, 0),
+        ("egc_min_cross_bar_volume_ratio", "EGC_MIN_CROSS_BAR_VOLUME_RATIO", float_env, 0.0),
+        ("egc_cross_bar_volume_lookback", "EGC_CROSS_BAR_VOLUME_LOOKBACK", int_env, 20),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.ema_gap_cross",)
 
@@ -222,6 +242,7 @@ class EmaGapCrossStrategy(Strategy):
             "partial_size": settings.egc_partial_size,
             "min_hold_seconds": settings.egc_min_hold_seconds,
             "partial_grace_bars": settings.egc_partial_grace_bars,
+            "grace_profit_pct": settings.egc_grace_profit_pct,
             "entry_below_bars": settings.egc_entry_below_bars,
             "cross_lookback_bars": settings.egc_cross_lookback_bars,
             "require_ema20_rising": bool(settings.egc_require_ema20_rising),
@@ -245,6 +266,8 @@ class EmaGapCrossStrategy(Strategy):
             "symbol_loss_lock_count": settings.egc_symbol_loss_lock_count,
             "respect_consecutive_loss_limits": bool(settings.egc_respect_consecutive_loss_limits),
             "max_hold_seconds": settings.egc_max_hold_seconds,
+            "min_cross_bar_volume_ratio": settings.egc_min_cross_bar_volume_ratio,
+            "cross_bar_volume_lookback": settings.egc_cross_bar_volume_lookback,
         }
 
     def __init__(self, settings: Settings):
@@ -370,6 +393,7 @@ class EmaGapCrossStrategy(Strategy):
         return max(0, self.settings.egc_min_hold_seconds)
 
     def delay_stop_loss_until_exit_activation(self, position) -> bool:
+        """Stop loss fires immediately; does not wait for min_hold_seconds."""
         return False
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
@@ -392,34 +416,51 @@ class EmaGapCrossStrategy(Strategy):
 
         event_ms = state.last_event_ms or (quote.timestamp_ms if quote else position.entry_ms)
         pnl_pct = (price - position.entry_price) / position.entry_price
+
+        # Stop loss fires immediately, not delayed by min_hold_seconds
         if pnl_pct <= -self.settings.egc_stop_loss_pct:
             self._last_stop_ms[symbol] = int(event_ms)
             self._clear_position_state(symbol)
             return ExitDecision("stop loss")
 
         age_seconds = (event_ms - position.entry_ms) / 1000
-        if age_seconds < self.settings.egc_min_hold_seconds:
-            return None
 
-        confirm_bars = max(1, self.settings.egc_death_cross_confirm_bars)
-        if ema_fast_below_slow_for_bars(ema5, ema20, confirm_bars):
-            self._clear_position_state(symbol)
-            return ExitDecision(f"EMA5 below EMA20 for {confirm_bars} bars")
+        # Death cross exit (delayed by min_hold_seconds)
+        if age_seconds >= self.settings.egc_min_hold_seconds:
+            confirm_bars = max(1, self.settings.egc_death_cross_confirm_bars)
+            if ema_fast_below_slow_for_bars(ema5, ema20, confirm_bars):
+                self._clear_position_state(symbol)
+                return ExitDecision(f"EMA5 below EMA20 for {confirm_bars} bars")
 
+        # Partial exit logic (bar-aligned)
         if state.last_event_kind == "bar" and pos_state is not None:
             self._sync_position_bar_state(state, pos_state)
             grace_bars = max(0, self.settings.egc_partial_grace_bars)
-            if pos_state.bars_since_entry <= grace_bars:
-                return None
 
-            declined, updated_peak = ema20_first_decline_from_peak(ema20, pos_state.ema20_peak)
-            pos_state.ema20_peak = updated_peak
+            # Grace-period profit-taking: bypass grace if profit exceeds threshold
+            grace_profit_threshold = max(0.0, self.settings.egc_grace_profit_pct)
             if (
-                declined
+                pos_state.bars_since_entry <= grace_bars
+                and grace_profit_threshold > 0
+                and pnl_pct >= grace_profit_threshold
                 and not position.partial_exit_taken
                 and position.shares > 1
             ):
-                return self._partial_exit_decision(position, reason="EMA20 first decline from peak")
+                return self._partial_exit_decision(
+                    position,
+                    reason=f"grace profit-taking: {pnl_pct:.2%} >= {grace_profit_threshold:.2%}",
+                )
+
+            # Normal EMA20 peak-decline partial (after grace period)
+            if pos_state.bars_since_entry > grace_bars:
+                declined, updated_peak = ema20_first_decline_from_peak(ema20, pos_state.ema20_peak)
+                pos_state.ema20_peak = updated_peak
+                if (
+                    declined
+                    and not position.partial_exit_taken
+                    and position.shares > 1
+                ):
+                    return self._partial_exit_decision(position, reason="EMA20 first decline from peak")
 
         return None
 
@@ -610,10 +651,33 @@ class EmaGapCrossStrategy(Strategy):
                     ),
                 )
                 return True
+
+        # Volume filter on cross bar (optional, disabled by default)
+        min_volume_ratio = max(0.0, self.settings.egc_min_cross_bar_volume_ratio)
+        if min_volume_ratio > 0 and cross_index >= 0 and cross_index < len(indicator_bars):
+            cross_bar = indicator_bars[cross_index]
+            lookback = max(1, self.settings.egc_cross_bar_volume_lookback)
+            start_idx = max(0, cross_index - lookback)
+            recent_bars = indicator_bars[start_idx:cross_index]
+            if recent_bars:
+                avg_volume = sum(float(bar.volume) for bar in recent_bars) / len(recent_bars)
+                cross_volume = float(cross_bar.volume)
+                if avg_volume > 0 and cross_volume / avg_volume < min_volume_ratio:
+                    self._reject(
+                        state,
+                        "volume",
+                        f"cross bar volume {cross_volume:.0f} / avg {avg_volume:.0f} = "
+                        f"{cross_volume / avg_volume:.2f}x < {min_volume_ratio:.2f}x",
+                    )
+                    return True
+
         return False
 
     def _clear_position_state(self, symbol: str) -> None:
-        self._position_states.pop(symbol.strip().upper(), None)
+        """Clear position state and last signaled cross index to allow future re-entries."""
+        symbol_key = symbol.strip().upper()
+        self._position_states.pop(symbol_key, None)
+        self._last_signaled_cross_index.pop(symbol_key, None)
 
     def _within_entry_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None:

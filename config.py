@@ -529,8 +529,11 @@ class Settings:
     egc_vwap_buffer_pct: float = 0.0
     egc_require_bullish_cross_bar: bool = True
     egc_block_open_minutes: int = 0
-    egc_max_bars_since_cross: int = 1
+    egc_max_bars_since_cross: int = 2
     egc_stale_cross_min_gap_pct: float = 0.0008
+    egc_grace_profit_pct: float = 0.006
+    egc_min_cross_bar_volume_ratio: float = 0.0
+    egc_cross_bar_volume_lookback: int = 20
     egc_require_bullish_entry_bar: bool = True
     egc_require_ema5_rising: bool = True
     egc_post_stop_cooldown_seconds: int = 600
@@ -709,6 +712,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", _int_env, 900),
     ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", _int_env, 0),
+    ("egc_grace_profit_pct", "EGC_GRACE_PROFIT_PCT", _float_env, 0.006),
+    ("egc_min_cross_bar_volume_ratio", "EGC_MIN_CROSS_BAR_VOLUME_RATIO", _float_env, 0.0),
+    ("egc_cross_bar_volume_lookback", "EGC_CROSS_BAR_VOLUME_LOOKBACK", _int_env, 20),
     ("bp_consecutive_loss_pause_count", "BP_CONSECUTIVE_LOSS_PAUSE_COUNT", _optional_int_env, None),
     ("bp_consecutive_loss_pause_minutes", "BP_CONSECUTIVE_LOSS_PAUSE_MINUTES", _optional_int_env, None),
     ("bp_consecutive_loss_stop_count", "BP_CONSECUTIVE_LOSS_STOP_COUNT", _optional_int_env, None),
