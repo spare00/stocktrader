@@ -263,11 +263,23 @@ def score_recovery_scale_candidate(
 
 
 def main():
-    parser = selector_argument_parser(
-        "recovery_scale",
-        "Select symbols for recovery_scale strategy",
-        DEFAULT_UNIVERSE_FILE,
-        DEFAULT_OUTPUT_FILE,
+    parser = selector_argument_parser(description="Select symbols for recovery_scale strategy.")
+    parser.add_argument(
+        "--universe",
+        "--universe-file",
+        dest="universe",
+        type=Path,
+        default=DEFAULT_UNIVERSE_FILE,
+        help=f"File with comma/newline separated symbols. Defaults to {DEFAULT_UNIVERSE_FILE}.",
+    )
+    parser.add_argument("--top", type=int, default=8, help="Maximum number of ranked symbols to return.")
+    parser.add_argument(
+        "--output",
+        "--plan-output",
+        dest="output",
+        type=Path,
+        default=DEFAULT_OUTPUT_FILE,
+        help="Write the strategy plan that main.py can consume directly.",
     )
     args = parser.parse_args()
 
