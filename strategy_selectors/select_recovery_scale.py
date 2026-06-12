@@ -21,6 +21,7 @@ from opening_plan import default_plan_file_for_strategy
 
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_OUTPUT_FILE = default_plan_file_for_strategy("recovery_scale")
+DEFAULT_SELECTOR_MIN_DAILY_DOLLAR_VOLUME = 1_000_000.0
 MARKET_OPEN = time(9, 30)
 
 
@@ -120,14 +121,11 @@ def score_recovery_scale_candidate(
     min_liquidity: float,
 ) -> RecoveryScaleCandidate | None:
     """Score symbol for recovery_scale suitability."""
-    if not bars or len(bars) < 20:
-        return None
-
     if not daily_bars or len(daily_bars) < 60:
         return None
 
     valid_quote = usable_quote(quote)
-    price = valid_quote.mid if valid_quote else bars[-1].close
+    price = valid_quote.mid if valid_quote else (bars[-1].close if bars else daily_bars[-1].close)
     spread_bps = valid_quote.spread_bps if valid_quote else None
 
     # Price filter
@@ -138,11 +136,14 @@ def score_recovery_scale_candidate(
     if spread_bps is not None and spread_bps > max_spread_bps:
         return None
 
-    # Liquidity filter
-    recent_bars = bars[-20:]
-    dollar_volume = mean([bar.close * bar.volume for bar in recent_bars])
-    if dollar_volume < min_liquidity:
+    # Liquidity filter: use daily liquidity as the hard pre-session gate. Runtime
+    # still checks intraday liquidity before entries/adds.
+    avg_daily_volume = mean([bar.volume for bar in daily_bars[-20:]])
+    avg_daily_dollar_volume = mean([bar.close * bar.volume for bar in daily_bars[-20:]])
+    if avg_daily_dollar_volume < min_liquidity:
         return None
+    recent_bars = bars[-20:] if bars else []
+    dollar_volume = mean([bar.close * bar.volume for bar in recent_bars]) if recent_bars else avg_daily_dollar_volume / 390
 
     # Daily structure check
     daily_closes = [bar.close for bar in daily_bars]
@@ -161,26 +162,19 @@ def score_recovery_scale_candidate(
             trend_quality = "recovery"
         else:
             trend_quality = "downtrend"
-            return None  # Skip downtrends
 
     distance_from_ema60_pct = (price - ema60) / ema60
 
-    # Intraday decline check
-    intraday_bars = bars[-10:]
-    if not intraday_bars:
-        return None
+    # Intraday decline is a score bonus, not a hard selector gate. The live
+    # strategy waits for the actual scale-in decline before trading.
+    intraday_bars = bars[-10:] if bars else []
+    if intraday_bars:
+        recent_high = max(bar.high for bar in intraday_bars)
+        current_price = bars[-1].close
+        decline_pct = (recent_high - current_price) / recent_high if recent_high > 0 else 0.0
+    else:
+        decline_pct = 0.0
 
-    recent_high = max(bar.high for bar in intraday_bars)
-    recent_low = min(bar.low for bar in intraday_bars)
-    current_price = bars[-1].close
-
-    decline_pct = (recent_high - current_price) / recent_high if recent_high > 0 else 0.0
-
-    # Need some decline (1-10%)
-    if decline_pct < 0.01 or decline_pct > 0.10:
-        return None
-
-    # Check for bounce
     bounce_pct = 0.0
     for i in range(1, len(intraday_bars)):
         if intraday_bars[i].close > intraday_bars[i-1].close:
@@ -188,13 +182,10 @@ def score_recovery_scale_candidate(
             bounce_pct = max(bounce_pct, bounce)
 
     # Additional quality indicators
-    intraday_closes = [bar.close for bar in bars[-20:]]
+    intraday_closes = [bar.close for bar in bars[-20:]] if bars else []
     rsi = _rsi(intraday_closes)
-    atr = _atr(bars)
+    atr = _atr(bars) if bars else None
     atr_pct = (atr / price) if atr and price > 0 else None
-
-    # Average daily volume
-    avg_daily_volume = mean([bar.volume for bar in daily_bars[-20:]])
 
     # Score components
     score = 0.0
@@ -207,17 +198,23 @@ def score_recovery_scale_candidate(
     elif trend_quality == "recovery":
         score += 20.0
         quality_flags.append("recovery")
+    else:
+        score += 5.0
+        quality_flags.append("weak_daily_trend")
 
     # Score liquidity
-    liquidity_score = min(30.0, (dollar_volume / min_liquidity) * 10.0)
+    liquidity_score = min(30.0, (avg_daily_dollar_volume / min_liquidity) * 10.0)
     score += liquidity_score
 
-    # Score decline magnitude (prefer moderate declines)
+    # Score current decline magnitude when the selector runs during market hours.
     if 0.02 <= decline_pct <= 0.05:
         score += 20.0
         quality_flags.append("ideal_decline")
     elif 0.01 <= decline_pct <= 0.08:
         score += 10.0
+        quality_flags.append("active_decline")
+    else:
+        quality_flags.append("watch_for_decline")
 
     # Score bounce presence
     if bounce_pct >= 0.003:
@@ -273,6 +270,12 @@ def main():
         help=f"File with comma/newline separated symbols. Defaults to {DEFAULT_UNIVERSE_FILE}.",
     )
     parser.add_argument("--top", type=int, default=8, help="Maximum number of ranked symbols to return.")
+    parser.add_argument(
+        "--min-daily-dollar-volume",
+        type=float,
+        default=DEFAULT_SELECTOR_MIN_DAILY_DOLLAR_VOLUME,
+        help="Selector floor for average daily dollar volume. Runtime liquidity checks remain stricter.",
+    )
     parser.add_argument(
         "--output",
         "--plan-output",
@@ -332,7 +335,7 @@ def main():
             settings,
             min_price=settings.recovery_scale_min_price,
             max_spread_bps=settings.recovery_scale_max_spread_bps,
-            min_liquidity=settings.recovery_scale_min_liquidity_dollar_volume,
+            min_liquidity=args.min_daily_dollar_volume,
         )
 
         if candidate:
