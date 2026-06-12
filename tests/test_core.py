@@ -100,6 +100,7 @@ import strategy_selectors.select_ema_gap_cross as select_ema_gap_cross
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
+from strategies.recovery_scale import RecoveryScaleStrategy
 from strategies.spike import SpikeStrategy
 from strategies.steady_intraday import SteadyIntradayStrategy
 from strategies.stoch_macd_reversal import StochMACDReversalStrategy
@@ -3321,6 +3322,23 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(position.original_shares, 30)
         self.assertAlmostEqual(position.entry_price, (10 * 100.0 + 20 * 95.0) / 30)
         self.assertAlmostEqual(position.stop_price, 92.0)
+
+    def test_recovery_scale_helpers_accept_deque_bars(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            recovery_scale_min_liquidity_dollar_volume=1_000.0,
+        )
+        strategy = RecoveryScaleStrategy(settings)
+        state = SymbolState("AAPL")
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(20):
+            state.add_bar(bar("AAPL", 100.0 - index * 0.1, 1_000, base_ms + index * 60_000))
+
+        self.assertTrue(strategy._check_liquidity(state))
+        self.assertGreater(strategy._get_atr(state), 0.0)
+        self.assertIsInstance(strategy._get_rsi(state), float)
 
     def test_position_tracker_writes_trade_journal_entries(self):
         old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE

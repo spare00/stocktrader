@@ -419,10 +419,11 @@ class RecoveryScaleStrategy(Strategy):
 
     def _check_liquidity(self, state: SymbolState) -> bool:
         """Check minimum dollar volume liquidity."""
-        if len(state.bars) < 10:
+        bars = list(state.bars)
+        if len(bars) < 10:
             return False
 
-        recent_bars = state.bars[-10:]
+        recent_bars = bars[-10:]
         avg_dollar_volume = sum(bar.close * bar.volume for bar in recent_bars) / len(recent_bars)
         return avg_dollar_volume >= self.settings.recovery_scale_min_liquidity_dollar_volume
 
@@ -453,10 +454,11 @@ class RecoveryScaleStrategy(Strategy):
 
     def _check_intraday_decline(self, state: SymbolState) -> bool:
         """Check if there's a controlled intraday decline (not structural failure)."""
-        if len(state.bars) < 10:
+        bars = list(state.bars)
+        if len(bars) < 10:
             return False
 
-        recent_bars = state.bars[-self.settings.recovery_scale_max_decline_bars:]
+        recent_bars = bars[-self.settings.recovery_scale_max_decline_bars:]
         if not recent_bars:
             return False
 
@@ -513,10 +515,11 @@ class RecoveryScaleStrategy(Strategy):
 
     def _get_atr(self, state: SymbolState, period: int = 14) -> float:
         """Calculate ATR for volatility-based stops."""
-        if len(state.bars) < period + 1:
+        bars = list(state.bars)
+        if len(bars) < period + 1:
             return 0.0
 
-        recent_bars = state.bars[-(period + 1):]
+        recent_bars = bars[-(period + 1):]
         true_ranges = []
         for i in range(1, len(recent_bars)):
             prev_close = recent_bars[i-1].close
@@ -615,11 +618,12 @@ class RecoveryScaleStrategy(Strategy):
 
     def _is_structural_failure(self, state: SymbolState, symbol_state: SymbolRecoveryState) -> bool:
         """Check if decline has become structural failure rather than pullback."""
-        if len(state.bars) < 10:
+        bars = list(state.bars)
+        if len(bars) < 10:
             return False
 
         # Continuous new lows without meaningful bounces
-        recent_bars = state.bars[-10:]
+        recent_bars = bars[-10:]
         lows = [bar.low for bar in recent_bars]
         continuous_decline = all(lows[i] <= lows[i-1] * 1.002 for i in range(1, len(lows)))
 
@@ -628,10 +632,10 @@ class RecoveryScaleStrategy(Strategy):
             return True
 
         # EMA structure collapse
-        if len(state.bars) >= 60:
-            ema20 = self._calculate_ema(state.bars, 20)
-            ema60 = self._calculate_ema(state.bars, 60)
-            current_price = state.bars[-1].close
+        if len(bars) >= 60:
+            ema20 = self._calculate_ema(bars, 20)
+            ema60 = self._calculate_ema(bars, 60)
+            current_price = bars[-1].close
 
             if ema20 > 0 and ema60 > 0:
                 if current_price < ema60 * 0.95 and ema20 < ema60:  # Far below EMA60 and declining
@@ -643,10 +647,11 @@ class RecoveryScaleStrategy(Strategy):
     def _check_recovery_confirmation(self, state: SymbolState, symbol_state: SymbolRecoveryState,
                                      current_price: float) -> bool:
         """Check cluster of recovery signals."""
-        if len(state.bars) < 40:
+        bars = list(state.bars)
+        if len(bars) < 40:
             return False
 
-        ema20 = self._calculate_ema(state.bars, 20)
+        ema20 = self._calculate_ema(bars, 20)
         rsi = self._get_rsi(state)
         bp = self._get_breakout_power(state)
 
@@ -664,7 +669,7 @@ class RecoveryScaleStrategy(Strategy):
             supporting_signals += 1
 
         # Price above VWAP
-        if state.bars and state.bars[-1].vwap > 0 and current_price > state.bars[-1].vwap:
+        if bars and bars[-1].vwap > 0 and current_price > bars[-1].vwap:
             supporting_signals += 1
 
         # MACD improving (simplified: just check histogram positive)
@@ -673,7 +678,7 @@ class RecoveryScaleStrategy(Strategy):
             supporting_signals += 1
 
         # EMA Gap improving (EMA5 > EMA20)
-        ema5 = self._calculate_ema(state.bars, 5)
+        ema5 = self._calculate_ema(bars, 5)
         if ema5 > ema20:
             supporting_signals += 1
 
@@ -681,11 +686,12 @@ class RecoveryScaleStrategy(Strategy):
 
     def _maintains_recovery_structure(self, state: SymbolState) -> bool:
         """Check if recovery structure is maintained."""
-        if len(state.bars) < 20:
+        bars = list(state.bars)
+        if len(bars) < 20:
             return True
 
-        ema20 = self._calculate_ema(state.bars, 20)
-        current_price = state.bars[-1].close
+        ema20 = self._calculate_ema(bars, 20)
+        current_price = bars[-1].close
 
         # Losing EMA20
         if self.settings.recovery_scale_exit_ema20_loss and current_price < ema20 * 0.998:
@@ -714,7 +720,7 @@ class RecoveryScaleStrategy(Strategy):
 
         # EMA20 loss
         if self.settings.recovery_scale_exit_ema20_loss:
-            ema20 = self._calculate_ema(state.bars, 20)
+            ema20 = self._calculate_ema(list(state.bars), 20)
             if ema20 > 0 and current_price < ema20 * 0.995:
                 return "ema20_loss"
 
@@ -735,11 +741,12 @@ class RecoveryScaleStrategy(Strategy):
 
     def _higher_low_broken(self, state: SymbolState, symbol_state: SymbolRecoveryState) -> bool:
         """Check if recent higher low structure is broken."""
-        if len(state.bars) < 10:
+        bars = list(state.bars)
+        if len(bars) < 10:
             return False
 
         # Find recent swing lows
-        recent_bars = state.bars[-10:]
+        recent_bars = bars[-10:]
         lows = [bar.low for bar in recent_bars]
 
         if len(lows) < 3:
@@ -750,10 +757,11 @@ class RecoveryScaleStrategy(Strategy):
 
     def _get_rsi(self, state: SymbolState, period: int = 14) -> float:
         """Calculate RSI."""
-        if len(state.bars) < period + 1:
+        bars = list(state.bars)
+        if len(bars) < period + 1:
             return 50.0
 
-        closes = [bar.close for bar in state.bars[-(period + 1):]]
+        closes = [bar.close for bar in bars[-(period + 1):]]
         gains = []
         losses = []
 
