@@ -12,6 +12,7 @@ from strategies.liquidity_scalper import LiquidityScalperStrategy
 from strategies.macd_early_impulse import MACDEarlyImpulseStrategy
 from strategies.maha7 import Maha7Strategy
 from strategies.opening_impulse import OpeningImpulseStrategy
+from strategies.recovery_scale import RecoveryScaleStrategy
 from strategies.spike import SpikeStrategy
 from strategies.steady_intraday import SteadyIntradayStrategy
 from strategies.stoch_macd_reversal import StochMACDReversalStrategy
@@ -25,6 +26,7 @@ _STRATEGY_CLASSES: tuple[type[Strategy], ...] = (
     MACDEarlyImpulseStrategy,
     StochMACDReversalStrategy,
     Maha7Strategy,
+    RecoveryScaleStrategy,
     SteadyIntradayStrategy,
     SpikeStrategy,
     LiquidityScalperStrategy,

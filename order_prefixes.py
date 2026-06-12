@@ -12,6 +12,7 @@ STRATEGY_ORDER_PREFIXES: dict[str, str] = {
     "macd_early_impulse": "mei",
     "stoch_macd_reversal": "smr",
     "maha7": "mh7",
+    "recovery_scale": "rsc",
     "steady_intraday": "si",
     "spike": "spk",
     "liquidity_scalper": "lqs",

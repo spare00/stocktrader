@@ -78,3 +78,4 @@ class Signal:
     entry_open_pct: float | None = None
     position_size_multiplier: float = 1.0
     runner_mode: bool = False
+    allow_add_to_position: bool = False

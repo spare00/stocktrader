@@ -596,6 +596,50 @@ class Settings:
     dynamic_mover_max_dynamic_symbols: int = 10
     dynamic_mover_symbol_ttl_minutes: int = 30
 
+    recovery_scale_start_minute: int = 0
+    recovery_scale_end_minute: int = 360
+    recovery_scale_max_tranches: int = 5
+    recovery_scale_initial_tranche_pct: float = 0.10
+    recovery_scale_ladder_mode: str = "atr"
+    recovery_scale_pct_ladder: list[float] = field(default_factory=lambda: [0.01, 0.02, 0.035, 0.05, 0.07])
+    recovery_scale_atr_ladder: list[float] = field(default_factory=lambda: [0.5, 1.0, 1.6, 2.3, 3.1])
+    recovery_scale_tranche_sizes: list[float] = field(default_factory=lambda: [0.10, 0.15, 0.20, 0.25, 0.30])
+    recovery_scale_min_liquidity_dollar_volume: float = 10_000_000.0
+    recovery_scale_max_spread_bps: float = 12.0
+    recovery_scale_min_price: float = 10.0
+    recovery_scale_max_position_value: float = 0.0
+    recovery_scale_max_open_positions: int = 0
+    recovery_scale_max_hold_seconds: int = 0
+    recovery_scale_trade_cooldown_seconds: int = 0
+    recovery_scale_max_trades_per_symbol_per_session: int = 1
+    recovery_scale_symbol_loss_lock_count: int = 1
+    recovery_scale_consecutive_loss_pause_count: int | None = None
+    recovery_scale_consecutive_loss_pause_minutes: int | None = None
+    recovery_scale_consecutive_loss_stop_count: int | None = None
+    recovery_scale_daily_strategy_loss_budget: float = 200.0
+    recovery_scale_per_symbol_risk_budget_pct: float = 0.015
+    recovery_scale_risk_on_budget_multiplier: float = 1.0
+    recovery_scale_neutral_budget_multiplier: float = 0.65
+    recovery_scale_weak_budget_multiplier: float = 0.35
+    recovery_scale_block_new_entries: bool = True
+    recovery_scale_recovery_rsi_min: float = 50.0
+    recovery_scale_recovery_breakout_power_min: float = 50.0
+    recovery_scale_partial1_profit_pct: float = 0.015
+    recovery_scale_partial1_size: float = 0.25
+    recovery_scale_partial2_profit_pct: float = 0.04
+    recovery_scale_partial2_size: float = 0.30
+    recovery_scale_partial3_rsi_threshold: float = 70.0
+    recovery_scale_partial3_bp_threshold: float = 80.0
+    recovery_scale_partial3_size: float = 0.25
+    recovery_scale_exit_ema20_loss: bool = True
+    recovery_scale_exit_supertrend_bearish: bool = True
+    recovery_scale_exit_higher_low_break: bool = True
+    recovery_scale_trailing_stop_atr_multiplier: float = 1.5
+    recovery_scale_require_daily_uptrend: bool = True
+    recovery_scale_require_ema40_above_ema60: bool = True
+    recovery_scale_max_decline_bars: int = 10
+    recovery_scale_min_bounce_pct: float = 0.003
+
 
 COMMON_ENV: tuple[EnvSpec, ...] = (
     ("alpaca_api_key", "ALPACA_API_KEY", _str_env, None),
@@ -852,6 +896,28 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("dynamic_mover_cooldown_seconds", "DYNAMIC_MOVER_COOLDOWN_SECONDS", _int_env, 1800),
     ("dynamic_mover_max_dynamic_symbols", "DYNAMIC_MOVER_MAX_DYNAMIC_SYMBOLS", _int_env, 10),
     ("dynamic_mover_symbol_ttl_minutes", "DYNAMIC_MOVER_SYMBOL_TTL_MINUTES", _int_env, 30),
+    ("recovery_scale_max_open_positions", "RECOVERY_SCALE_MAX_OPEN_POSITIONS", _int_env, 0),
+    ("recovery_scale_max_position_value", "RECOVERY_SCALE_MAX_POSITION_VALUE", _float_env, 0.0),
+    ("recovery_scale_max_hold_seconds", "RECOVERY_SCALE_MAX_HOLD_SECONDS", _int_env, 0),
+    ("recovery_scale_trade_cooldown_seconds", "RECOVERY_SCALE_TRADE_COOLDOWN_SECONDS", _int_env, 0),
+    (
+        "recovery_scale_consecutive_loss_pause_count",
+        "RECOVERY_SCALE_CONSECUTIVE_LOSS_PAUSE_COUNT",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "recovery_scale_consecutive_loss_pause_minutes",
+        "RECOVERY_SCALE_CONSECUTIVE_LOSS_PAUSE_MINUTES",
+        _optional_int_env,
+        None,
+    ),
+    (
+        "recovery_scale_consecutive_loss_stop_count",
+        "RECOVERY_SCALE_CONSECUTIVE_LOSS_STOP_COUNT",
+        _optional_int_env,
+        None,
+    ),
 )
 
 

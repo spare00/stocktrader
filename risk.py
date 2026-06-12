@@ -60,14 +60,16 @@ class RiskManager:
         if signal.side != "BUY":
             return RiskDecision(False, "short entries are disabled in paper mode")
 
-        if signal.symbol in open_symbols:
+        adding_to_position = signal.allow_add_to_position and signal.symbol in open_symbols
+
+        if signal.symbol in open_symbols and not adding_to_position:
             return RiskDecision(False, "position already open")
 
-        if len(open_symbols) >= self.settings.max_open_positions:
+        if not adding_to_position and len(open_symbols) >= self.settings.max_open_positions:
             return RiskDecision(False, "max open positions reached")
 
         strategy_max_open = self._max_open_positions_for_strategy(signal.strategy)
-        if strategy_max_open > 0:
+        if strategy_max_open > 0 and not adding_to_position:
             strategy_open = (open_strategy_counts or {}).get(signal.strategy, 0)
             if strategy_open >= strategy_max_open:
                 return RiskDecision(False, "max open positions for strategy reached")
@@ -87,14 +89,14 @@ class RiskManager:
             return RiskDecision(False, "symbol session loss lock active")
 
         max_symbol_trades = self._max_trades_per_symbol_for_strategy(signal.strategy)
-        if max_symbol_trades > 0:
+        if max_symbol_trades > 0 and not adding_to_position:
             session_key = (day_key, signal.strategy, signal.symbol)
             trade_count = self.session_trade_counts.get(session_key, 0)
             if trade_count >= max_symbol_trades:
                 return RiskDecision(False, "max trades per symbol per session reached")
 
         last_ms = self.last_trade_ms.get(signal.symbol)
-        if last_ms is not None:
+        if last_ms is not None and not adding_to_position:
             elapsed = (signal.timestamp_ms - last_ms) / 1000
             cooldown_seconds = max(
                 self._trade_cooldown_seconds_for_strategy(signal.strategy),

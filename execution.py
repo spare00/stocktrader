@@ -156,22 +156,39 @@ class PositionTracker:
         self.cash -= shares * fill_price
         slippage_pct = (fill_price - signal.price) / signal.price if signal.price > 0 else None
         stop_px = signal.stop_price or fill_price * (1 - self.settings.stop_loss_pct)
-        self.positions[signal.symbol] = Position(
-            symbol=signal.symbol,
-            strategy=signal.strategy,
-            shares=shares,
-            entry_price=fill_price,
-            entry_ms=signal.timestamp_ms,
-            target_price=fill_price * (1 + self.settings.target_profit_pct),
-            stop_price=stop_px,
-            initial_stop_price=stop_px,
-            max_price=fill_price,
-            last_high_ts=signal.timestamp_ms,
-            original_shares=shares,
-            session_open_price=signal.session_open_price,
-            entry_open_pct=signal.entry_open_pct,
-            runner_mode=signal.runner_mode,
-        )
+        existing = self.positions.get(signal.symbol)
+        if existing is not None and signal.allow_add_to_position:
+            total_shares = existing.shares + shares
+            if total_shares > 0:
+                existing.entry_price = ((existing.entry_price * existing.shares) + (fill_price * shares)) / total_shares
+            existing.shares = total_shares
+            existing.original_shares += shares
+            existing.target_price = existing.entry_price * (1 + self.settings.target_profit_pct)
+            existing.stop_price = min(existing.stop_price, stop_px)
+            if existing.initial_stop_price is None:
+                existing.initial_stop_price = stop_px
+            else:
+                existing.initial_stop_price = min(existing.initial_stop_price, stop_px)
+            existing.max_price = max(existing.max_price, fill_price)
+            existing.last_high_ts = max(existing.last_high_ts, signal.timestamp_ms)
+            existing.runner_mode = existing.runner_mode or signal.runner_mode
+        else:
+            self.positions[signal.symbol] = Position(
+                symbol=signal.symbol,
+                strategy=signal.strategy,
+                shares=shares,
+                entry_price=fill_price,
+                entry_ms=signal.timestamp_ms,
+                target_price=fill_price * (1 + self.settings.target_profit_pct),
+                stop_price=stop_px,
+                initial_stop_price=stop_px,
+                max_price=fill_price,
+                last_high_ts=signal.timestamp_ms,
+                original_shares=shares,
+                session_open_price=signal.session_open_price,
+                entry_open_pct=signal.entry_open_pct,
+                runner_mode=signal.runner_mode,
+            )
         fill = Fill(
             signal.symbol,
             "BUY",
@@ -368,7 +385,7 @@ class LocalPaperExecutor:
             LOG.info("Skipping %s: outside regular market hours", signal.symbol)
             return None
 
-        if signal.symbol in self.tracker.positions:
+        if signal.symbol in self.tracker.positions and not signal.allow_add_to_position:
             return None
 
         shares = self.tracker.planned_shares(
@@ -476,6 +493,12 @@ class LocalPaperExecutor:
 
         fill = self.tracker.record_exit(state.symbol, shares_to_sell, exit_price, event_ms, reason, mark_partial=mark_partial)
         if fill:
+            strategy_obj = strategies_by_name.get(fill.strategy)
+            if strategy_obj is not None:
+                try:
+                    strategy_obj.on_exit_fill(fill)
+                except Exception:
+                    LOG.exception("Strategy exit-fill hook failed for %s", fill.strategy)
             LOG.info("LOCAL PAPER SELL %s %s @ %.2f | pnl %.2f | %s", fill.shares, fill.symbol, fill.price, fill.pnl, fill.reason)
         return fill
 
@@ -585,7 +608,7 @@ class AlpacaPaperExecutor:
             LOG.info("Skipping %s: Alpaca market clock is closed", signal.symbol)
             return None
 
-        if signal.symbol in self.tracker.positions:
+        if signal.symbol in self.tracker.positions and not signal.allow_add_to_position:
             return None
 
         shares = self.tracker.planned_shares(
@@ -752,7 +775,7 @@ class AlpacaPaperExecutor:
         if shares_to_sell <= 0:
             return None
 
-        return self._submit_alpaca_sell(
+        fill = self._submit_alpaca_sell(
             state.symbol,
             position,
             shares_to_sell,
@@ -762,6 +785,14 @@ class AlpacaPaperExecutor:
             limit_price=self._exit_limit_price_from_state(state, position, reason),
             allow_retry=True,
         )
+        if fill:
+            strategy_obj = strategies_by_name.get(fill.strategy)
+            if strategy_obj is not None:
+                try:
+                    strategy_obj.on_exit_fill(fill)
+                except Exception:
+                    LOG.exception("Strategy exit-fill hook failed for %s", fill.strategy)
+        return fill
 
     def _submit_alpaca_sell(
         self,
