@@ -41,7 +41,7 @@ AI_SCORE_DELTA_LIMIT = 2.0
 # Selector thresholds are softer than live strategy gates; runtime still uses LIQUIDITY_SCALPER_* env.
 DEFAULT_SELECTOR_MIN_BAR_DOLLAR_VOLUME = 50_000.0
 DEFAULT_SELECTOR_MIN_SESSION_DOLLAR_VOLUME = 50_000.0
-DEFAULT_SELECTOR_MIN_P75_BAR_DOLLAR_VOLUME = 250_000.0
+DEFAULT_SELECTOR_MIN_P75_BAR_DOLLAR_VOLUME = 20_000.0
 DEFAULT_SELECTOR_MIN_RANGE_PCT = 0.010
 DEFAULT_SELECTOR_MAX_SPREAD_BPS = 100.0
 
@@ -715,7 +715,7 @@ def parse_args() -> argparse.Namespace:
         "--min-p75-bar-dollar-volume",
         type=float,
         default=DEFAULT_SELECTOR_MIN_P75_BAR_DOLLAR_VOLUME,
-        help="Hard reject when prior-session p75 bar dollar volume is below this (default 250K).",
+        help="Hard reject when prior-session p75 bar dollar volume is below this (default 20K).",
     )
     parser.add_argument(
         "--min-range-pct",
