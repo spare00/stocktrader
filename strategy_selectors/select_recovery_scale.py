@@ -296,7 +296,7 @@ def main():
         now = datetime.now(tz=MARKET_TZ)
 
         # Intraday bars
-        bars_dict = get_recent_bars(clients, universe, TimeFrame.Minute, limit=100)
+        bars_dict = get_recent_bars(settings, universe, limit=100)
 
         # Daily bars
         start_date = now - timedelta(days=90)
@@ -311,7 +311,7 @@ def main():
             except Exception:
                 pass
 
-        quotes = get_latest_quotes(clients, universe)
+        quotes = get_latest_quotes(settings, universe)
 
     except Exception as e:
         print(f"Failed to load market data: {e}")
