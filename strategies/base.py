@@ -62,6 +62,9 @@ class Strategy(ABC):
     def on_entry_fill(self, fill: "Fill") -> None:
         return None
 
+    def on_exit_fill(self, fill: "Fill") -> None:
+        return None
+
     def should_exit(self, state: SymbolState, position: "Position") -> ExitDecision | None:
         return None
 

@@ -3284,6 +3284,44 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(fill.shares, 4)
         self.assertEqual(tracker.positions["AAPL"].shares, 6)
 
+    def test_position_tracker_adds_to_existing_position_with_weighted_average(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        tracker = PositionTracker(settings)
+        first = Signal(
+            strategy="recovery_scale",
+            symbol="AAPL",
+            side="BUY",
+            price=100.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 0),
+            change_pct=0.0,
+            volume_ratio=0.0,
+            spread_bps=4.0,
+            reason="tranche1",
+            stop_price=97.0,
+        )
+        second = Signal(
+            strategy="recovery_scale",
+            symbol="AAPL",
+            side="BUY",
+            price=95.0,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 5),
+            change_pct=0.0,
+            volume_ratio=0.0,
+            spread_bps=4.0,
+            reason="tranche2",
+            stop_price=92.0,
+            allow_add_to_position=True,
+        )
+
+        tracker.record_entry(first, shares=10, fill_price=100.0, reason="tranche1")
+        tracker.record_entry(second, shares=20, fill_price=95.0, reason="tranche2")
+
+        position = tracker.positions["AAPL"]
+        self.assertEqual(position.shares, 30)
+        self.assertEqual(position.original_shares, 30)
+        self.assertAlmostEqual(position.entry_price, (10 * 100.0 + 20 * 95.0) / 30)
+        self.assertAlmostEqual(position.stop_price, 92.0)
+
     def test_position_tracker_writes_trade_journal_entries(self):
         old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
         try:
@@ -7031,6 +7069,35 @@ class CoreTradingTests(unittest.TestCase):
         self.assertTrue(adjusted.runner_mode)
         self.assertIn("market_regime risk_off", adjusted.reason)
 
+    def test_market_regime_preserves_add_to_position_flag(self):
+        settings = Settings(symbols=["AAPL"])
+        monitor = MarketRegimeMonitor(settings)
+        regime = MarketRegime("risk_on", 6, 9, True, 1.0, "risk_on score=6/9 SPY:3 QQQ:2 IWM:1")
+        signal = self._market_regime_signal()
+        signal = Signal(
+            strategy=signal.strategy,
+            symbol=signal.symbol,
+            side=signal.side,
+            price=signal.price,
+            timestamp_ms=signal.timestamp_ms,
+            change_pct=signal.change_pct,
+            volume_ratio=signal.volume_ratio,
+            spread_bps=signal.spread_bps,
+            reason=signal.reason,
+            stop_price=signal.stop_price,
+            session_open_price=signal.session_open_price,
+            entry_open_pct=signal.entry_open_pct,
+            position_size_multiplier=signal.position_size_multiplier,
+            runner_mode=signal.runner_mode,
+            allow_add_to_position=True,
+        )
+
+        adjusted, reject_reason = monitor.apply_to_signal(signal, regime)
+
+        self.assertIsNone(reject_reason)
+        self.assertIsNotNone(adjusted)
+        self.assertTrue(adjusted.allow_add_to_position)
+
     def test_market_regime_neutral_annotates_signal(self):
         monitor = MarketRegimeMonitor(Settings(symbols=["AAPL"]))
         regime = MarketRegime("neutral", 0, 9, True, 1.0, "neutral score=0/9 SPY:0 QQQ:0 IWM:0")
@@ -8244,6 +8311,7 @@ class CoreTradingTests(unittest.TestCase):
                 "macd_early_impulse",
                 "stoch_macd_reversal",
                 "maha7",
+                "recovery_scale",
                 "steady_intraday",
                 "spike",
                 "liquidity_scalper",
@@ -8822,6 +8890,42 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max open positions reached")
+
+    def test_risk_allows_add_to_existing_position_despite_position_caps_and_cooldown(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            regular_market_only=False,
+            max_open_positions=1,
+            recovery_scale_max_open_positions=1,
+            recovery_scale_max_trades_per_symbol_per_session=1,
+            trade_cooldown_seconds=120,
+        )
+        risk = RiskManager(settings)
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        risk.record_trade("AAPL", base_ms, "recovery_scale")
+        signal = Signal(
+            strategy="recovery_scale",
+            symbol="AAPL",
+            side="BUY",
+            price=98.0,
+            timestamp_ms=base_ms + 30_000,
+            change_pct=0.0,
+            volume_ratio=1.0,
+            spread_bps=4.0,
+            reason="tranche2",
+            allow_add_to_position=True,
+        )
+
+        decision = risk.check_entry(
+            signal,
+            {"AAPL"},
+            0,
+            {"recovery_scale": 1},
+        )
+
+        self.assertTrue(decision.allowed)
 
     def test_risk_uses_strategy_specific_trade_cooldown(self):
         settings = Settings(

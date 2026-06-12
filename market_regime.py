@@ -137,6 +137,7 @@ class MarketRegimeMonitor:
             entry_open_pct=signal.entry_open_pct,
             position_size_multiplier=signal.position_size_multiplier * size_multiplier,
             runner_mode=signal.runner_mode,
+            allow_add_to_position=signal.allow_add_to_position,
         )
         return adjusted
 
