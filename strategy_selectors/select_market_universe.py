@@ -20,19 +20,21 @@ from strategy_selectors.select_opening_impulse import usable_quote
 
 MARKET_TZ = ZoneInfo("America/New_York")
 DEFAULT_LOOKBACK_DAYS = 80
-DEFAULT_MIN_EMA20_SLOPE_BPS = 1.0
-DEFAULT_MIN_EMA40_SLOPE_BPS = 0.0
-DEFAULT_MIN_EMA60_SLOPE_BPS = 0.0
+DEFAULT_MIN_EMA20_SLOPE_BPS = -30.0
+DEFAULT_MIN_EMA40_SLOPE_BPS = -30.0
+DEFAULT_MIN_EMA60_SLOPE_BPS = -30.0
 DEFAULT_EMA60_RECOVERY_TOLERANCE = 0.985
 DEFAULT_EMA_GAP_SHRINK_TOLERANCE = 0.02
 DEFAULT_ROLLOVER_LOOKBACK_DAYS = 10
-DEFAULT_MIN_AVERAGE_VOLUME = 500_000.0
-DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME = 20_000_000.0
+DEFAULT_MIN_AVERAGE_VOLUME = 5_000.0
+DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME = 10_000.0
+DEFAULT_MAX_SPREAD_BPS = 20.0
 DEFAULT_LIMIT_UP_PCT = 0.295
 DEFAULT_LIMIT_DOWN_PCT = -0.295
 DEFAULT_LIMIT_CLOSE_NEAR_HIGH_MIN = 0.95
 DEFAULT_LIMIT_CLOSE_NEAR_LOW_MAX = 0.05
-DEFAULT_MIN_PREVIOUS_DAY_VOLUME = 500_000.0
+DEFAULT_MIN_PREVIOUS_DAY_VOLUME = 5_000.0
+DEFAULT_REQUIRE_PRICE_ABOVE_EMA20 = False
 MODE_CHOICES = {"liquid", "limit-up", "limit-down"}
 LEGACY_PREVIOUS_DAY_FILTER_MODE = {
     "none": "liquid",
@@ -637,7 +639,7 @@ def build_universe(args: argparse.Namespace) -> dict:
     limit_close_near_low_max = float(getattr(args, "limit_close_near_low_max", DEFAULT_LIMIT_CLOSE_NEAR_LOW_MAX))
     min_previous_day_volume = float(getattr(args, "min_previous_day_volume", DEFAULT_MIN_PREVIOUS_DAY_VOLUME))
     require_price_above_ema20 = _resolved_flag(
-        args, "require_price_above_ema20", default=mode != "limit-down"
+        args, "require_price_above_ema20", default=DEFAULT_REQUIRE_PRICE_ABOVE_EMA20
     )
     require_ema_stack = _resolved_flag(args, "require_ema_stack", default=False)
     require_price_above_ema60 = _resolved_flag(args, "require_price_above_ema60", default=False)
@@ -786,7 +788,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-price", type=float, default=500.0)
     parser.add_argument("--min-average-volume", type=float, default=DEFAULT_MIN_AVERAGE_VOLUME)
     parser.add_argument("--min-median-dollar-volume", type=float, default=DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME)
-    parser.add_argument("--max-spread-bps", type=float, default=12.0)
+    parser.add_argument("--max-spread-bps", type=float, default=DEFAULT_MAX_SPREAD_BPS)
     parser.add_argument("--min-ema20-slope-bps", type=float, default=DEFAULT_MIN_EMA20_SLOPE_BPS)
     parser.add_argument("--min-ema40-slope-bps", type=float, default=DEFAULT_MIN_EMA40_SLOPE_BPS)
     parser.add_argument("--min-ema60-slope-bps", type=float, default=DEFAULT_MIN_EMA60_SLOPE_BPS)
@@ -797,9 +799,15 @@ def parse_args() -> argparse.Namespace:
         "--allow-below-ema20",
         dest="require_price_above_ema20",
         action="store_false",
-        help="Do not require the latest close to be above EMA20.",
+        help="Do not require the latest close to be above EMA20 (default).",
     )
-    parser.set_defaults(require_price_above_ema20=None)
+    parser.add_argument(
+        "--require-price-above-ema20",
+        dest="require_price_above_ema20",
+        action="store_true",
+        help="Require the latest close to be above EMA20.",
+    )
+    parser.set_defaults(require_price_above_ema20=DEFAULT_REQUIRE_PRICE_ABOVE_EMA20)
     parser.add_argument(
         "--require-ema-stack",
         dest="require_ema_stack",
