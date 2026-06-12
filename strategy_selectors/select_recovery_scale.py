@@ -8,20 +8,24 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from statistics import mean
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import Settings, load_settings
-from strategy_selectors.cli import selector_argument_parser
+from env_vars import format_symbols_env_line
 from market_hours import MARKET_TZ
 from models import Bar, Quote
-from opening_plan import default_plan_file_for_strategy
+from opening_plan import default_plan_file_for_strategy, parse_plan_symbols
+from strategy_selectors.cli import selector_argument_parser
+from strategy_selectors.plan import build_strategy_plan, write_strategy_plan
 
 DEFAULT_UNIVERSE_FILE = Path("data/opening_universe.txt")
 DEFAULT_OUTPUT_FILE = default_plan_file_for_strategy("recovery_scale")
 DEFAULT_SELECTOR_MIN_DAILY_DOLLAR_VOLUME = 1_000_000.0
+SELECTION_STAGE = "recovery_scale_selector"
 MARKET_OPEN = time(9, 30)
 
 
@@ -90,12 +94,12 @@ def _atr(bars: list[Bar], period: int = 14) -> float | None:
         return None
     true_ranges = []
     for i in range(1, len(bars)):
-        prev_close = bars[i-1].close
+        prev_close = bars[i - 1].close
         current = bars[i]
         tr = max(
             current.high - current.low,
             abs(current.high - prev_close),
-            abs(current.low - prev_close)
+            abs(current.low - prev_close),
         )
         true_ranges.append(tr)
     return mean(true_ranges[-period:])
@@ -128,16 +132,12 @@ def score_recovery_scale_candidate(
     price = valid_quote.mid if valid_quote else (bars[-1].close if bars else daily_bars[-1].close)
     spread_bps = valid_quote.spread_bps if valid_quote else None
 
-    # Price filter
     if price < min_price:
         return None
 
-    # Spread filter
     if spread_bps is not None and spread_bps > max_spread_bps:
         return None
 
-    # Liquidity filter: use daily liquidity as the hard pre-session gate. Runtime
-    # still checks intraday liquidity before entries/adds.
     avg_daily_volume = mean([bar.volume for bar in daily_bars[-20:]])
     avg_daily_dollar_volume = mean([bar.close * bar.volume for bar in daily_bars[-20:]])
     if avg_daily_dollar_volume < min_liquidity:
@@ -145,7 +145,6 @@ def score_recovery_scale_candidate(
     recent_bars = bars[-20:] if bars else []
     dollar_volume = mean([bar.close * bar.volume for bar in recent_bars]) if recent_bars else avg_daily_dollar_volume / 390
 
-    # Daily structure check
     daily_closes = [bar.close for bar in daily_bars]
     ema40 = _ema(daily_closes, 40)
     ema60 = _ema(daily_closes, 60)
@@ -153,7 +152,6 @@ def score_recovery_scale_candidate(
     if ema40 is None or ema60 is None or ema40 <= 0 or ema60 <= 0:
         return None
 
-    # Trend quality
     if ema40 >= ema60:
         trend_quality = "uptrend"
     else:
@@ -165,8 +163,6 @@ def score_recovery_scale_candidate(
 
     distance_from_ema60_pct = (price - ema60) / ema60
 
-    # Intraday decline is a score bonus, not a hard selector gate. The live
-    # strategy waits for the actual scale-in decline before trading.
     intraday_bars = bars[-10:] if bars else []
     if intraday_bars:
         recent_high = max(bar.high for bar in intraday_bars)
@@ -177,21 +173,18 @@ def score_recovery_scale_candidate(
 
     bounce_pct = 0.0
     for i in range(1, len(intraday_bars)):
-        if intraday_bars[i].close > intraday_bars[i-1].close:
+        if intraday_bars[i].close > intraday_bars[i - 1].close:
             bounce = (intraday_bars[i].close - intraday_bars[i].low) / intraday_bars[i].low
             bounce_pct = max(bounce_pct, bounce)
 
-    # Additional quality indicators
     intraday_closes = [bar.close for bar in bars[-20:]] if bars else []
     rsi = _rsi(intraday_closes)
     atr = _atr(bars) if bars else None
     atr_pct = (atr / price) if atr and price > 0 else None
 
-    # Score components
     score = 0.0
     quality_flags = []
 
-    # Higher score for good trend structure
     if trend_quality == "uptrend":
         score += 30.0
         quality_flags.append("uptrend")
@@ -202,11 +195,9 @@ def score_recovery_scale_candidate(
         score += 5.0
         quality_flags.append("weak_daily_trend")
 
-    # Score liquidity
     liquidity_score = min(30.0, (avg_daily_dollar_volume / min_liquidity) * 10.0)
     score += liquidity_score
 
-    # Score current decline magnitude when the selector runs during market hours.
     if 0.02 <= decline_pct <= 0.05:
         score += 20.0
         quality_flags.append("ideal_decline")
@@ -216,12 +207,10 @@ def score_recovery_scale_candidate(
     else:
         quality_flags.append("watch_for_decline")
 
-    # Score bounce presence
     if bounce_pct >= 0.003:
         score += 15.0
         quality_flags.append("bounce")
 
-    # Score RSI (prefer oversold but not extreme)
     if rsi is not None:
         if 30 <= rsi <= 45:
             score += 10.0
@@ -229,12 +218,10 @@ def score_recovery_scale_candidate(
         elif 45 < rsi <= 55:
             score += 5.0
 
-    # Score distance from EMA60
     if abs(distance_from_ema60_pct) < 0.10:
         score += 5.0
         quality_flags.append("near_ema60")
 
-    # Tight spread bonus
     if spread_bps is not None and spread_bps < max_spread_bps / 2:
         score += 5.0
         quality_flags.append("tight_spread")
@@ -242,7 +229,7 @@ def score_recovery_scale_candidate(
     return RecoveryScaleCandidate(
         symbol=symbol,
         score=score,
-        selection_stage="recovery_scale_selector",
+        selection_stage=SELECTION_STAGE,
         price=price,
         spread_bps=spread_bps,
         dollar_volume=dollar_volume,
@@ -259,7 +246,33 @@ def score_recovery_scale_candidate(
     )
 
 
-def main():
+def deterministic_plan(
+    candidates: list[RecoveryScaleCandidate],
+    *,
+    universe_size: int,
+    candidates_scored: int,
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    top = candidates
+    return build_strategy_plan(
+        strategy="recovery_scale",
+        symbols=[candidate.symbol for candidate in top],
+        ranked=top,
+        selection_stage=SELECTION_STAGE,
+        settings={
+            "universe_size": universe_size,
+            "candidates_scored": candidates_scored,
+        },
+        risk_note=(
+            "Pre-session recovery_scale watchlist ranked by daily trend structure, liquidity, "
+            "spread, and optional intraday decline/bounce context. The live strategy still waits "
+            "for the actual scale-in decline before trading."
+        ),
+        generated_at=(generated_at or datetime.now(tz=MARKET_TZ)).isoformat(),
+    )
+
+
+def parse_args() -> argparse.Namespace:
     parser = selector_argument_parser(description="Select symbols for recovery_scale strategy.")
     parser.add_argument(
         "--universe",
@@ -284,30 +297,27 @@ def main():
         default=DEFAULT_OUTPUT_FILE,
         help="Write the strategy plan that main.py can consume directly.",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    settings = load_settings(validate=False)
+
+def main() -> int:
+    args = parse_args()
+    settings = load_settings(strategy_names=["recovery_scale"], validate=False)
     universe = load_universe(args.universe)
-    print(f"Loaded {len(universe)} symbols from {args.universe}")
 
-    # Get market data
     try:
         from alpaca.data.timeframe import TimeFrame
-        from alpaca_client import get_latest_quotes, get_recent_bars, make_clients
+        from alpaca_client import get_bars_between, get_latest_quotes, get_recent_bars, make_clients
 
         clients = make_clients(settings)
         now = datetime.now(tz=MARKET_TZ)
-
-        # Intraday bars
         bars_dict = get_recent_bars(settings, universe, limit=100)
 
-        # Daily bars
         start_date = now - timedelta(days=90)
         end_date = now
-        daily_bars_dict = {}
+        daily_bars_dict: dict[str, list[Bar]] = {}
         for symbol in universe:
             try:
-                from alpaca_client import get_bars_between
                 daily_bars = get_bars_between(clients, [symbol], TimeFrame.Day, start_date, end_date)
                 if symbol in daily_bars:
                     daily_bars_dict[symbol] = daily_bars[symbol]
@@ -315,60 +325,54 @@ def main():
                 pass
 
         quotes = get_latest_quotes(settings, universe)
-
-    except Exception as e:
-        print(f"Failed to load market data: {e}")
+    except Exception as exc:
+        print(f"Failed to load market data: {exc}", file=sys.stderr)
         return 1
 
-    # Score candidates
-    candidates = []
+    candidates: list[RecoveryScaleCandidate] = []
     for symbol in universe:
-        bars = bars_dict.get(symbol, [])
-        daily_bars = daily_bars_dict.get(symbol, [])
-        quote = quotes.get(symbol)
-
         candidate = score_recovery_scale_candidate(
             symbol,
-            bars,
-            daily_bars,
-            quote,
+            bars_dict.get(symbol, []),
+            daily_bars_dict.get(symbol, []),
+            quotes.get(symbol),
             settings,
             min_price=settings.recovery_scale_min_price,
             max_spread_bps=settings.recovery_scale_max_spread_bps,
             min_liquidity=args.min_daily_dollar_volume,
         )
-
         if candidate:
             candidates.append(candidate)
 
-    # Sort by score
-    candidates.sort(key=lambda c: c.score, reverse=True)
+    candidates.sort(key=lambda item: item.score, reverse=True)
+    top_candidates = candidates[: args.top]
+    plan = deterministic_plan(
+        top_candidates,
+        universe_size=len(universe),
+        candidates_scored=len(candidates),
+        generated_at=now,
+    )
+    write_strategy_plan(args.output, plan)
 
-    # Take top N
-    top_candidates = candidates[:args.top]
-
-    # Write output
-    plan = {
+    result = {
         "strategy": "recovery_scale",
-        "generated_at": datetime.now(tz=MARKET_TZ).isoformat(),
-        "universe_size": len(universe),
+        "selected_symbols": parse_plan_symbols(plan),
+        "symbols_env_line": format_symbols_env_line(plan["symbols"]),
+        "selection_plan": plan,
+        "universe_symbols": len(universe),
         "candidates_scored": len(candidates),
-        "symbols": [c.symbol for c in top_candidates],
-        "details": [asdict(c) for c in top_candidates],
+        "selected_count": len(plan["symbols"]),
+        "requested_top": args.top,
+        "plan_output": str(args.output),
     }
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-
-    print(f"\nTop {len(top_candidates)} recovery_scale candidates:")
-    for i, c in enumerate(top_candidates, 1):
+    print(json.dumps(result, indent=2, sort_keys=True))
+    line = result.get("symbols_env_line") or ""
+    if line:
         print(
-            f"{i:2d}. {c.symbol:6s} score={c.score:5.1f} price=${c.price:7.2f} "
-            f"decline={c.intraday_decline_pct:5.2%} trend={c.daily_trend_quality} "
-            f"flags={','.join(c.quality_flags)}"
+            "# Paste into profiles/*.env or `.env` - do not `export` (pollutes shell/tmux).",
+            file=sys.stderr,
         )
-
-    print(f"\nWrote {len(top_candidates)} symbols to {args.output}")
+        print(line, file=sys.stderr)
     return 0
 
 

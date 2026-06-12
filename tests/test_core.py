@@ -77,6 +77,9 @@ from strategy_selectors.select_market_universe import (
     select_top_candidates,
 )
 import strategy_selectors.select_opening_impulse as select_opening_impulse
+import strategy_selectors.select_recovery_scale as select_recovery_scale
+from strategy_selectors.plan import build_strategy_plan
+from opening_plan import parse_plan_symbols
 import strategy_selectors.select_steady_intraday as select_steady_intraday
 import strategy_selectors.select_liquidity_scalper as select_liquidity_scalper
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
@@ -1797,6 +1800,56 @@ class CoreTradingTests(unittest.TestCase):
         selected = select_top_candidates(candidates, top=5)
         self.assertEqual(len(selected), 5)
         self.assertEqual([item["symbol"] for item in selected[:3]], ["S9", "S8", "S7"])
+
+    def test_build_strategy_plan_normalizes_symbols_and_ranked(self):
+        plan = build_strategy_plan(
+            strategy="example",
+            symbols=["aapl", "nvda", "aapl"],
+            ranked=[{"symbol": "AAPL", "score": 9.0}],
+            selection_stage="pre_market",
+            risk_note="test",
+        )
+        self.assertEqual(plan["strategy"], "example")
+        self.assertEqual(plan["symbols"], ["AAPL", "NVDA"])
+        self.assertEqual(parse_plan_symbols(plan), ["AAPL", "NVDA"])
+        self.assertEqual(plan["ranked"][0]["score"], 9.0)
+        self.assertEqual(plan["selection_stage"], "pre_market")
+        self.assertEqual(plan["rejected"], [])
+
+    def test_recovery_scale_selector_plan_matches_plugin_contract(self):
+        candidate = select_recovery_scale.RecoveryScaleCandidate(
+            symbol="AAPL",
+            score=88.0,
+            selection_stage=select_recovery_scale.SELECTION_STAGE,
+            price=100.0,
+            spread_bps=4.0,
+            dollar_volume=2_000_000.0,
+            avg_daily_volume=1_000_000.0,
+            ema40=101.0,
+            ema60=99.0,
+            daily_trend_quality="uptrend",
+            intraday_decline_pct=0.03,
+            recent_bounce_pct=0.004,
+            distance_from_ema60_pct=0.01,
+            rsi=42.0,
+            atr_pct=0.02,
+            quality_flags=("uptrend", "ideal_decline"),
+        )
+        plan = select_recovery_scale.deterministic_plan(
+            [candidate],
+            universe_size=100,
+            candidates_scored=12,
+            generated_at=datetime(2026, 6, 4, 8, 0, tzinfo=MARKET_TZ),
+        )
+        self.assertEqual(plan["strategy"], "recovery_scale")
+        self.assertEqual(plan["symbols"], ["AAPL"])
+        self.assertEqual(parse_plan_symbols(plan), ["AAPL"])
+        self.assertEqual(plan["ranked"][0]["symbol"], "AAPL")
+        self.assertEqual(plan["ranked"][0]["score"], 88.0)
+        self.assertNotIn("details", plan)
+        self.assertEqual(plan["settings"]["universe_size"], 100)
+        self.assertEqual(plan["settings"]["candidates_scored"], 12)
+        self.assertTrue(plan["risk_note"])
 
     def test_maha7_selector_writes_plan_from_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:

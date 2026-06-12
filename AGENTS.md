@@ -26,3 +26,57 @@ Return liquid, easily tradable symbols whose daily chart is still in a **constru
 ### Downstream selectors
 
 If a change needs strategy-specific ranking or setup gates, implement it in a dedicated strategy selector and feed it from the market universe output.
+
+## Strategy Selector Plugin Contract
+
+Treat each strategy like a plugin. `main.py` does **not** run selectors automatically; it only reads the plan files they write.
+
+### Required for every strategy selector
+
+1. **Script:** `strategy_selectors/select_<strategy>.py`
+2. **Output path (default):** `data/<strategy>_plan.json` via `default_plan_file_for_strategy()` / `write_strategy_plan()`
+3. **Plan JSON must include:**
+   - `strategy` — registry name (e.g. `"recovery_scale"`)
+   - `symbols` — string list of selected tickers (**required**; this is what `main.py` loads)
+4. **Strategy class hooks** in `strategies/<strategy>.py`:
+   - `name`
+   - `selector_command` (hint when plan file is missing)
+   - register in `strategies/registry.py` → `_STRATEGY_CLASSES`
+
+Use `strategy_selectors/plan.py` → `build_strategy_plan()` so new selectors stay consistent.
+
+### Recommended plan envelope
+
+Keep strategy-specific fields extensible, but prefer this shared shape:
+
+```json
+{
+  "strategy": "example",
+  "selection_stage": "pre_market",
+  "symbols": ["AAPL", "NVDA"],
+  "ranked": [{ "symbol": "AAPL", "score": 82.1 }],
+  "rejected": [],
+  "settings": {},
+  "risk_note": "Human-readable summary."
+}
+```
+
+- `ranked` — per-symbol selector metadata (scores, flags, setup context)
+- `settings` — optional bounded overrides for `main.py` (`plan_overrides()`)
+- Extra top-level keys (`generated_at`, filter counts, etc.) are fine
+
+### What `main.py` reads
+
+- **Symbols:** `parse_plan_symbols(plan)` uses `symbols`, or legacy `selected_symbols`
+- **Stdout JSON** (`selected_symbols`, `symbols_env_line`) is for humans/scripts only — not loaded at runtime
+- **Not a strategy plan:** `select_market_universe.py` → `data/opening_universe.txt` (boundary pool for downstream selectors)
+
+### Checklist for a new strategy
+
+1. Add strategy class + `env_specs` in `strategies/<name>.py`
+2. Register in `strategies/registry.py`
+3. Add config defaults in `config.py` when needed
+4. Create `strategy_selectors/select_<name>.py` that writes `data/<name>_plan.json` with `symbols` + `ranked`
+5. Set `selector_command` on the strategy class
+6. Use `selector_argument_parser()` from `strategy_selectors/cli.py` for `-h` defaults
+7. Do **not** put strategy entry/setup logic in `select_market_universe.py`

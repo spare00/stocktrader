@@ -40,6 +40,7 @@ _SELECTOR_COMMAND_HINTS: dict[str, str] = {
     "breakout_power": ".venv/bin/python strategy_selectors/select_breakout_power.py --top 12",
     "ema_gap_cross": ".venv/bin/python strategy_selectors/select_ema_gap_cross.py --top 12",
     "liquidity_scalper": ".venv/bin/python strategy_selectors/select_liquidity_scalper.py --top 12",
+    "recovery_scale": ".venv/bin/python strategy_selectors/select_recovery_scale.py --top 8",
 }
 
 

@@ -16,7 +16,7 @@ This is an Alpaca-based paper trading system for intraday stock trading strategi
 - **`risk.py`**: `RiskManager` enforces account-wide and per-strategy limits (max positions, daily loss, consecutive losses, symbol cooldowns, max-hold time)
 - **`config.py`**: `Settings` dataclass loads environment variables; strategy-specific overrides follow the pattern `<STRATEGY>_<PARAMETER>` (e.g., `LIQUIDITY_SCALPER_MAX_POSITION_VALUE`)
 - **`strategies/`**: Each strategy module implements `analyze_signal()` and `should_exit()` methods; registry in `strategies/registry.py`
-- **`strategy_selectors/`**: Pre-market ranking scripts that write plan files to `data/` (e.g., `data/opening_impulse_plan.json`)
+- **`strategy_selectors/`**: Pre-market ranking scripts that write plan files to `data/` (e.g., `data/opening_impulse_plan.json`). Shared plan shape lives in `strategy_selectors/plan.py`.
 - **`modules/`**: Runtime dynamic selectors (execution strength, mover promotion, news expansion) and symbol management
 - **`market_regime.py`**: Optional broad-market gate that scores SPY/QQQ/IWM conditions and annotates trades
 
@@ -85,12 +85,25 @@ export EXECUTION_MODE=alpaca_paper
 .venv/bin/python strategy_selectors/select_stoch_macd_reversal.py --top 12
 .venv/bin/python strategy_selectors/select_breakout_power.py --top 12
 .venv/bin/python strategy_selectors/select_ema_gap_cross.py --top 12
+.venv/bin/python strategy_selectors/select_recovery_scale.py --top 8
 
 # With AI refinement
 .venv/bin/python strategy_selectors/select_opening_impulse.py --top 12 --use-ai
 ```
 
-Selectors write JSON plan files to `data/<strategy>_plan.json` containing ranked symbols and metadata.
+Selectors write JSON plan files to `data/<strategy>_plan.json`. **`main.py` loads `symbols` from that file** (via `parse_plan_symbols()` in `opening_plan.py`). See `AGENTS.md` → *Strategy Selector Plugin Contract* for the required fields and checklist.
+
+```json
+{
+  "strategy": "example",
+  "selection_stage": "pre_market",
+  "symbols": ["AAPL", "NVDA"],
+  "ranked": [{ "symbol": "AAPL", "score": 82.1 }],
+  "rejected": [],
+  "settings": {},
+  "risk_note": "..."
+}
+```
 
 ### Running the Bot
 
@@ -222,14 +235,16 @@ Per `AGENTS.md`, the market universe selector must **not** include strategy-spec
 4. Create selector `strategy_selectors/select_<strategy_name>.py` that:
    - Reads `data/opening_universe.txt` (or builds own universe)
    - Ranks symbols by strategy-specific criteria
-   - Writes `data/<strategy_name>_plan.json`
+   - Writes `data/<strategy_name>_plan.json` using `build_strategy_plan()` from `strategy_selectors/plan.py`
+   - Includes **`symbols`** (required) and **`ranked`** (recommended metadata)
 
-5. Update `opening_plan.py` mappings:
+5. Register plugin hooks on the strategy class:
    ```python
-   def default_plan_file_for_strategy(strategy: str) -> str:
-       if strategy == "strategy_name":
-           return "data/strategy_name_plan.json"
+   selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_<name>.py --top 12"
    ```
+   Add the class to `_STRATEGY_CLASSES` in `strategies/registry.py` (single registration point).
+
+6. Optional: add a hint entry in `opening_plan._SELECTOR_COMMAND_HINTS` (registry `selector_command` is preferred).
 
 ## Code Conventions
 
@@ -293,7 +308,7 @@ Without these overrides, the strategy will generate **zero trades** because sele
 
 - **`logs/trader.log`**: Rotating log with INFO console output and DEBUG file diagnostics
 - **`logs/trade_journal.jsonl`**: JSONL trade history (survives log rotation)
-- **`data/<strategy>_plan.json`**: Selector outputs with ranked symbols and metadata
+- **`data/<strategy>_plan.json`**: Selector outputs; **`symbols`** is the field `main.py` loads for strategy-local watchlists
 - **`data/opening_universe.txt`**: Broad liquid universe from market selector
 
 ## Testing Strategy Changes
