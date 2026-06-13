@@ -27,6 +27,10 @@ DEFAULT_OUTPUT_FILE = default_plan_file_for_strategy("recovery_scale")
 DEFAULT_SELECTOR_MIN_DAILY_DOLLAR_VOLUME = 1_000_000.0
 SELECTION_STAGE = "recovery_scale_selector"
 MARKET_OPEN = time(9, 30)
+MIN_RELATIVE_VOLUME = 0.35
+DECLINE_ATR_MULTIPLE = 0.35
+DECLINE_FLOOR_PCT = 0.0025
+DECLINE_CAP_PCT = 0.0125
 
 
 @dataclass(frozen=True)
@@ -37,11 +41,16 @@ class RecoveryScaleCandidate:
     price: float
     spread_bps: float | None
     dollar_volume: float
+    recent_10m_dollar_volume: float
+    expected_10m_dollar_volume: float
+    relative_volume: float | None
     avg_daily_volume: float
+    avg_daily_dollar_volume: float
     ema40: float
     ema60: float
     daily_trend_quality: str
     intraday_decline_pct: float
+    decline_threshold_pct: float
     recent_bounce_pct: float
     distance_from_ema60_pct: float
     rsi: float | None
@@ -105,6 +114,10 @@ def _atr(bars: list[Bar], period: int = 14) -> float | None:
     return mean(true_ranges[-period:])
 
 
+def _clamp(value: float, floor: float, cap: float) -> float:
+    return max(floor, min(cap, value))
+
+
 def usable_quote(quote: Quote | None) -> Quote | None:
     if quote is None:
         return None
@@ -144,6 +157,14 @@ def score_recovery_scale_candidate(
         return None
     recent_bars = bars[-20:] if bars else []
     dollar_volume = mean([bar.close * bar.volume for bar in recent_bars]) if recent_bars else avg_daily_dollar_volume / 390
+    recent_10m_bars = bars[-10:] if bars else []
+    recent_10m_dollar_volume = sum(bar.close * bar.volume for bar in recent_10m_bars)
+    expected_10m_dollar_volume = avg_daily_dollar_volume * (10 / 390)
+    relative_volume = (
+        recent_10m_dollar_volume / expected_10m_dollar_volume
+        if expected_10m_dollar_volume > 0 and recent_10m_dollar_volume > 0
+        else None
+    )
 
     daily_closes = [bar.close for bar in daily_bars]
     ema40 = _ema(daily_closes, 40)
@@ -181,6 +202,7 @@ def score_recovery_scale_candidate(
     rsi = _rsi(intraday_closes)
     atr = _atr(bars) if bars else None
     atr_pct = (atr / price) if atr and price > 0 else None
+    decline_threshold_pct = _clamp((atr_pct or 0.01) * DECLINE_ATR_MULTIPLE, DECLINE_FLOOR_PCT, DECLINE_CAP_PCT)
 
     score = 0.0
     quality_flags = []
@@ -195,13 +217,26 @@ def score_recovery_scale_candidate(
         score += 5.0
         quality_flags.append("weak_daily_trend")
 
-    liquidity_score = min(30.0, (avg_daily_dollar_volume / min_liquidity) * 10.0)
+    if relative_volume is None:
+        liquidity_score = min(12.0, (avg_daily_dollar_volume / min_liquidity) * 4.0)
+        quality_flags.append("volume_baseline_missing")
+    elif relative_volume >= 1.25:
+        liquidity_score = 30.0
+        quality_flags.append("strong_relative_volume")
+    elif relative_volume >= 0.75:
+        liquidity_score = 22.0
+        quality_flags.append("normal_relative_volume")
+    elif relative_volume >= MIN_RELATIVE_VOLUME:
+        liquidity_score = 12.0
+        quality_flags.append("light_relative_volume")
+    else:
+        return None
     score += liquidity_score
 
-    if 0.02 <= decline_pct <= 0.05:
+    if decline_threshold_pct * 1.2 <= decline_pct <= decline_threshold_pct * 3.0:
         score += 20.0
         quality_flags.append("ideal_decline")
-    elif 0.01 <= decline_pct <= 0.08:
+    elif decline_threshold_pct <= decline_pct <= decline_threshold_pct * 5.0:
         score += 10.0
         quality_flags.append("active_decline")
     else:
@@ -233,11 +268,16 @@ def score_recovery_scale_candidate(
         price=price,
         spread_bps=spread_bps,
         dollar_volume=dollar_volume,
+        recent_10m_dollar_volume=recent_10m_dollar_volume,
+        expected_10m_dollar_volume=expected_10m_dollar_volume,
+        relative_volume=relative_volume,
         avg_daily_volume=avg_daily_volume,
+        avg_daily_dollar_volume=avg_daily_dollar_volume,
         ema40=ema40,
         ema60=ema60,
         daily_trend_quality=trend_quality,
         intraday_decline_pct=decline_pct,
+        decline_threshold_pct=decline_threshold_pct,
         recent_bounce_pct=bounce_pct,
         distance_from_ema60_pct=distance_from_ema60_pct,
         rsi=rsi,

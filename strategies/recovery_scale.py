@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from enum import Enum
+import json
 import logging
+from pathlib import Path
 from typing import Any, ClassVar
 
 from candle import SymbolState
@@ -45,6 +47,16 @@ class SymbolRecoveryState:
     entry_bar_index: int = 0
 
 
+@dataclass(frozen=True)
+class SymbolRecoveryProfile:
+    symbol: str
+    avg_daily_dollar_volume: float = 0.0
+    expected_10m_dollar_volume: float = 0.0
+    relative_volume: float | None = None
+    decline_threshold_pct: float = 0.0
+    atr_pct: float | None = None
+
+
 class RecoveryScaleStrategy(Strategy):
     """Scale-in/scale-out recovery strategy for liquid stocks in constructive trends.
 
@@ -71,7 +83,12 @@ class RecoveryScaleStrategy(Strategy):
         ("recovery_scale_max_tranches", "RECOVERY_SCALE_MAX_TRANCHES", int_env, 5),
         ("recovery_scale_initial_tranche_pct", "RECOVERY_SCALE_INITIAL_TRANCHE_PCT", float_env, 0.10),
         ("recovery_scale_ladder_mode", "RECOVERY_SCALE_LADDER_MODE", str_env, "atr"),
-        ("recovery_scale_min_liquidity_dollar_volume", "RECOVERY_SCALE_MIN_LIQUIDITY_DOLLAR_VOLUME", float_env, 10_000_000.0),
+        ("recovery_scale_min_liquidity_dollar_volume", "RECOVERY_SCALE_MIN_LIQUIDITY_DOLLAR_VOLUME", float_env, 0.0),
+        ("recovery_scale_min_relative_volume", "RECOVERY_SCALE_MIN_RELATIVE_VOLUME", float_env, 0.35),
+        ("recovery_scale_max_order_10m_volume_pct", "RECOVERY_SCALE_MAX_ORDER_10M_VOLUME_PCT", float_env, 0.015),
+        ("recovery_scale_decline_atr_multiple", "RECOVERY_SCALE_DECLINE_ATR_MULTIPLE", float_env, 0.35),
+        ("recovery_scale_decline_floor_pct", "RECOVERY_SCALE_DECLINE_FLOOR_PCT", float_env, 0.0025),
+        ("recovery_scale_decline_cap_pct", "RECOVERY_SCALE_DECLINE_CAP_PCT", float_env, 0.0125),
         ("recovery_scale_max_spread_bps", "RECOVERY_SCALE_MAX_SPREAD_BPS", float_env, 12.0),
         ("recovery_scale_min_price", "RECOVERY_SCALE_MIN_PRICE", float_env, 10.0),
         ("recovery_scale_max_trades_per_symbol_per_session", "RECOVERY_SCALE_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 1),
@@ -114,6 +131,9 @@ class RecoveryScaleStrategy(Strategy):
             "max_tranches": settings.recovery_scale_max_tranches,
             "ladder_mode": settings.recovery_scale_ladder_mode,
             "min_liquidity": settings.recovery_scale_min_liquidity_dollar_volume,
+            "min_relative_volume": settings.recovery_scale_min_relative_volume,
+            "max_order_10m_volume_pct": settings.recovery_scale_max_order_10m_volume_pct,
+            "decline_atr_multiple": settings.recovery_scale_decline_atr_multiple,
             "max_spread_bps": settings.recovery_scale_max_spread_bps,
             "daily_strategy_loss_budget": settings.recovery_scale_daily_strategy_loss_budget,
             "per_symbol_risk_budget_pct": settings.recovery_scale_per_symbol_risk_budget_pct,
@@ -123,6 +143,7 @@ class RecoveryScaleStrategy(Strategy):
         self.settings = settings
         self.market_tz = MARKET_TZ
         self._symbol_states: dict[str, SymbolRecoveryState] = {}
+        self._symbol_profiles = self._load_symbol_profiles()
         self._last_reject_log_ms: dict[tuple[str, str], int] = {}
         self._strategy_daily_loss: float = 0.0
 
@@ -184,10 +205,6 @@ class RecoveryScaleStrategy(Strategy):
         if not regime_ok:
             return self._reject(state, "regime", regime_reason)
 
-        # Check liquidity and spread
-        if not self._check_liquidity(state):
-            return self._reject(state, "liquidity", "insufficient dollar volume")
-
         quote = state.last_quote
         if quote is None or quote.ask <= 0:
             return self._reject(state, "quote", "invalid quote")
@@ -223,6 +240,10 @@ class RecoveryScaleStrategy(Strategy):
         shares = int(initial_value / quote.ask)
         if shares <= 0:
             return self._reject(state, "shares", "insufficient capital for initial tranche")
+
+        liquidity_ok, liquidity_reason = self._check_liquidity(state, planned_order_value=initial_value)
+        if not liquidity_ok:
+            return self._reject(state, "liquidity", liquidity_reason)
 
         # Initialize symbol state for scaling in
         symbol_state.state = RecoveryState.SCALING_IN
@@ -417,15 +438,76 @@ class RecoveryScaleStrategy(Strategy):
 
         return True, f"regime {self._market_regime.name} ok"
 
-    def _check_liquidity(self, state: SymbolState) -> bool:
-        """Check minimum dollar volume liquidity."""
+    def _load_symbol_profiles(self) -> dict[str, SymbolRecoveryProfile]:
+        path = Path("data/recovery_scale_plan.json")
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            LOG.debug("Could not load recovery scale plan profiles from %s", path, exc_info=True)
+            return {}
+
+        profiles: dict[str, SymbolRecoveryProfile] = {}
+        for row in payload.get("ranked") or payload.get("details") or []:
+            symbol = str(row.get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            profiles[symbol] = SymbolRecoveryProfile(
+                symbol=symbol,
+                avg_daily_dollar_volume=float(row.get("avg_daily_dollar_volume") or 0.0),
+                expected_10m_dollar_volume=float(row.get("expected_10m_dollar_volume") or 0.0),
+                relative_volume=float(row["relative_volume"]) if row.get("relative_volume") is not None else None,
+                decline_threshold_pct=float(row.get("decline_threshold_pct") or 0.0),
+                atr_pct=float(row["atr_pct"]) if row.get("atr_pct") is not None else None,
+            )
+        return profiles
+
+    def _profile_for(self, symbol: str) -> SymbolRecoveryProfile | None:
+        return self._symbol_profiles.get(symbol.strip().upper())
+
+    def _check_liquidity(self, state: SymbolState, planned_order_value: float = 0.0) -> tuple[bool, str]:
+        """Check symbol-relative liquidity and order impact."""
         bars = list(state.bars)
         if len(bars) < 10:
-            return False
+            return False, "need at least 10 bars for relative liquidity"
 
         recent_bars = bars[-10:]
-        avg_dollar_volume = sum(bar.close * bar.volume for bar in recent_bars) / len(recent_bars)
-        return avg_dollar_volume >= self.settings.recovery_scale_min_liquidity_dollar_volume
+        recent_10m_dollar_volume = sum(bar.close * bar.volume for bar in recent_bars)
+        if recent_10m_dollar_volume <= 0:
+            return False, "no recent dollar volume"
+
+        absolute_floor = self.settings.recovery_scale_min_liquidity_dollar_volume
+        if absolute_floor > 0 and recent_10m_dollar_volume < absolute_floor:
+            return False, f"recent 10m dollar volume {recent_10m_dollar_volume:.0f} < floor {absolute_floor:.0f}"
+
+        expected_10m = self._expected_10m_dollar_volume(state)
+        if expected_10m > 0:
+            relative_volume = recent_10m_dollar_volume / expected_10m
+            if relative_volume < self.settings.recovery_scale_min_relative_volume:
+                return (
+                    False,
+                    f"relative volume {relative_volume:.2f} < min {self.settings.recovery_scale_min_relative_volume:.2f}",
+                )
+
+        if planned_order_value > 0:
+            max_order_value = recent_10m_dollar_volume * self.settings.recovery_scale_max_order_10m_volume_pct
+            if max_order_value > 0 and planned_order_value > max_order_value:
+                return False, f"order ${planned_order_value:.0f} > {self.settings.recovery_scale_max_order_10m_volume_pct:.2%} of recent 10m volume"
+
+        return True, "ok"
+
+    def _expected_10m_dollar_volume(self, state: SymbolState) -> float:
+        profile = self._profile_for(state.symbol)
+        if profile and profile.expected_10m_dollar_volume > 0:
+            return profile.expected_10m_dollar_volume
+
+        daily_bars = list(getattr(state, "daily_bars", []) or [])
+        if daily_bars:
+            sample = daily_bars[-20:]
+            avg_daily_dollar_volume = sum(bar.close * bar.volume for bar in sample) / len(sample)
+            return avg_daily_dollar_volume * (10 / 390)
+        return 0.0
 
     def _check_daily_trend(self, state: SymbolState) -> bool:
         """Check if daily trend structure is constructive."""
@@ -471,7 +553,8 @@ class RecoveryScaleStrategy(Strategy):
         current_price = closes[-1]
         decline_pct = (recent_high - current_price) / recent_high
 
-        if decline_pct < 0.01:  # Less than 1% decline
+        decline_threshold_pct = self._decline_threshold_pct(state)
+        if decline_pct < decline_threshold_pct:
             return False
 
         # Check for at least one bounce (prevents catching falling knife)
@@ -483,7 +566,19 @@ class RecoveryScaleStrategy(Strategy):
                     has_bounce = True
                     break
 
-        return has_bounce or decline_pct < 0.03  # Allow small declines without bounce
+        return has_bounce or decline_pct < decline_threshold_pct * 3.0  # Allow mild declines without bounce
+
+    def _decline_threshold_pct(self, state: SymbolState) -> float:
+        profile = self._profile_for(state.symbol)
+        if profile and profile.decline_threshold_pct > 0:
+            return profile.decline_threshold_pct
+
+        quote = state.last_quote
+        price = quote.mid if quote is not None and quote.mid > 0 else (list(state.bars)[-1].close if state.bars else 0.0)
+        atr = self._get_atr(state)
+        atr_pct = atr / price if atr > 0 and price > 0 else 0.01
+        raw = atr_pct * self.settings.recovery_scale_decline_atr_multiple
+        return max(self.settings.recovery_scale_decline_floor_pct, min(self.settings.recovery_scale_decline_cap_pct, raw))
 
     def _calculate_risk_budget(self, price: float) -> float:
         """Calculate position value budget based on regime and strategy limits.

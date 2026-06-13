@@ -605,7 +605,12 @@ class Settings:
     recovery_scale_pct_ladder: list[float] = field(default_factory=lambda: [0.01, 0.02, 0.035, 0.05, 0.07])
     recovery_scale_atr_ladder: list[float] = field(default_factory=lambda: [0.5, 1.0, 1.6, 2.3, 3.1])
     recovery_scale_tranche_sizes: list[float] = field(default_factory=lambda: [0.10, 0.15, 0.20, 0.25, 0.30])
-    recovery_scale_min_liquidity_dollar_volume: float = 10_000_000.0
+    recovery_scale_min_liquidity_dollar_volume: float = 0.0
+    recovery_scale_min_relative_volume: float = 0.35
+    recovery_scale_max_order_10m_volume_pct: float = 0.015
+    recovery_scale_decline_atr_multiple: float = 0.35
+    recovery_scale_decline_floor_pct: float = 0.0025
+    recovery_scale_decline_cap_pct: float = 0.0125
     recovery_scale_max_spread_bps: float = 12.0
     recovery_scale_min_price: float = 10.0
     recovery_scale_max_position_value: float = 0.0

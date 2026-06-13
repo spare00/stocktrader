@@ -1826,11 +1826,16 @@ class CoreTradingTests(unittest.TestCase):
             price=100.0,
             spread_bps=4.0,
             dollar_volume=2_000_000.0,
+            recent_10m_dollar_volume=20_000_000.0,
+            expected_10m_dollar_volume=10_000_000.0,
+            relative_volume=2.0,
             avg_daily_volume=1_000_000.0,
+            avg_daily_dollar_volume=390_000_000.0,
             ema40=101.0,
             ema60=99.0,
             daily_trend_quality="uptrend",
             intraday_decline_pct=0.03,
+            decline_threshold_pct=0.01,
             recent_bounce_pct=0.004,
             distance_from_ema60_pct=0.01,
             rsi=42.0,
@@ -3451,7 +3456,8 @@ class CoreTradingTests(unittest.TestCase):
         for index in range(20):
             state.add_bar(bar("AAPL", 100.0 - index * 0.1, 1_000, base_ms + index * 60_000))
 
-        self.assertTrue(strategy._check_liquidity(state))
+        liquidity_ok, _ = strategy._check_liquidity(state)
+        self.assertTrue(liquidity_ok)
         self.assertGreater(strategy._get_atr(state), 0.0)
         self.assertIsInstance(strategy._get_rsi(state), float)
 
