@@ -259,12 +259,18 @@ class PositionTracker:
                     and self.settings.maha7_move_stop_to_entry_after_partial
                 ):
                     position.stop_price = position.entry_price
+                if (
+                    position.strategy == "breakout_power"
+                    and self.settings.bp_move_stop_to_entry_after_partial
+                ):
+                    position.stop_price = max(position.stop_price, position.entry_price)
 
         trade_type = "winner" if pnl > 0 else "loser"
         hold_seconds = (timestamp_ms - position.entry_ms) / 1000
         mfe_price = max(position.max_price, price)
         mfe_pct = (mfe_price - position.entry_price) / position.entry_price if position.entry_price > 0 else 0.0
-        risk_per_share = position.entry_price - position.stop_price
+        risk_stop_price = position.initial_stop_price if position.initial_stop_price is not None else position.stop_price
+        risk_per_share = position.entry_price - risk_stop_price
         r_multiple = (price - position.entry_price) / risk_per_share if risk_per_share > 0 else None
         runner_r_multiple = r_multiple if was_partial and closing_position else None
         full_trade_r_multiple = None

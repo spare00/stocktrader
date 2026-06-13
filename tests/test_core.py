@@ -289,6 +289,7 @@ class CoreTradingTests(unittest.TestCase):
                 "BP_MAX_POSITION_VALUE": "2500",
                 "BP_MAX_HOLD_SECONDS": "360",
                 "BP_MAX_HOLD_DEFER_SECONDS": "120",
+                "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL": "false",
                 "BP_TRADE_COOLDOWN_SECONDS": "90",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
@@ -317,6 +318,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.bp_max_position_value, 2500)
         self.assertEqual(settings.bp_max_hold_seconds, 360)
         self.assertEqual(settings.bp_max_hold_defer_seconds, 120)
+        self.assertFalse(settings.bp_move_stop_to_entry_after_partial)
         self.assertEqual(settings.bp_trade_cooldown_seconds, 90)
         self.assertEqual(settings.gap_and_go_end_minute, 360)
 
@@ -3337,6 +3339,66 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(fill.shares, 4)
         self.assertEqual(tracker.positions["AAPL"].shares, 6)
+
+    def test_breakout_power_partial_exit_moves_stop_to_entry(self):
+        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        tracker = PositionTracker(settings)
+        tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="breakout_power",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.0,
+            stop_price=99.25,
+            initial_stop_price=99.25,
+            original_shares=10,
+        )
+
+        fill = tracker.record_exit(
+            "AAPL",
+            shares=6,
+            price=100.8,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 5),
+            reason="partial 0.8R",
+            mark_partial=True,
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.exit_stage, "partial")
+        self.assertEqual(tracker.positions["AAPL"].shares, 4)
+        self.assertEqual(tracker.positions["AAPL"].stop_price, 100.0)
+
+    def test_breakout_power_partial_exit_can_keep_original_stop(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            bp_move_stop_to_entry_after_partial=False,
+        )
+        tracker = PositionTracker(settings)
+        tracker.positions["AAPL"] = Position(
+            symbol="AAPL",
+            strategy="breakout_power",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.0,
+            stop_price=99.25,
+            initial_stop_price=99.25,
+            original_shares=10,
+        )
+
+        tracker.record_exit(
+            "AAPL",
+            shares=6,
+            price=100.8,
+            timestamp_ms=market_ms(2026, 4, 24, 10, 5),
+            reason="partial 0.8R",
+            mark_partial=True,
+        )
+
+        self.assertEqual(tracker.positions["AAPL"].stop_price, 99.25)
 
     def test_position_tracker_adds_to_existing_position_with_weighted_average(self):
         settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])

@@ -512,6 +512,7 @@ class Settings:
     bp_partial_r: float = 0.8
     bp_partial_profit_pct: float = 0.008
     bp_partial_size: float = 0.6
+    bp_move_stop_to_entry_after_partial: bool = True
     bp_momentum_ema_period: int = 4
     bp_max_spread_bps: float = 6.0
     bp_supertrend_period: int = 10
@@ -782,6 +783,7 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
     ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),
     ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", _int_env, 900),
+    ("bp_move_stop_to_entry_after_partial", "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL", _bool_env, True),
     ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", _int_env, 0),
     ("egc_grace_profit_pct", "EGC_GRACE_PROFIT_PCT", _float_env, 0.006),
