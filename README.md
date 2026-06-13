@@ -14,7 +14,7 @@ cp .env.example .env
 cp profiles/paper.env.example profiles/paper.env
 ```
 
-Set your Alpaca/OpenAI keys in `.env`. Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and local machine overrides; the profile files are for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. **`SYMBOLS` is optional in `profiles/paper.env`:** if set, it creates global symbols shared by every active strategy; selector plan symbols stay strategy-local. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
+Set your Alpaca/OpenAI keys in `.env`. For a **local mock server**, uncomment the mock block in `.env.example` when you copy it to `.env` (one-time per instance). Keep shared paper-trading tunables in `profiles/paper.env`. `.env` is for secrets and per-instance connection settings; `profiles/paper.env` is for shared runtime tuning. Strategy defaults live in code; add strategy-specific environment overrides only when you intentionally want to tune them. **`SYMBOLS` is optional in `profiles/paper.env`:** if set, it creates global symbols shared by every active strategy; selector plan symbols stay strategy-local. Local `.env*` and `profiles/*.env` files are ignored by git; the `*.example` files are committed templates.
 
 For Alpaca paper mode, run:
 
@@ -257,21 +257,15 @@ Or choose the active strategy directly at runtime:
 .venv/bin/python main.py --strategy macd_early_impulse stoch_macd_reversal steady_intraday
 ```
 
-To test a different paper profile without editing the default one:
+To layer extra tunables on top of `profiles/paper.env`:
 
 ```bash
 TUNING_PROFILE=profiles/paper_aggressive.env scripts/run_paper.sh
 ```
 
-For a **local Alpaca-compatible mock** (see `profiles/test.env.example`), use either a full path or the short **`PROFILE`** name (`profiles/<PROFILE>.env`):
+For a **local Alpaca-compatible mock**, copy `.env.example` to `.env` once and uncomment the mock-server block (base URLs, test keys, `REPLAY_*`). The runner loads `.env` then `profiles/paper.env`, so mock and paper runs share the same trading tunables.
 
-```bash
-PROFILE=test scripts/run_paper.sh
-# same as:
-TUNING_PROFILE=profiles/test.env scripts/run_paper.sh
-```
-
-Keep **`EXECUTION_MODE=alpaca_paper`** in those profiles so order and data clients still use the Alpaca SDK against your mock base URLs (`ALPACA_*_BASE_URL`). Use **`EXECUTION_MODE=local`** only when you want in-app simulated fills; profile switching is separate (`TUNING_PROFILE` / `PROFILE`), not tied to `EXECUTION_MODE`.
+Keep **`EXECUTION_MODE=alpaca_paper`** in `profiles/paper.env` so order and data clients still use the Alpaca SDK against your mock base URLs in `.env`. Use **`EXECUTION_MODE=local`** only when you want in-app simulated fills.
 
 Set **`REPLAY_MARKET_DATA=true`** when the mock serves historical bars/quotes. Replay mode keeps the mocked event timestamps as the trading clock, so wall-clock heartbeats do not trigger max-hold, min-hold, cooldown, or shutdown flatten behavior.
 

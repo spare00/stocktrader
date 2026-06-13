@@ -48,7 +48,7 @@ cp .env.example .env
 cp profiles/paper.env.example profiles/paper.env
 ```
 
-Edit `.env` with Alpaca/OpenAI keys. Edit `profiles/paper.env` for shared trading tunables.
+Edit `.env` with Alpaca/OpenAI keys (or uncomment the mock-server block for local replay). Edit `profiles/paper.env` for shared trading tunables.
 
 ### Testing
 
@@ -121,8 +121,7 @@ scripts/run_paper.sh
 # List available strategies
 .venv/bin/python main.py --list-strategies
 
-# Use alternative profile
-PROFILE=test scripts/run_paper.sh
+# Use optional profile overlay on top of profiles/paper.env
 TUNING_PROFILE=profiles/paper_aggressive.env scripts/run_paper.sh
 ```
 
@@ -148,11 +147,12 @@ CSV requires: `type`, `symbol`, `timestamp_ms`. Quote rows: `bid`, `ask`, `bid_s
 
 ### Environment Hierarchy
 
-1. **`.env`**: Secrets (API keys) and local machine overrides (git-ignored)
-2. **`profiles/<name>.env`**: Shared paper-trading tunables (git-ignored; `*.example` files are templates)
-3. **Code defaults**: Strategy defaults in `config.py` and strategy modules
+1. **`.env`**: Secrets, mock-server URLs, replay flags, and local machine overrides (git-ignored; copy from `.env.example` once per instance)
+2. **`profiles/paper.env`**: Shared paper-trading tunables (always loaded by `run_paper.sh`)
+3. **Optional `PROFILE` / `TUNING_PROFILE`**: Extra overlay file loaded after the above
+4. **Code defaults**: Strategy defaults in `config.py` and strategy modules
 
-Override precedence: command-line args → profile env → `.env` → code defaults
+Override precedence: command-line args → optional overlays → `profiles/paper.env` → `.env` → code defaults
 
 ### Key Settings
 

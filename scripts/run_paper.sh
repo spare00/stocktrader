@@ -40,29 +40,27 @@ load_env_file() {
 }
 
 load_env_file ".env" ".env.example"
+load_env_file "profiles/paper.env" "profiles/paper.env.example"
 
-# Tuning profile: full path, or PROFILE=test -> profiles/test.env (letters, digits, _ - only).
-if [[ -n "${TUNING_PROFILE:-}" ]]; then
-  _tuning_env="$TUNING_PROFILE"
-elif [[ -n "${PROFILE:-}" ]]; then
+if [[ -n "${PROFILE:-}" && "$PROFILE" != "paper" ]]; then
   if [[ ! "$PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
     echo "Invalid PROFILE=$PROFILE (use letters, digits, underscore, hyphen only)." >&2
     exit 1
   fi
-  _tuning_env="profiles/${PROFILE}.env"
-else
-  _tuning_env="profiles/paper.env"
+  _named_profile="profiles/${PROFILE}.env"
+  _named_example="profiles/paper.env.example"
+  [[ -f "${_named_profile}.example" ]] && _named_example="${_named_profile}.example"
+  load_env_file "$_named_profile" "$_named_example"
 fi
-if [[ "$_tuning_env" == "profiles/test.env" ]]; then
-  _tuning_example="profiles/test.env.example"
-else
+if [[ -n "${TUNING_PROFILE:-}" ]]; then
   _tuning_example="profiles/paper.env.example"
+  [[ -f "${TUNING_PROFILE}.example" ]] && _tuning_example="${TUNING_PROFILE}.example"
+  load_env_file "$TUNING_PROFILE" "$_tuning_example"
 fi
-load_env_file "$_tuning_env" "$_tuning_example"
 
 : "${EXECUTION_MODE:=alpaca_paper}"
 if [[ "$EXECUTION_MODE" != "alpaca_paper" ]]; then
-  echo "Refusing to run paper wrapper with EXECUTION_MODE=$EXECUTION_MODE. This script targets Alpaca paper (or a mock with the same API). Set EXECUTION_MODE=alpaca_paper in $_tuning_env." >&2
+  echo "Refusing to run paper wrapper with EXECUTION_MODE=$EXECUTION_MODE. This script targets Alpaca paper (or a mock with the same API). Set EXECUTION_MODE=alpaca_paper in profiles/paper.env." >&2
   exit 1
 fi
 
