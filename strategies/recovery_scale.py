@@ -14,6 +14,7 @@ from env_vars import EnvSpec, bool_env, float_env, int_env, str_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
 from strategies.base import Strategy
+from strategy_selectors.select_gap_and_go import latest_valid_quote
 
 LOG = logging.getLogger(__name__)
 MARKET_OPEN = time(9, 30)
@@ -205,7 +206,7 @@ class RecoveryScaleStrategy(Strategy):
         if not regime_ok:
             return self._reject(state, "regime", regime_reason)
 
-        quote = state.last_quote
+        quote = latest_valid_quote(state)
         if quote is None or quote.ask <= 0:
             return self._reject(state, "quote", "invalid quote")
 
@@ -282,7 +283,7 @@ class RecoveryScaleStrategy(Strategy):
 
     def _evaluate_scale_in_add(self, state: SymbolState, symbol_state: SymbolRecoveryState) -> Signal | None:
         """Evaluate whether to add to existing position (tranches 2-5)."""
-        quote = state.last_quote
+        quote = latest_valid_quote(state)
         if quote is None or quote.ask <= 0:
             return None
 
@@ -379,7 +380,7 @@ class RecoveryScaleStrategy(Strategy):
         if symbol_state is None or symbol_state.state == RecoveryState.EXITED:
             return None
 
-        quote = state.last_quote
+        quote = latest_valid_quote(state)
         if quote is None or quote.bid <= 0:
             return None
 
@@ -573,7 +574,7 @@ class RecoveryScaleStrategy(Strategy):
         if profile and profile.decline_threshold_pct > 0:
             return profile.decline_threshold_pct
 
-        quote = state.last_quote
+        quote = latest_valid_quote(state)
         price = quote.mid if quote is not None and quote.mid > 0 else (list(state.bars)[-1].close if state.bars else 0.0)
         atr = self._get_atr(state)
         atr_pct = atr / price if atr > 0 and price > 0 else 0.01
