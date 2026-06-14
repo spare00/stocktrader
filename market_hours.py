@@ -1,12 +1,31 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+if TYPE_CHECKING:
+    from candle import SymbolState
+    from config import Settings
 
 MARKET_TZ = ZoneInfo("America/New_York")
 REGULAR_OPEN_MINUTE = (9 * 60) + 30
 REGULAR_CLOSE_MINUTE = 16 * 60
+
+
+def market_now(settings: Settings, states: dict[str, SymbolState] | None = None) -> datetime:
+    """Return the active market timeline: latest event, replay/mock clock, or wall clock."""
+    if states:
+        latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
+        if latest_event_ms > 0:
+            return datetime.fromtimestamp(latest_event_ms / 1000, tz=MARKET_TZ)
+    if settings.replay_market_data and (
+        (settings.alpaca_data_base_url or "").strip() or settings.replay_use_mock_clock
+    ):
+        from alpaca_stream import replay_clock_utc
+
+        return replay_clock_utc(settings).astimezone(MARKET_TZ)
+    return datetime.now(tz=MARKET_TZ)
 
 
 def trading_day_key(timestamp_ms: int) -> str:

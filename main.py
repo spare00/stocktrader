@@ -29,7 +29,7 @@ from alpaca_client import get_bars_between, get_latest_quotes, get_recent_bars, 
 from candle import SymbolState
 from config import Settings, load_settings
 from execution import build_executor, set_source_commit
-from market_hours import MARKET_TZ, is_regular_market_time
+from market_hours import MARKET_TZ, is_regular_market_time, market_now
 from market_regime import MarketRegimeMonitor
 from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
 from modules.dynamic_mover_selector import DynamicMoverSelector, Selection as DynamicMoverSelection
@@ -400,13 +400,7 @@ def _required_preload_bars_for_settings(settings: Settings, limit: int) -> int:
 
 
 def _indicator_preload_end_time(settings: Settings, states: dict[str, SymbolState]) -> datetime:
-    if settings.replay_market_data:
-        latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
-        if latest_event_ms > 0:
-            return datetime.fromtimestamp(latest_event_ms / 1000, tz=MARKET_TZ)
-        if (settings.alpaca_data_base_url or "").strip() or settings.replay_use_mock_clock:
-            return replay_clock_utc(settings).astimezone(MARKET_TZ)
-    return datetime.now(tz=MARKET_TZ)
+    return market_now(settings, states)
 
 
 def preload_indicator_bars_for_states(settings: Settings, states: dict[str, SymbolState]) -> dict[str, int]:

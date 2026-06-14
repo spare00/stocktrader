@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 from candle import SymbolState
 from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
-from market_hours import MARKET_TZ
+from market_hours import MARKET_TZ, market_now
 from models import ExitDecision, Signal
 from strategy_selectors.select_gap_and_go import latest_valid_quote, regular_bars
 from strategies.base import Strategy
@@ -269,7 +269,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         if not symbols:
             return
 
-        now = self._bootstrap_end_time(states)
+        now = market_now(self.settings, states)
         start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=self.market_tz)
 
         try:
@@ -730,12 +730,6 @@ class MACDEarlyImpulseStrategy(Strategy):
 
     def _market_regime_name(self) -> str:
         return getattr(getattr(self, "_market_regime", None), "name", "")
-
-    def _bootstrap_end_time(self, states: dict[str, SymbolState]) -> datetime:
-        latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
-        if latest_event_ms > 0:
-            return datetime.fromtimestamp(latest_event_ms / 1000, tz=self.market_tz)
-        return datetime.now(tz=self.market_tz)
 
     def _neutral_market_regime_hardening(self) -> float:
         regime = getattr(self, "_market_regime", None)

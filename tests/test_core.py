@@ -34,6 +34,7 @@ from alpaca_stream import (
 import execution as execution_module
 from execution import AlpacaPaperExecutor, LocalPaperExecutor, Position, PositionTracker
 import main as trading_main
+from market_hours import market_now
 from market_regime import MarketRegime, MarketRegimeMonitor
 from modules.symbol_manager import SymbolManager
 from modules.dynamic_execution_selector import DynamicExecutionStrengthSelector, load_candidate_symbols
@@ -5961,16 +5962,31 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.timestamp_ms, decision_ms)
 
     def test_macd_bootstrap_uses_latest_state_event_as_replay_clock(self):
-        strategy = MACDEarlyImpulseStrategy(Settings(symbols=["SMR"]))
+        settings = Settings(symbols=["SMR"])
         state = SymbolState("SMR")
         ts = market_ms(2026, 5, 11, 10, 15)
         state.add_bar(Bar("SMR", 100.0, 100.2, 99.8, 100.1, 1_000, 100.0, ts - 60_000, ts))
 
-        end_time = strategy._bootstrap_end_time({"SMR": state})
+        end_time = market_now(settings, {"SMR": state})
 
         self.assertEqual(end_time.date(), datetime.fromtimestamp(ts / 1000, tz=MARKET_TZ).date())
         self.assertEqual(end_time.hour, 10)
         self.assertEqual(end_time.minute, 15)
+
+    def test_market_now_uses_replay_clock_before_events(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_data_base_url="http://127.0.0.1:19902",
+            replay_market_data=True,
+            replay_use_mock_clock=True,
+        )
+        replay_now = datetime(2026, 5, 22, 9, 35, tzinfo=MARKET_TZ)
+
+        with patch("alpaca_stream.replay_clock_utc", return_value=replay_now.astimezone(timezone.utc)):
+            end_time = market_now(settings, {"F": SymbolState("F")})
+
+        self.assertEqual(end_time, replay_now)
 
     def test_macd_bootstrap_skips_transient_data_failure_without_traceback(self):
         strategy = MACDEarlyImpulseStrategy(Settings(symbols=["SMR"], alpaca_api_key="test", alpaca_secret_key="test"))
@@ -7676,13 +7692,11 @@ class CoreTradingTests(unittest.TestCase):
         now = datetime(2026, 4, 24, 9, 24, tzinfo=MARKET_TZ)
 
         with (
-            patch("main.datetime") as main_datetime,
+            patch("alpaca_stream.replay_clock_utc", return_value=now.astimezone(timezone.utc)),
             patch("main.make_clients", return_value=object()),
             patch("main.get_bars_between", return_value={"AAL": [premarket_bar]}) as get_between,
             patch("main.get_recent_bars", return_value={"AAL": []}) as get_recent,
         ):
-            main_datetime.now.return_value = now
-            main_datetime.combine.side_effect = datetime.combine
             counts = trading_main.preload_indicator_bars_for_states(settings, states)
 
         self.assertEqual(counts, {"AAL": 1})
@@ -7704,7 +7718,7 @@ class CoreTradingTests(unittest.TestCase):
         replay_now = datetime(2026, 5, 22, 9, 35, tzinfo=MARKET_TZ)
 
         with (
-            patch("main.replay_clock_utc", return_value=replay_now.astimezone(timezone.utc)),
+            patch("alpaca_stream.replay_clock_utc", return_value=replay_now.astimezone(timezone.utc)),
             patch("main.make_clients", return_value=object()),
             patch("main.get_bars_between", return_value={"F": [premarket_bar]}) as get_between,
             patch("main.get_recent_bars") as get_recent,

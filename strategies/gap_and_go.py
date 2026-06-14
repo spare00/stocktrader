@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from candle import SymbolState
 from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
-from market_hours import MARKET_TZ
+from market_hours import MARKET_TZ, market_now
 from models import ExitDecision, Signal
 from strategy_selectors.select_gap_and_go import (
     latest_valid_quote,
@@ -127,7 +127,7 @@ class GapAndGoStrategy(Strategy):
         if not symbols:
             return
 
-        now = datetime.now(tz=self.market_tz)
+        now = market_now(self.settings, states)
         start_of_day = datetime.combine(now.date(), PREMARKET_OPEN, tzinfo=self.market_tz)
         previous_start = datetime.combine((now - timedelta(days=5)).date(), time.min, tzinfo=self.market_tz)
 
