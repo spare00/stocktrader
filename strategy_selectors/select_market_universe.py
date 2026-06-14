@@ -29,6 +29,7 @@ DEFAULT_ROLLOVER_LOOKBACK_DAYS = 10
 DEFAULT_MIN_AVERAGE_VOLUME = 5_000.0
 DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME = 10_000.0
 DEFAULT_MAX_SPREAD_BPS = 20.0
+DEFAULT_HARD_MAX_SPREAD_BPS = 100.0
 DEFAULT_LIMIT_UP_PCT = 0.295
 DEFAULT_LIMIT_DOWN_PCT = -0.295
 DEFAULT_LIMIT_CLOSE_NEAR_HIGH_MIN = 0.95
@@ -298,17 +299,15 @@ def passes_recovery_uptrend(
     min_ema20_slope_bps: float,
     ema60_recovery_tolerance: float = DEFAULT_EMA60_RECOVERY_TOLERANCE,
 ) -> bool:
-    if not metrics.get("price_above_ema20"):
-        return False
-    if not metrics.get("price_above_ema40"):
-        return False
-
     ema60 = metrics.get("ema60")
     if ema60 is None or metrics["price"] < ema60 * ema60_recovery_tolerance:
         return False
 
     ema20_slope_bps = metrics.get("ema20_slope_bps")
     if ema20_slope_bps is None or ema20_slope_bps <= min_ema20_slope_bps:
+        return False
+
+    if not (metrics.get("price_above_ema20") or metrics.get("price_above_ema40")):
         return False
 
     ema40_slope_bps = metrics.get("ema40_slope_bps")
@@ -322,16 +321,12 @@ def passes_recovery_uptrend(
             and ema40_slope_bps > ema40_slope_prev_bps
         )
     )
-    if not ema40_turning_up:
+    if not (ema40_turning_up or metrics.get("ema_gap_improving") or metrics.get("ema40_above_ema60")):
         return False
 
     trend_5d_bps = metrics.get("trend_5d_bps")
     trend_10d_bps = metrics.get("trend_10d_bps")
-    if trend_5d_bps is None or trend_5d_bps <= 0:
-        return False
-    if trend_10d_bps is None or trend_10d_bps <= 0:
-        return False
-    if not metrics.get("ema_gap_improving"):
+    if trend_5d_bps is not None and trend_10d_bps is not None and trend_5d_bps < 0 and trend_10d_bps < 0:
         return False
     return True
 
@@ -466,6 +461,17 @@ def _quote_spread_bps(quote: Quote | None) -> float | None:
     return valid_quote.spread_bps if valid_quote else None
 
 
+def quote_quality_score(spread_bps: float | None, *, max_spread_bps: float, hard_max_spread_bps: float) -> float:
+    if spread_bps is None:
+        return -0.75
+    if spread_bps <= max_spread_bps:
+        return 0.5
+    if hard_max_spread_bps <= max_spread_bps:
+        return -1.5
+    penalty_ratio = min((spread_bps - max_spread_bps) / (hard_max_spread_bps - max_spread_bps), 1.0)
+    return -(0.5 + penalty_ratio)
+
+
 def trend_quality_score(metrics: dict) -> float:
     score = 0.0
     score += min(max((metrics.get("trend_60d_bps") or 0.0) / 1_000.0, 0.0), 4.0)
@@ -507,6 +513,7 @@ def score_symbol(
     require_ema_stack: bool,
     require_price_above_ema60: bool,
     reject_wide_spread: bool,
+    hard_max_spread_bps: float = DEFAULT_HARD_MAX_SPREAD_BPS,
     apply_trend_filter: bool = True,
     apply_rollover_rejection: bool = True,
 ) -> dict | None:
@@ -535,13 +542,20 @@ def score_symbol(
         return None
 
     spread_bps = _quote_spread_bps(quote)
-    if reject_wide_spread:
-        if spread_bps is None or spread_bps > max_spread_bps:
-            return None
+    if reject_wide_spread and spread_bps is not None and spread_bps > hard_max_spread_bps:
+        return None
 
     liquidity_score = min(math.log10(metrics["average_volume"] / min_average_volume + 1.0), 6.0)
     dollar_score = min(math.log10(metrics["median_dollar_volume"] / min_median_dollar_volume + 1.0), 6.0)
-    quote_score = 0.5 if spread_bps is not None and spread_bps <= max_spread_bps else 0.0
+    quote_score = (
+        quote_quality_score(
+            spread_bps,
+            max_spread_bps=max_spread_bps,
+            hard_max_spread_bps=hard_max_spread_bps,
+        )
+        if reject_wide_spread
+        else 0.0
+    )
     score = liquidity_score + dollar_score + trend_quality_score(metrics) + quote_score
     track = (
         trend_track(
@@ -633,6 +647,7 @@ def build_universe(args: argparse.Namespace) -> dict:
     min_median_dollar_volume = float(
         getattr(args, "min_median_dollar_volume", DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME)
     )
+    hard_max_spread_bps = float(getattr(args, "hard_max_spread_bps", DEFAULT_HARD_MAX_SPREAD_BPS))
     limit_up_pct = float(getattr(args, "limit_up_pct", DEFAULT_LIMIT_UP_PCT))
     limit_down_pct = float(getattr(args, "limit_down_pct", DEFAULT_LIMIT_DOWN_PCT))
     limit_close_near_high_min = float(getattr(args, "limit_close_near_high_min", DEFAULT_LIMIT_CLOSE_NEAR_HIGH_MIN))
@@ -729,6 +744,7 @@ def build_universe(args: argparse.Namespace) -> dict:
             require_ema_stack=require_ema_stack,
             require_price_above_ema60=require_price_above_ema60,
             reject_wide_spread=not skip_quotes,
+            hard_max_spread_bps=hard_max_spread_bps,
             apply_trend_filter=apply_trend_filter,
             apply_rollover_rejection=apply_rollover_rejection,
         )
@@ -762,6 +778,7 @@ def build_universe(args: argparse.Namespace) -> dict:
         "apply_trend_filter": apply_trend_filter,
         "min_average_volume": args.min_average_volume,
         "min_median_dollar_volume": min_median_dollar_volume,
+        "hard_max_spread_bps": hard_max_spread_bps,
         "limit_up_pct": limit_up_pct,
         "limit_down_pct": limit_down_pct,
         "limit_close_near_high_min": limit_close_near_high_min,
@@ -789,6 +806,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-average-volume", type=float, default=DEFAULT_MIN_AVERAGE_VOLUME)
     parser.add_argument("--min-median-dollar-volume", type=float, default=DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME)
     parser.add_argument("--max-spread-bps", type=float, default=DEFAULT_MAX_SPREAD_BPS)
+    parser.add_argument(
+        "--hard-max-spread-bps",
+        type=float,
+        default=DEFAULT_HARD_MAX_SPREAD_BPS,
+        help=(
+            "Reject only quotes wider than this hard cap. Spreads above --max-spread-bps "
+            "but below this cap remain eligible with a score penalty."
+        ),
+    )
     parser.add_argument("--min-ema20-slope-bps", type=float, default=DEFAULT_MIN_EMA20_SLOPE_BPS)
     parser.add_argument("--min-ema40-slope-bps", type=float, default=DEFAULT_MIN_EMA40_SLOPE_BPS)
     parser.add_argument("--min-ema60-slope-bps", type=float, default=DEFAULT_MIN_EMA60_SLOPE_BPS)

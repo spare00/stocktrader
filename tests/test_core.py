@@ -1544,13 +1544,39 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(result["trend_60d_bps"], 200.0)
         self.assertEqual(result["trend_track"], "established")
 
-    def test_opening_universe_builder_rejects_missing_quote_when_spread_checked(self):
+    def test_opening_universe_builder_penalizes_missing_quote_without_rejecting(self):
         bars = self._market_universe_trend_bars("AAPL")
         result = score_symbol(
             symbol="AAPL",
             bars=bars,
             quote=None,
             **self._universe_score_kwargs(reject_wide_spread=True),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIsNone(result["spread_bps"])
+
+    def test_opening_universe_builder_keeps_penalized_wide_spread_below_hard_cap(self):
+        bars = self._market_universe_trend_bars("WIDE")
+        result = score_symbol(
+            symbol="WIDE",
+            bars=bars,
+            quote=Quote("WIDE", bid=100.0, ask=100.4, bid_size=100, ask_size=100, timestamp_ms=0),
+            **self._universe_score_kwargs(reject_wide_spread=True, hard_max_spread_bps=100.0),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertGreater(result["spread_bps"], 12.0)
+
+    def test_opening_universe_builder_rejects_only_hard_wide_spread(self):
+        bars = self._market_universe_trend_bars("WIDE")
+        result = score_symbol(
+            symbol="WIDE",
+            bars=bars,
+            quote=Quote("WIDE", bid=100.0, ask=102.0, bid_size=100, ask_size=100, timestamp_ms=0),
+            **self._universe_score_kwargs(reject_wide_spread=True, hard_max_spread_bps=100.0),
         )
 
         self.assertIsNone(result)
@@ -1576,6 +1602,28 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertIn(result["trend_track"], {"established", "recovery"})
+
+    def test_opening_universe_builder_accepts_constructive_recovery_before_setup_confirmation(self):
+        metrics = {
+            "price": 100.0,
+            "ema60": 100.5,
+            "price_above_ema20": False,
+            "price_above_ema40": True,
+            "ema20_slope_bps": 5.0,
+            "ema40_slope_bps": -10.0,
+            "ema40_slope_prev_bps": -25.0,
+            "ema40_above_ema60": False,
+            "ema_gap_improving": False,
+            "trend_5d_bps": -5.0,
+            "trend_10d_bps": 12.0,
+        }
+
+        self.assertTrue(
+            select_market_universe.passes_recovery_uptrend(
+                metrics,
+                min_ema20_slope_bps=0.0,
+            )
+        )
 
     def test_opening_universe_builder_rejects_recently_broken_trend_by_default(self):
         bars = self._market_universe_trend_bars(
