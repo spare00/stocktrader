@@ -1544,6 +1544,20 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(result["trend_60d_bps"], 200.0)
         self.assertEqual(result["trend_track"], "established")
 
+    def test_opening_universe_builder_accepts_liquid_lower_price_symbols_by_default(self):
+        bars = self._market_universe_trend_bars("SOFI", start=3.0, daily_step=0.02, volume=10_000_000)
+        result = score_symbol(
+            symbol="SOFI",
+            bars=bars,
+            quote=Quote("SOFI", bid=4.57, ask=4.58, bid_size=100, ask_size=100, timestamp_ms=0),
+            **self._universe_score_kwargs(min_price=select_market_universe.DEFAULT_MIN_PRICE),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertLess(result["price"], 5.0)
+        self.assertGreater(result["median_dollar_volume"], 20_000_000.0)
+
     def test_opening_universe_builder_penalizes_missing_quote_without_rejecting(self):
         bars = self._market_universe_trend_bars("AAPL")
         result = score_symbol(

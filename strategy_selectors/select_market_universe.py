@@ -26,6 +26,7 @@ DEFAULT_MIN_EMA60_SLOPE_BPS = -30.0
 DEFAULT_EMA60_RECOVERY_TOLERANCE = 0.985
 DEFAULT_EMA_GAP_SHRINK_TOLERANCE = 0.02
 DEFAULT_ROLLOVER_LOOKBACK_DAYS = 10
+DEFAULT_MIN_PRICE = 3.0
 DEFAULT_MIN_AVERAGE_VOLUME = 5_000.0
 DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME = 10_000.0
 DEFAULT_MAX_SPREAD_BPS = 20.0
@@ -801,7 +802,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--exchanges", default="NASDAQ,NYSE,ARCA", help="Comma-separated asset exchanges to include.")
-    parser.add_argument("--min-price", type=float, default=5.0)
+    parser.add_argument("--min-price", type=float, default=DEFAULT_MIN_PRICE)
     parser.add_argument("--max-price", type=float, default=500.0)
     parser.add_argument("--min-average-volume", type=float, default=DEFAULT_MIN_AVERAGE_VOLUME)
     parser.add_argument("--min-median-dollar-volume", type=float, default=DEFAULT_MIN_MEDIAN_DOLLAR_VOLUME)
