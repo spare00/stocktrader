@@ -523,6 +523,9 @@ class Settings:
     bp_stop_buffer_pct: float = 0.001
     bp_stop_loss_pct: float = 0.0042
     bp_min_hold_seconds: int = 120
+    bp_entry_high_tolerance_pct: float = 0.003
+    bp_early_failure_seconds: int = 480
+    bp_early_failure_min_mfe_pct: float = 0.0015
     bp_max_trades_per_symbol_per_session: int = 2
     bp_symbol_loss_lock_count: int = 1
     bp_respect_consecutive_loss_limits: bool = True
@@ -788,6 +791,9 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
     ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),
     ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", _int_env, 900),
+    ("bp_entry_high_tolerance_pct", "BP_ENTRY_HIGH_TOLERANCE_PCT", _float_env, 0.003),
+    ("bp_early_failure_seconds", "BP_EARLY_FAILURE_SECONDS", _int_env, 480),
+    ("bp_early_failure_min_mfe_pct", "BP_EARLY_FAILURE_MIN_MFE_PCT", _float_env, 0.0015),
     ("bp_move_stop_to_entry_after_partial", "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL", _bool_env, True),
     ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", _int_env, 0),
