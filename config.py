@@ -512,27 +512,27 @@ class Settings:
     bp_partial_r: float = 0.8
     bp_partial_profit_pct: float = 0.008
     bp_partial_size: float = 0.6
-    bp_move_stop_to_entry_after_partial: bool = True
+    bp_move_stop_to_entry_after_partial: bool = False
     bp_momentum_ema_period: int = 4
     bp_max_spread_bps: float = 6.0
     bp_supertrend_period: int = 10
     bp_supertrend_multiplier: float = 2.0
     bp_supertrend_exit_enabled: bool = True
-    bp_ema_bearish_exit_enabled: bool = True
+    bp_ema_bearish_exit_enabled: bool = False
     bp_stop_lookback_bars: int = 6
     bp_stop_buffer_pct: float = 0.001
     bp_stop_loss_pct: float = 0.0042
     bp_min_hold_seconds: int = 120
     bp_entry_high_tolerance_pct: float = 0.003
-    bp_early_failure_seconds: int = 480
-    bp_early_failure_min_mfe_pct: float = 0.0015
+    bp_early_failure_seconds: int = 0
+    bp_early_failure_min_mfe_pct: float = 0.0
     bp_max_trades_per_symbol_per_session: int = 2
     bp_symbol_loss_lock_count: int = 1
     bp_respect_consecutive_loss_limits: bool = True
     bp_max_open_positions: int = 0
     bp_max_position_value: float = 0.0
     bp_max_hold_seconds: int = 0
-    bp_max_hold_defer_seconds: int = 900
+    bp_max_hold_defer_seconds: int = 0
     bp_trade_cooldown_seconds: int = 0
     bp_consecutive_loss_pause_count: int | None = None
     bp_consecutive_loss_pause_minutes: int | None = None
@@ -790,11 +790,11 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("bp_max_open_positions", "BP_MAX_OPEN_POSITIONS", _int_env, 0),
     ("bp_max_position_value", "BP_MAX_POSITION_VALUE", _float_env, 0.0),
     ("bp_max_hold_seconds", "BP_MAX_HOLD_SECONDS", _int_env, 0),
-    ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", _int_env, 900),
+    ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", _int_env, 0),
     ("bp_entry_high_tolerance_pct", "BP_ENTRY_HIGH_TOLERANCE_PCT", _float_env, 0.003),
-    ("bp_early_failure_seconds", "BP_EARLY_FAILURE_SECONDS", _int_env, 480),
-    ("bp_early_failure_min_mfe_pct", "BP_EARLY_FAILURE_MIN_MFE_PCT", _float_env, 0.0015),
-    ("bp_move_stop_to_entry_after_partial", "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL", _bool_env, True),
+    ("bp_early_failure_seconds", "BP_EARLY_FAILURE_SECONDS", _int_env, 0),
+    ("bp_early_failure_min_mfe_pct", "BP_EARLY_FAILURE_MIN_MFE_PCT", _float_env, 0.0),
+    ("bp_move_stop_to_entry_after_partial", "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL", _bool_env, False),
     ("bp_trade_cooldown_seconds", "BP_TRADE_COOLDOWN_SECONDS", _int_env, 0),
     ("egc_max_hold_seconds", "EGC_MAX_HOLD_SECONDS", _int_env, 0),
     ("egc_grace_profit_pct", "EGC_GRACE_PROFIT_PCT", _float_env, 0.006),

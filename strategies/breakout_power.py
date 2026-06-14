@@ -217,24 +217,19 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_partial_r", "BP_PARTIAL_R", float_env, 0.8),
         ("bp_partial_profit_pct", "BP_PARTIAL_PROFIT_PCT", float_env, 0.008),
         ("bp_partial_size", "BP_PARTIAL_SIZE", float_env, 0.6),
-        ("bp_move_stop_to_entry_after_partial", "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL", bool_env, True),
         ("bp_momentum_ema_period", "BP_MOMENTUM_EMA_PERIOD", int_env, 4),
         ("bp_max_spread_bps", "BP_MAX_SPREAD_BPS", float_env, 6.0),
         ("bp_supertrend_period", "BP_SUPERTREND_PERIOD", int_env, 10),
         ("bp_supertrend_multiplier", "BP_SUPERTREND_MULTIPLIER", float_env, 2.0),
         ("bp_supertrend_exit_enabled", "BP_SUPERTREND_EXIT_ENABLED", bool_env, True),
-        ("bp_ema_bearish_exit_enabled", "BP_EMA_BEARISH_EXIT_ENABLED", bool_env, True),
+        ("bp_ema_bearish_exit_enabled", "BP_EMA_BEARISH_EXIT_ENABLED", bool_env, False),
         ("bp_stop_lookback_bars", "BP_STOP_LOOKBACK_BARS", int_env, 6),
         ("bp_stop_buffer_pct", "BP_STOP_BUFFER_PCT", float_env, 0.001),
         ("bp_stop_loss_pct", "BP_STOP_LOSS_PCT", float_env, 0.0042),
         ("bp_min_hold_seconds", "BP_MIN_HOLD_SECONDS", int_env, 120),
-        ("bp_entry_high_tolerance_pct", "BP_ENTRY_HIGH_TOLERANCE_PCT", float_env, 0.003),
-        ("bp_early_failure_seconds", "BP_EARLY_FAILURE_SECONDS", int_env, 480),
-        ("bp_early_failure_min_mfe_pct", "BP_EARLY_FAILURE_MIN_MFE_PCT", float_env, 0.0015),
         ("bp_max_trades_per_symbol_per_session", "BP_MAX_TRADES_PER_SYMBOL_PER_SESSION", int_env, 2),
         ("bp_symbol_loss_lock_count", "BP_SYMBOL_LOSS_LOCK_COUNT", int_env, 1),
         ("bp_respect_consecutive_loss_limits", "BP_RESPECT_CONSECUTIVE_LOSS_LIMITS", bool_env, True),
-        ("bp_max_hold_defer_seconds", "BP_MAX_HOLD_DEFER_SECONDS", int_env, 900),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.breakout_power",)
 
@@ -255,7 +250,6 @@ class BreakoutPowerStrategy(Strategy):
             "partial_r": settings.bp_partial_r,
             "partial_profit_pct": settings.bp_partial_profit_pct,
             "partial_size": settings.bp_partial_size,
-            "move_stop_to_entry_after_partial": bool(settings.bp_move_stop_to_entry_after_partial),
             "momentum_ema_period": settings.bp_momentum_ema_period,
             "max_spread_bps": settings.bp_max_spread_bps,
             "supertrend_period": settings.bp_supertrend_period,
@@ -266,10 +260,6 @@ class BreakoutPowerStrategy(Strategy):
             "stop_buffer_pct": settings.bp_stop_buffer_pct,
             "stop_loss_pct": settings.bp_stop_loss_pct,
             "min_hold_seconds": settings.bp_min_hold_seconds,
-            "max_hold_defer_seconds": settings.bp_max_hold_defer_seconds,
-            "entry_high_tolerance_pct": settings.bp_entry_high_tolerance_pct,
-            "early_failure_seconds": settings.bp_early_failure_seconds,
-            "early_failure_min_mfe_pct": settings.bp_early_failure_min_mfe_pct,
             "max_trades_per_symbol_per_session": settings.bp_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.bp_symbol_loss_lock_count,
             "respect_consecutive_loss_limits": bool(settings.bp_respect_consecutive_loss_limits),
@@ -316,11 +306,11 @@ class BreakoutPowerStrategy(Strategy):
 
         trend_line = self.settings.bp_trend_line
         green_threshold = self.settings.bp_green_threshold
-        if score < trend_line:
+        if not (prev_score <= trend_line < score):
             return self._reject(
                 state,
-                "bp_trend",
-                f"BP score below {trend_line:.0f} prev={prev_score:.1f} now={score:.1f}",
+                "bp_cross",
+                f"no BP cross above {trend_line:.0f} prev={prev_score:.1f} now={score:.1f}",
             )
         if avg_momentum < green_threshold:
             return self._reject(
@@ -335,10 +325,6 @@ class BreakoutPowerStrategy(Strategy):
                 "bp_momentum_rising",
                 f"BP momentum not rising avg_momentum={avg_momentum:.1f} prev={prev_text}",
             )
-
-        price_ok, price_reason = self._price_continuation_supported(indicator_bars)
-        if not price_ok:
-            return self._reject(state, "price_continuation", price_reason)
 
         supertrend = self._latest_supertrend(indicator_bars)
         if supertrend is None:
@@ -375,9 +361,8 @@ class BreakoutPowerStrategy(Strategy):
             volume_ratio=0.0,
             spread_bps=last.spread_bps,
             reason=(
-                f"breakout_power continuation score={score:.0f} prev={prev_score:.0f} "
+                f"breakout_power cross score={score:.0f} "
                 f"avg_momentum={avg_momentum:.1f} green>={green_threshold:.0f} "
-                f"price=continuation "
                 f"st=green st_line={supertrend_value:.2f} st_cfg={st_period},{st_multiplier:.1f}"
             ),
             stop_price=stop_price,
@@ -412,9 +397,6 @@ class BreakoutPowerStrategy(Strategy):
 
         event_ms = state.last_event_ms or (state.quote.timestamp_ms if state.quote else position.entry_ms)
         age_seconds = (event_ms - position.entry_ms) / 1000
-        if self._max_hold_cap_due(age_seconds):
-            self._clear_position_state(position.symbol)
-            return ExitDecision("BP max hold cap")
         if age_seconds < self.settings.bp_min_hold_seconds:
             return None
 
@@ -422,11 +404,6 @@ class BreakoutPowerStrategy(Strategy):
         if pnl_pct <= -self.settings.bp_stop_loss_pct:
             self._clear_position_state(position.symbol)
             return ExitDecision("stop loss")
-
-        early_failure = self._early_failure_exit_decision(position, price, age_seconds, pnl_pct)
-        if early_failure is not None:
-            self._clear_position_state(position.symbol)
-            return early_failure
 
         supertrend_exit = self._supertrend_bearish_exit_decision(indicator_bars)
         if supertrend_exit is not None:
@@ -496,38 +473,6 @@ class BreakoutPowerStrategy(Strategy):
             self.settings.bp_supertrend_multiplier,
         )
 
-    def _price_continuation_supported(self, indicator_bars: list) -> tuple[bool, str]:
-        if len(indicator_bars) < 20:
-            return False, "need >= 20 bars for price continuation"
-
-        current = indicator_bars[-1]
-        previous = indicator_bars[-2]
-        closes = [float(bar.close) for bar in indicator_bars]
-        ema5 = _ema_series(closes, 5)
-        ema20 = _ema_series(closes, 20)
-
-        current_close = float(current.close)
-        current_open = float(current.open)
-        current_vwap = float(current.vwap)
-        if current_vwap > 0 and current_close < current_vwap:
-            return False, f"close {current_close:.2f} below VWAP {current_vwap:.2f}"
-        if ema5[-1] <= ema20[-1]:
-            return False, f"EMA5 not above EMA20 {ema5[-1]:.2f}<={ema20[-1]:.2f}"
-        if ema5[-1] <= ema5[-2]:
-            return False, f"EMA5 not rising {ema5[-2]:.2f}->{ema5[-1]:.2f}"
-        if current_close <= float(previous.close) and current_close <= current_open:
-            return False, "entry bar is not advancing"
-
-        lookback = min(6, len(indicator_bars))
-        prior_high = max(float(bar.high) for bar in indicator_bars[-lookback:-1])
-        high_tolerance = max(0.0, self.settings.bp_entry_high_tolerance_pct)
-        if prior_high > 0 and current_close < prior_high * (1.0 - high_tolerance):
-            return (
-                False,
-                f"close {current_close:.2f} not near {lookback - 1}-bar high {prior_high:.2f}",
-            )
-        return True, "price continuation confirmed"
-
     def _ema_bearish_exit_decision(self, indicator_bars: list) -> ExitDecision | None:
         if not self.settings.bp_ema_bearish_exit_enabled:
             return None
@@ -592,28 +537,6 @@ class BreakoutPowerStrategy(Strategy):
             reason = f"partial {self.settings.bp_partial_profit_pct:.1%}"
         return self._partial_exit_decision(position, reason=reason)
 
-    def _early_failure_exit_decision(
-        self,
-        position,
-        price: float,
-        age_seconds: float,
-        pnl_pct: float,
-    ) -> ExitDecision | None:
-        failure_seconds = max(0, int(self.settings.bp_early_failure_seconds))
-        min_mfe_pct = max(0.0, float(self.settings.bp_early_failure_min_mfe_pct))
-        if failure_seconds <= 0 or min_mfe_pct <= 0:
-            return None
-        if age_seconds < failure_seconds or position.partial_exit_taken:
-            return None
-
-        max_price = max(float(getattr(position, "max_price", 0.0) or 0.0), price)
-        mfe_pct = (max_price - position.entry_price) / position.entry_price
-        if mfe_pct < min_mfe_pct and pnl_pct <= min_mfe_pct:
-            return ExitDecision(
-                f"BP early failure mfe {mfe_pct:.2%} < {min_mfe_pct:.2%}"
-            )
-        return None
-
     def _partial_exit_decision(self, position, *, reason: str) -> ExitDecision:
         return ExitDecision(
             reason,
@@ -640,28 +563,8 @@ class BreakoutPowerStrategy(Strategy):
         if getattr(position, "strategy", "") != self.name:
             return True
 
-        if self._max_hold_cap_due(age_seconds):
-            LOG.debug(
-                "Max hold cap reached %s [breakout_power]: age=%.1fs max_hold=%ss defer=%ss pnl=%.3f%%",
-                state.symbol,
-                age_seconds,
-                self._configured_max_hold_seconds(),
-                max(0, self.settings.bp_max_hold_defer_seconds),
-                pnl_pct * 100,
-            )
-            return True
-
         bp = self._compute_bp(self._indicator_bars(state))
         if len(bp.scores) < 2:
-            return True
-
-        if pnl_pct < 0:
-            LOG.debug(
-                "Max hold allowed %s [breakout_power]: position losing age=%.1fs pnl=%.3f%%",
-                state.symbol,
-                age_seconds,
-                pnl_pct * 100,
-            )
             return True
 
         trend_line = self.settings.bp_trend_line
@@ -680,17 +583,6 @@ class BreakoutPowerStrategy(Strategy):
             return False
 
         return True
-
-    def _configured_max_hold_seconds(self) -> int:
-        strategy_max = int(getattr(self.settings, "bp_max_hold_seconds", 0) or 0)
-        return max(0, strategy_max)
-
-    def _max_hold_cap_due(self, age_seconds: float) -> bool:
-        max_hold_seconds = self._configured_max_hold_seconds()
-        if max_hold_seconds <= 0:
-            return False
-        defer_seconds = max(0, int(self.settings.bp_max_hold_defer_seconds))
-        return age_seconds >= max_hold_seconds + defer_seconds
 
     def _compute_bp(self, bars: list) -> BPSeries:
         return compute_breakout_power_series(

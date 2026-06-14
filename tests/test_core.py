@@ -289,11 +289,6 @@ class CoreTradingTests(unittest.TestCase):
                 "BP_MAX_OPEN_POSITIONS": "8",
                 "BP_MAX_POSITION_VALUE": "2500",
                 "BP_MAX_HOLD_SECONDS": "360",
-                "BP_MAX_HOLD_DEFER_SECONDS": "120",
-                "BP_ENTRY_HIGH_TOLERANCE_PCT": "0.004",
-                "BP_EARLY_FAILURE_SECONDS": "300",
-                "BP_EARLY_FAILURE_MIN_MFE_PCT": "0.002",
-                "BP_MOVE_STOP_TO_ENTRY_AFTER_PARTIAL": "false",
                 "BP_TRADE_COOLDOWN_SECONDS": "90",
                 "GAP_AND_GO_END_MINUTE": "45",
             },
@@ -321,11 +316,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(settings.bp_max_open_positions, 8)
         self.assertEqual(settings.bp_max_position_value, 2500)
         self.assertEqual(settings.bp_max_hold_seconds, 360)
-        self.assertEqual(settings.bp_max_hold_defer_seconds, 120)
-        self.assertEqual(settings.bp_entry_high_tolerance_pct, 0.004)
-        self.assertEqual(settings.bp_early_failure_seconds, 300)
-        self.assertEqual(settings.bp_early_failure_min_mfe_pct, 0.002)
-        self.assertFalse(settings.bp_move_stop_to_entry_after_partial)
         self.assertEqual(settings.bp_trade_cooldown_seconds, 90)
         self.assertEqual(settings.gap_and_go_end_minute, 360)
 
@@ -3483,7 +3473,12 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(tracker.positions["AAPL"].shares, 6)
 
     def test_breakout_power_partial_exit_moves_stop_to_entry(self):
-        settings = Settings(alpaca_api_key="test", alpaca_secret_key="test", symbols=["AAPL"])
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            bp_move_stop_to_entry_after_partial=True,
+        )
         tracker = PositionTracker(settings)
         tracker.positions["AAPL"] = Position(
             symbol="AAPL",
@@ -11503,7 +11498,27 @@ class CoreTradingTests(unittest.TestCase):
         params.update(overrides)
         return Position(**params)
 
-    def test_breakout_power_emits_buy_on_continuation_with_green_momentum(self):
+    def test_breakout_power_emits_buy_on_cross_with_green_momentum(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 55.0],
+                momentums=[0.0, 100.0],
+                avg_momentums=[50.0, 70.0],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.strategy, "breakout_power")
+        self.assertEqual(signal.side, "BUY")
+        self.assertIn("breakout_power cross", signal.reason)
+
+    def test_breakout_power_rejects_entry_without_fresh_cross(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
@@ -11518,29 +11533,9 @@ class CoreTradingTests(unittest.TestCase):
         ):
             signal = strategy.evaluate(state)
 
-        self.assertIsNotNone(signal)
-        self.assertEqual(signal.strategy, "breakout_power")
-        self.assertEqual(signal.side, "BUY")
-        self.assertIn("breakout_power continuation", signal.reason)
-
-    def test_breakout_power_rejects_entry_without_green_momentum(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
-        strategy = BreakoutPowerStrategy(settings)
-        state = self._bp_state()
-        with patch.object(
-            strategy,
-            "_compute_bp",
-            return_value=BPSeries(
-                scores=[45.0, 55.0],
-                momentums=[0.0, 50.0],
-                avg_momentums=[40.0, 55.0],
-            ),
-        ):
-            signal = strategy.evaluate(state)
-
         self.assertIsNone(signal)
 
-    def test_breakout_power_allows_entry_when_score_eases_but_price_continues(self):
+    def test_breakout_power_rejects_entry_when_score_eases_without_cross(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
@@ -11555,32 +11550,19 @@ class CoreTradingTests(unittest.TestCase):
         ):
             signal = strategy.evaluate(state)
 
-        self.assertIsNotNone(signal)
-        self.assertIn("breakout_power continuation", signal.reason)
+        self.assertIsNone(signal)
 
-    def test_breakout_power_rejects_entry_without_price_continuation(self):
+    def test_breakout_power_rejects_entry_without_green_momentum(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
-        last = state.bars[-1]
-        state.bars[-1] = Bar(
-            last.symbol,
-            open=last.close + 0.05,
-            high=last.close + 0.10,
-            low=last.close - 0.40,
-            close=last.close - 0.30,
-            volume=last.volume,
-            vwap=last.close,
-            start_ms=last.start_ms,
-            end_ms=last.end_ms,
-        )
         with patch.object(
             strategy,
             "_compute_bp",
             return_value=BPSeries(
-                scores=[80.0, 80.0],
-                momentums=[0.0, 100.0],
-                avg_momentums=[50.0, 70.0],
+                scores=[45.0, 55.0],
+                momentums=[0.0, 50.0],
+                avg_momentums=[40.0, 55.0],
             ),
         ):
             signal = strategy.evaluate(state)
@@ -12156,40 +12138,6 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.reason, "BP below 51")
 
-    def test_breakout_power_exits_early_when_trade_has_no_mfe(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            strategy_names=["breakout_power"],
-            bp_early_failure_seconds=300,
-            bp_early_failure_min_mfe_pct=0.0015,
-            bp_partial_r=99.0,
-            bp_partial_profit_pct=99.0,
-        )
-        strategy = BreakoutPowerStrategy(settings)
-        state = self._bp_state()
-        event_ms = state.last_event_ms or market_ms(2026, 4, 24, 10, 14)
-        state.update_quote(Quote("AAPL", 100.02, 100.04, 100, 100, event_ms))
-        position = self._bp_position(
-            entry_price=100.0,
-            entry_ms=event_ms - 360_000,
-            max_price=100.10,
-            stop_price=99.0,
-            initial_stop_price=99.0,
-        )
-        with patch.object(
-            strategy,
-            "_compute_bp",
-            return_value=BPSeries(
-                scores=[80.0, 80.0],
-                momentums=[50.0, 50.0],
-                avg_momentums=[70.0, 72.0],
-            ),
-        ):
-            decision = strategy.should_exit(state, position)
-
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "BP early failure mfe 0.10% < 0.15%")
-
     def test_breakout_power_defers_exit_when_recovery_hold_supported(self):
         settings = Settings(
             symbols=["AAPL"],
@@ -12594,66 +12542,6 @@ class CoreTradingTests(unittest.TestCase):
             allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=0.001)
 
         self.assertFalse(allow_exit)
-
-    def test_breakout_power_allows_max_hold_when_position_losing_even_if_bp_constructive(self):
-        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
-        strategy = BreakoutPowerStrategy(settings)
-        state = self._bp_state()
-        position = self._bp_position()
-        with patch.object(
-            strategy,
-            "_compute_bp",
-            return_value=BPSeries(
-                scores=[48.0, 52.0],
-                momentums=[50.0, 100.0],
-                avg_momentums=[60.0, 70.0],
-            ),
-        ):
-            allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=-0.001)
-
-        self.assertTrue(allow_exit)
-
-    def test_breakout_power_allows_max_hold_after_defer_cap_even_when_constructive(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            strategy_names=["breakout_power"],
-            bp_max_hold_seconds=600,
-            bp_max_hold_defer_seconds=120,
-        )
-        strategy = BreakoutPowerStrategy(settings)
-        state = self._bp_state()
-        position = self._bp_position()
-        with patch.object(
-            strategy,
-            "_compute_bp",
-            return_value=BPSeries(
-                scores=[48.0, 52.0],
-                momentums=[50.0, 100.0],
-                avg_momentums=[60.0, 70.0],
-            ),
-        ):
-            allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=721.0, pnl_pct=-0.001)
-
-        self.assertTrue(allow_exit)
-
-    def test_breakout_power_exits_on_strategy_max_hold_cap(self):
-        settings = Settings(
-            symbols=["AAPL"],
-            strategy_names=["breakout_power"],
-            bp_max_hold_seconds=600,
-            bp_max_hold_defer_seconds=120,
-            bp_partial_r=99.0,
-            bp_partial_profit_pct=99.0,
-        )
-        strategy = BreakoutPowerStrategy(settings)
-        state = self._bp_state()
-        state.update_quote(Quote("AAPL", 100.52, 100.54, 100, 100, state.last_event_ms or 0))
-        position = self._bp_position(entry_ms=(state.last_event_ms or 0) - 721_000)
-
-        decision = strategy.should_exit(state, position)
-
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.reason, "BP max hold cap")
 
     def test_breakout_power_allows_max_hold_when_bp_not_constructive(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
