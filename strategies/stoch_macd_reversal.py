@@ -11,6 +11,7 @@ from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
+from modules.indicator_history import continuous_indicator_bars
 from strategy_selectors.select_gap_and_go import latest_valid_quote
 from strategies.base import Strategy
 from strategies.macd_early_impulse import _ema_series
@@ -263,6 +264,10 @@ class StochMACDReversalStrategy(Strategy):
                     bars.append(bar)
         return bars
 
+    def _warmup_indicator_bars(self, state: SymbolState) -> list:
+        """Continuous premarket/regular chain for MACD/STOCH warmup (matches macd_early_impulse)."""
+        return continuous_indicator_bars(state, self.settings)
+
     def evaluate(self, state: SymbolState) -> Signal | None:
         if state.last_event_kind not in {"quote", "bar"}:
             return None
@@ -294,15 +299,17 @@ class StochMACDReversalStrategy(Strategy):
                 f"need >= {self.settings.stoch_macd_min_bars} indicator bars, have {len(indicator_bars)}",
             )
         current_session_bars = self._current_session_indicator_bars(state)
+        warmup_bars = self._warmup_indicator_bars(state)
 
-        stoch = self._compute_stoch(state, current_session_bars)
-        macd = self._compute_macd(state, current_session_bars)
+        stoch = self._compute_stoch(state, warmup_bars)
+        macd = self._compute_macd(state, warmup_bars)
         if stoch is None or macd is None:
             return self._reject(
                 state,
                 "indicators",
                 (
                     "could not compute STOCH/MACD "
+                    f"warmup_bars={len(warmup_bars)} "
                     f"session_bars={len(current_session_bars)} "
                     f"macd_need={self.settings.stoch_macd_macd_warmup_bars} "
                     f"stoch_need={STOCH_REQUIRED_BARS}"
@@ -602,8 +609,9 @@ class StochMACDReversalStrategy(Strategy):
         if self.settings.stoch_macd_min_bars > 0 and len(indicator_bars) < self.settings.stoch_macd_min_bars:
             return None
         current_session_bars = self._current_session_indicator_bars(state)
-        stoch = self._compute_stoch(state, current_session_bars)
-        macd = self._compute_macd(state, current_session_bars)
+        warmup_bars = self._warmup_indicator_bars(state)
+        stoch = self._compute_stoch(state, warmup_bars)
+        macd = self._compute_macd(state, warmup_bars)
         supertrend = self._compute_supertrend(
             current_session_bars,
             self.settings.stoch_macd_supertrend_period,
@@ -929,7 +937,7 @@ class StochMACDReversalStrategy(Strategy):
 
     def _compute_macd(self, state: SymbolState, bars: list | None = None) -> tuple[list[float], list[float], list[float]] | None:
         if bars is None:
-            bars = self._current_session_indicator_bars(state)
+            bars = self._warmup_indicator_bars(state)
         if len(bars) < self.settings.stoch_macd_macd_warmup_bars:
             return None
         closes = [float(bar.close) for bar in bars]
@@ -951,7 +959,7 @@ class StochMACDReversalStrategy(Strategy):
         smooth_k: int = 3,
     ) -> tuple[list[float], list[float]] | None:
         if bars is None:
-            bars = self._current_session_indicator_bars(state)
+            bars = self._warmup_indicator_bars(state)
         if len(bars) < k_period + smooth_k + d_period:
             return None
 

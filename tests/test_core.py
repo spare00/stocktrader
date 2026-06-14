@@ -11180,7 +11180,7 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
-    def test_stoch_macd_reversal_indicators_do_not_use_prior_day_hidden_bars(self):
+    def test_stoch_macd_reversal_macd_stoch_use_continuous_warmup_bars(self):
         settings = Settings(symbols=["AAPL"], stoch_macd_macd_warmup_bars=26)
         strategy = StochMACDReversalStrategy(settings)
         state = SymbolState("AAPL")
@@ -11219,10 +11219,10 @@ class CoreTradingTests(unittest.TestCase):
                 )
             )
 
-        self.assertGreaterEqual(len(strategy._indicator_bars(state)), settings.stoch_macd_macd_warmup_bars)
+        self.assertGreaterEqual(len(strategy._warmup_indicator_bars(state)), settings.stoch_macd_macd_warmup_bars)
         self.assertLess(len(strategy._current_session_indicator_bars(state)), settings.stoch_macd_macd_warmup_bars)
-        self.assertIsNone(strategy._compute_macd(state))
-        self.assertIsNone(strategy._compute_stoch(state))
+        self.assertIsNotNone(strategy._compute_macd(state))
+        self.assertIsNotNone(strategy._compute_stoch(state))
 
     def test_stoch_macd_reversal_allows_supertrend_filter_to_be_disabled(self):
         settings = self._stoch_macd_legacy_settings(
