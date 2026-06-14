@@ -310,11 +310,17 @@ class BreakoutPowerStrategy(Strategy):
 
         trend_line = self.settings.bp_trend_line
         green_threshold = self.settings.bp_green_threshold
-        if not (prev_score <= trend_line < score):
+        if score < trend_line:
             return self._reject(
                 state,
-                "bp_cross",
-                f"no BP cross above {trend_line:.0f} prev={prev_score:.1f} now={score:.1f}",
+                "bp_trend",
+                f"BP score below {trend_line:.0f} prev={prev_score:.1f} now={score:.1f}",
+            )
+        if score < prev_score:
+            return self._reject(
+                state,
+                "bp_fading",
+                f"BP score fading prev={prev_score:.1f} now={score:.1f}",
             )
         if avg_momentum < green_threshold:
             return self._reject(
@@ -365,7 +371,7 @@ class BreakoutPowerStrategy(Strategy):
             volume_ratio=0.0,
             spread_bps=last.spread_bps,
             reason=(
-                f"breakout_power cross score={score:.0f} "
+                f"breakout_power continuation score={score:.0f} prev={prev_score:.0f} "
                 f"avg_momentum={avg_momentum:.1f} green>={green_threshold:.0f} "
                 f"st=green st_line={supertrend_value:.2f} st_cfg={st_period},{st_multiplier:.1f}"
             ),
@@ -583,6 +589,15 @@ class BreakoutPowerStrategy(Strategy):
 
         bp = self._compute_bp(self._indicator_bars(state))
         if len(bp.scores) < 2:
+            return True
+
+        if pnl_pct < 0:
+            LOG.debug(
+                "Max hold allowed %s [breakout_power]: position losing age=%.1fs pnl=%.3f%%",
+                state.symbol,
+                age_seconds,
+                pnl_pct * 100,
+            )
             return True
 
         trend_line = self.settings.bp_trend_line

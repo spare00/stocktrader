@@ -11290,7 +11290,7 @@ class CoreTradingTests(unittest.TestCase):
         params.update(overrides)
         return Position(**params)
 
-    def test_breakout_power_emits_buy_on_cross_above_trend_with_green_momentum(self):
+    def test_breakout_power_emits_buy_on_continuation_with_green_momentum(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
@@ -11298,7 +11298,7 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_bp",
             return_value=BPSeries(
-                scores=[45.0, 55.0],
+                scores=[80.0, 80.0],
                 momentums=[0.0, 100.0],
                 avg_momentums=[50.0, 70.0],
             ),
@@ -11308,7 +11308,7 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.strategy, "breakout_power")
         self.assertEqual(signal.side, "BUY")
-        self.assertIn("breakout_power cross", signal.reason)
+        self.assertIn("breakout_power continuation", signal.reason)
 
     def test_breakout_power_rejects_entry_without_green_momentum(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
@@ -11321,6 +11321,23 @@ class CoreTradingTests(unittest.TestCase):
                 scores=[45.0, 55.0],
                 momentums=[0.0, 50.0],
                 avg_momentums=[40.0, 55.0],
+            ),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
+    def test_breakout_power_rejects_entry_when_score_fades(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[80.0, 55.0],
+                momentums=[0.0, 100.0],
+                avg_momentums=[50.0, 70.0],
             ),
         ):
             signal = strategy.evaluate(state)
@@ -12283,7 +12300,25 @@ class CoreTradingTests(unittest.TestCase):
             BreakoutPowerStrategy.hold_supported(bp, trend_line=50.0, hold_floor=45.0)
         )
 
-    def test_breakout_power_defers_max_hold_when_bp_constructive(self):
+    def test_breakout_power_defers_max_hold_when_bp_constructive_and_position_not_losing(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        position = self._bp_position()
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[48.0, 52.0],
+                momentums=[50.0, 100.0],
+                avg_momentums=[60.0, 70.0],
+            ),
+        ):
+            allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=0.001)
+
+        self.assertFalse(allow_exit)
+
+    def test_breakout_power_allows_max_hold_when_position_losing_even_if_bp_constructive(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
         state = self._bp_state()
@@ -12299,7 +12334,7 @@ class CoreTradingTests(unittest.TestCase):
         ):
             allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=-0.001)
 
-        self.assertFalse(allow_exit)
+        self.assertTrue(allow_exit)
 
     def test_breakout_power_allows_max_hold_after_defer_cap_even_when_constructive(self):
         settings = Settings(
