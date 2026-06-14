@@ -404,6 +404,8 @@ def _indicator_preload_end_time(settings: Settings, states: dict[str, SymbolStat
         latest_event_ms = max((state.last_event_ms or 0) for state in states.values()) if states else 0
         if latest_event_ms > 0:
             return datetime.fromtimestamp(latest_event_ms / 1000, tz=MARKET_TZ)
+        if (settings.alpaca_data_base_url or "").strip() or settings.replay_use_mock_clock:
+            return replay_clock_utc(settings).astimezone(MARKET_TZ)
     return datetime.now(tz=MARKET_TZ)
 
 
@@ -439,11 +441,14 @@ def preload_indicator_bars_for_states(settings: Settings, states: dict[str, Symb
     except Exception:
         logging.exception("Indicator preload: explicit session backfill failed")
 
-    try:
-        recent_map = get_recent_bars(settings, symbols, limit=limit)
-    except Exception:
-        logging.exception("Indicator preload: get_recent_bars failed")
-        recent_map = {symbol: [] for symbol in symbols}
+    skip_recent_fallback = settings.replay_market_data and replay_data_base_url
+    recent_map: dict[str, list[Bar]] = {symbol: [] for symbol in symbols}
+    if not skip_recent_fallback:
+        try:
+            recent_map = get_recent_bars(settings, symbols, limit=limit)
+        except Exception:
+            logging.exception("Indicator preload: get_recent_bars failed")
+            recent_map = {symbol: [] for symbol in symbols}
     for symbol in symbols:
         seen = {bar.start_ms for bar in bars_map.get(symbol, [])}
         for bar in recent_map.get(symbol, []):

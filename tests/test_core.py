@@ -7688,7 +7688,33 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(counts, {"AAL": 1})
         self.assertEqual(list(states["AAL"].bars), [premarket_bar])
         get_between.assert_called_once()
-        get_recent.assert_called_once()
+        get_recent.assert_not_called()
+
+    def test_indicator_preload_uses_replay_clock_when_mock_data_url_and_no_events(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            alpaca_data_base_url="http://127.0.0.1:19902",
+            replay_market_data=True,
+            replay_use_mock_clock=True,
+            indicator_preload_bars=1000,
+        )
+        states = {"F": SymbolState("F")}
+        premarket_bar = bar("F", close=13.66, volume=90_000, end_ms=market_ms(2026, 5, 22, 9, 20))
+        replay_now = datetime(2026, 5, 22, 9, 35, tzinfo=MARKET_TZ)
+
+        with (
+            patch("main.replay_clock_utc", return_value=replay_now.astimezone(timezone.utc)),
+            patch("main.make_clients", return_value=object()),
+            patch("main.get_bars_between", return_value={"F": [premarket_bar]}) as get_between,
+            patch("main.get_recent_bars") as get_recent,
+        ):
+            counts = trading_main.preload_indicator_bars_for_states(settings, states)
+
+        self.assertEqual(counts, {"F": 1})
+        end = get_between.call_args.args[4]
+        self.assertEqual(end, replay_now)
+        get_recent.assert_not_called()
 
     def test_indicator_preload_uses_replay_event_time_for_session_backfill(self):
         settings = Settings(
