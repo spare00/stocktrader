@@ -20,7 +20,16 @@ MARKET_REGIME_RE = re.compile(r"\bmarket_regime\s+([a-z_]+)\b")
 STRATEGY_REGIME_RE = re.compile(r"\bregime=([a-z_]+)(?::[0-9]+(?:\.[0-9]+)?)?\b")
 SIZE_MULT_RE = re.compile(r"\bsize_mult=([0-9]+(?:\.[0-9]+)?)\b")
 RUNTIME_SETTINGS_MARKER = "Runtime settings "
+HEARTBEAT_MARKER = "Heartbeat "
 MARKET_BENCHMARK_SYMBOLS = ("SPY", "QQQ", "IWM")
+SIGNAL_REJECTED_RE = re.compile(r"Signal rejected \S+ \S+ from ([^:]+): (.+)$")
+DEBUG_STRATEGY_RE = re.compile(r"DEBUG strategies\.(\w+) \| (.+)$")
+FILTER_TAG_PATTERNS = (
+    re.compile(r"^No \S+ entry \S+ \[([^\]]+)\]: (.+)$"),
+    re.compile(r"^\S+ reject \S+ \[([^\]]+)\]: (.+)$"),
+    re.compile(r"^\S+ \S+ rejected \[([^\]]+)\]: (.+)$"),
+    re.compile(r"^Recovery scale reject \S+: (.+)$"),
+)
 
 
 @dataclass(frozen=True)
@@ -387,6 +396,175 @@ def load_commits_from_trader_log(path: Path) -> list[str]:
     return commits
 
 
+def _last_session_start_line(lines: list[str]) -> int:
+    for index in range(len(lines) - 1, -1, -1):
+        if RUNTIME_SETTINGS_MARKER in lines[index]:
+            return index
+    return 0
+
+
+def _parse_runtime_settings_line(line: str) -> dict | None:
+    marker_idx = line.find(RUNTIME_SETTINGS_MARKER)
+    if marker_idx < 0:
+        return None
+    try:
+        return json.loads(line[marker_idx + len(RUNTIME_SETTINGS_MARKER) :])
+    except json.JSONDecodeError:
+        return None
+
+
+def _parse_heartbeat_line(line: str) -> dict | None:
+    marker_idx = line.find(HEARTBEAT_MARKER)
+    if marker_idx < 0:
+        return None
+    try:
+        return json.loads(line[marker_idx + len(HEARTBEAT_MARKER) :])
+    except json.JSONDecodeError:
+        return None
+
+
+def _parse_debug_filter_reason(message: str) -> str | None:
+    text = message.strip()
+    for pattern in FILTER_TAG_PATTERNS:
+        match = pattern.match(text)
+        if not match:
+            continue
+        if len(match.groups()) == 2:
+            return f"[{match.group(1)}] {match.group(2)}"
+        return match.group(1)
+    return None
+
+
+def _truncate_reason(text: str, limit: int = 72) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
+def _top_counter_items(counter: Counter, limit: int = 3) -> list[tuple[str, int]]:
+    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+
+def load_session_activity_from_trader_log(path: Path) -> dict | None:
+    """Aggregate the latest trader.log run: signals, fills, and blockers per strategy."""
+    if not path.is_file():
+        return None
+
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    session_lines = lines[_last_session_start_line(lines):]
+    if not session_lines:
+        return None
+
+    active_strategies: list[str] = []
+    source_commit = ""
+    for line in session_lines:
+        payload = _parse_runtime_settings_line(line)
+        if payload is None:
+            continue
+        active_strategies = [str(name) for name in payload.get("strategies") or [] if str(name).strip()]
+        source_commit = str((payload.get("source_revision") or {}).get("commit") or "").strip()
+        break
+
+    signals: Counter[str] = Counter()
+    entries: Counter[str] = Counter()
+    rejections: Counter[str] = Counter()
+    rejection_reasons: dict[str, Counter[str]] = defaultdict(Counter)
+    filter_reasons: dict[str, Counter[str]] = defaultdict(Counter)
+
+    for line in session_lines:
+        heartbeat = _parse_heartbeat_line(line)
+        if heartbeat is not None:
+            for strategy, stats in (heartbeat.get("strategies") or {}).items():
+                name = str(strategy).strip()
+                if not name:
+                    continue
+                signals[name] += int(stats.get("signals") or 0)
+                entries[name] += int(stats.get("entries") or 0)
+                rejections[name] += int(stats.get("rejections") or 0)
+                for reason, count in stats.get("top_rejections") or []:
+                    rejection_reasons[name][str(reason)] += int(count)
+            continue
+
+        signal_match = SIGNAL_REJECTED_RE.search(line)
+        if signal_match:
+            strategy = signal_match.group(1).strip()
+            reason = signal_match.group(2).strip()
+            rejections[strategy] += 1
+            rejection_reasons[strategy][reason] += 1
+            continue
+
+        debug_match = DEBUG_STRATEGY_RE.search(line)
+        if debug_match:
+            strategy = debug_match.group(1).strip()
+            filter_reason = _parse_debug_filter_reason(debug_match.group(2))
+            if filter_reason:
+                filter_reasons[strategy][filter_reason] += 1
+
+    strategy_names = sorted(
+        {
+            name
+            for name in active_strategies
+            if name
+        }
+        | set(signals)
+        | set(entries)
+        | set(rejections)
+        | set(filter_reasons)
+    )
+    if not strategy_names and not active_strategies:
+        return None
+
+    by_strategy: dict[str, dict] = {}
+    for strategy in strategy_names or active_strategies:
+        signal_count = signals.get(strategy, 0)
+        rejection_count = rejections.get(strategy, 0)
+        if signal_count == 0 and rejection_count > 0:
+            signal_count = rejection_count
+        top_rejections = _top_counter_items(rejection_reasons.get(strategy, Counter()))
+        top_filters = _top_counter_items(filter_reasons.get(strategy, Counter()))
+        by_strategy[strategy] = {
+            "signals": signal_count,
+            "entries": entries.get(strategy, 0),
+            "rejections": rejection_count,
+            "top_rejections": top_rejections,
+            "top_filters": top_filters,
+        }
+
+    return {
+        "active_strategies": active_strategies,
+        "source_commit": source_commit,
+        "by_strategy": by_strategy,
+    }
+
+
+def primary_no_trade_reason(stats: dict) -> str:
+    if int(stats.get("journal_trades") or 0) > 0:
+        return "—"
+    if int(stats.get("entries") or 0) > 0:
+        return "entries logged in trader.log (no journal round-trips)"
+    rejections = int(stats.get("rejections") or 0)
+    top_rejections = stats.get("top_rejections") or []
+    if rejections > 0 and top_rejections:
+        reason, count = top_rejections[0]
+        return f"{_truncate_reason(reason)} ({count})"
+    signals = int(stats.get("signals") or 0)
+    top_filters = stats.get("top_filters") or []
+    if signals == 0 and top_filters:
+        reason, count = top_filters[0]
+        return f"{_truncate_reason(reason)} ({count}×)"
+    if signals > 0:
+        return "signals produced but none filled"
+    return "no qualifying setups in log"
+
+
+def attach_journal_trades_to_session_activity(session_activity: dict | None, journal_by_strategy: dict) -> None:
+    if not session_activity:
+        return
+    for strategy, stats in session_activity.get("by_strategy", {}).items():
+        stats["journal_trades"] = int((journal_by_strategy.get(strategy) or {}).get("trades") or 0)
+
+
 def commits_by_trading_day(round_trips: list[RoundTrip]) -> dict[str, list[str]]:
     by_day: dict[str, set[str]] = defaultdict(set)
     for trade in round_trips:
@@ -560,6 +738,9 @@ def summarize(
         market_returns_by_day=market_returns_by_day,
     )
 
+    session_activity = load_session_activity_from_trader_log(trader_log) if trader_log else None
+    attach_journal_trades_to_session_activity(session_activity, summarize_groups(by_strategy))
+
     return {
         "positions": summarize_positions(positions),
         "trades": len(round_trips),
@@ -593,6 +774,7 @@ def summarize(
             Counter(normalize_exit_reason(trade.reason or "unknown") for trade in round_trips)
         ),
         "unmatched_events": unmatched,
+        "session_activity": session_activity,
     }
 
 
@@ -925,7 +1107,52 @@ def _print_by_day_entry_time_et(by_day: dict[str, dict[str, dict]]) -> None:
             print(f"{DETAIL_INDENT}{day:<{day_w}}  " + " | ".join(blocks))
 
 
+def _print_session_activity(session_activity: dict | None) -> None:
+    if not session_activity:
+        return
+    by_strategy = session_activity.get("by_strategy") or {}
+    if not by_strategy:
+        return
+
+    _print_section("Session Activity (trader.log)")
+    commit = session_activity.get("source_commit") or ""
+    if commit:
+        print(f"{DETAIL_INDENT}Latest run commit: {commit}")
+
+    rows: list[list[str]] = []
+    for strategy in sorted(by_strategy):
+        stats = dict(by_strategy[strategy])
+        stats.setdefault("journal_trades", 0)
+        rows.append(
+            [
+                strategy,
+                str(stats.get("journal_trades") or 0),
+                str(stats.get("signals") or 0),
+                str(stats.get("entries") or 0),
+                str(stats.get("rejections") or 0),
+                primary_no_trade_reason(stats),
+            ]
+        )
+    _print_table(["Strategy", "Journal", "Signals", "Entries", "Blocked", "Primary blocker"], rows)
+
+    detail_rows: list[list[str]] = []
+    for strategy in sorted(by_strategy):
+        stats = by_strategy[strategy]
+        if int(stats.get("journal_trades") or 0) > 0:
+            continue
+        for label, key in (("Risk/signal block", "top_rejections"), ("Strategy filter", "top_filters")):
+            reasons = stats.get(key) or []
+            if not reasons:
+                continue
+            for reason, count in reasons[:3]:
+                detail_rows.append([strategy, label, str(count), _truncate_reason(reason, 96)])
+    if detail_rows:
+        print(f"{DETAIL_INDENT}Zero-trade strategy details:")
+        _print_table(["Strategy", "Kind", "Count", "Reason"], detail_rows)
+
+
 def _print_text_details(summary: dict, positions: dict) -> None:
+    _print_session_activity(summary.get("session_activity"))
     if summary["by_exit_reason"]:
         _print_section("Exit Reasons")
         rows = [

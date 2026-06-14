@@ -1168,6 +1168,74 @@ class CoreTradingTests(unittest.TestCase):
             self.assertAlmostEqual(oi["total_pnl"], 10.0)
             self.assertEqual(list(oi["by_strategy"].keys()), ["opening_impulse"])
 
+    def test_analyze_trade_journal_reports_session_activity_for_zero_trade_strategies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "trade_journal.jsonl"
+            trader_log = root / "trader.log"
+            journal.write_text("")
+            runtime = {
+                "strategies": ["breakout_power", "steady_intraday"],
+                "source_revision": {"commit": "abc1234"},
+            }
+            heartbeat = {
+                "strategies": {
+                    "breakout_power": {
+                        "signals": 3,
+                        "entries": 0,
+                        "rejections": 3,
+                        "top_rejections": [["market regime panic score=-7.5/11.25", 3]],
+                    },
+                    "steady_intraday": {
+                        "signals": 0,
+                        "entries": 0,
+                        "rejections": 0,
+                        "top_rejections": [],
+                    },
+                }
+            }
+            trader_log.write_text(
+                "\n".join(
+                    [
+                        f"2026-06-14 INFO root | Runtime settings {json.dumps(runtime)}",
+                        f"2026-06-14 INFO root | Heartbeat {json.dumps(heartbeat)}",
+                        "2026-06-14 DEBUG strategies.steady_intraday | No steady_intraday entry BEN [atr]: ATR too low",
+                        "2026-06-14 DEBUG strategies.steady_intraday | No steady_intraday entry IJH [atr]: ATR too low",
+                        "2026-06-14 INFO root | Signal rejected TLT BUY from breakout_power: market regime panic score=-7.5/11.25",
+                    ]
+                )
+            )
+
+            summary = analyze_trade_journal.analyze(journal, trader_log=trader_log)
+
+            activity = summary["session_activity"]
+            self.assertIsNotNone(activity)
+            self.assertEqual(activity["source_commit"], "abc1234")
+            bp = activity["by_strategy"]["breakout_power"]
+            self.assertEqual(bp["journal_trades"], 0)
+            self.assertEqual(bp["signals"], 3)
+            self.assertEqual(bp["rejections"], 4)
+            self.assertIn("market regime panic", bp["top_rejections"][0][0])
+            steady = activity["by_strategy"]["steady_intraday"]
+            self.assertEqual(steady["top_filters"][0][0], "[atr] ATR too low")
+            self.assertEqual(steady["top_filters"][0][1], 2)
+            self.assertIn(
+                "market regime panic",
+                analyze_trade_journal.primary_no_trade_reason(bp),
+            )
+            self.assertIn(
+                "[atr] ATR too low",
+                analyze_trade_journal.primary_no_trade_reason(steady),
+            )
+
+            with patch.object(sys, "argv", ["analyze_trade_journal.py", "--journal", str(journal), "--trader-log", str(trader_log)]):
+                with patch("builtins.print") as printed:
+                    analyze_trade_journal.main()
+            output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+            self.assertIn("Session Activity (trader.log)", output)
+            self.assertIn("breakout_power", output)
+            self.assertIn("steady_intraday", output)
+
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
 
