@@ -3523,6 +3523,43 @@ class CoreTradingTests(unittest.TestCase):
         self.assertGreater(strategy._get_atr(state), 0.0)
         self.assertIsInstance(strategy._get_rsi(state), float)
 
+    def test_recovery_scale_entry_signals_use_uppercase_buy_side(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AAPL"],
+            recovery_scale_max_position_value=5_000.0,
+            recovery_scale_min_price=1.0,
+        )
+        strategy = RecoveryScaleStrategy(settings)
+        state = SymbolState("AAPL")
+        base_ms = market_ms(2026, 4, 24, 10, 0)
+        for index in range(20):
+            state.add_bar(bar("AAPL", 100.0 - index * 0.1, 1_000, base_ms + index * 60_000))
+        state.update_quote(Quote("AAPL", 99.90, 100.00, 100, 100, base_ms + 20 * 60_000))
+
+        with (
+            patch.object(strategy, "_check_daily_trend", return_value=True),
+            patch.object(strategy, "_check_intraday_decline", return_value=True),
+            patch.object(strategy, "_check_liquidity", return_value=(True, "ok")),
+            patch.object(strategy, "_calculate_risk_budget", return_value=5_000.0),
+            patch.object(strategy, "_get_atr", return_value=1.0),
+        ):
+            initial = strategy.evaluate(state)
+
+        self.assertIsNotNone(initial)
+        self.assertEqual(initial.side, "BUY")
+
+        state.update_quote(Quote("AAPL", 98.70, 98.80, 100, 100, base_ms + 20 * 60_000 + 11_000))
+        with (
+            patch.object(strategy, "_is_structural_failure", return_value=False),
+            patch.object(strategy, "_get_atr", return_value=1.0),
+        ):
+            add = strategy.evaluate(state)
+
+        self.assertIsNotNone(add)
+        self.assertEqual(add.side, "BUY")
+
     def test_position_tracker_writes_trade_journal_entries(self):
         old_trade_journal_file = execution_module.TRADE_JOURNAL_FILE
         try:

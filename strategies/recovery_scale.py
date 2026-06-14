@@ -270,7 +270,7 @@ class RecoveryScaleStrategy(Strategy):
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
-            side="buy",
+            side="BUY",
             price=quote.ask,
             timestamp_ms=state.last_event_ms,
             change_pct=0.0,
@@ -362,7 +362,7 @@ class RecoveryScaleStrategy(Strategy):
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
-            side="buy",
+            side="BUY",
             price=current_price,
             timestamp_ms=state.last_event_ms,
             change_pct=0.0,
