@@ -8360,6 +8360,77 @@ class CoreTradingTests(unittest.TestCase):
         self.assertFalse(thin.hard_reject)
         self.assertGreater(liquid.score, thin.score)
 
+    def test_liquidity_scalper_selector_favors_recent_relative_flow(self):
+        from datetime import date as date_type
+        from datetime import time as dt_time
+        from datetime import timedelta
+
+        session_dates = [
+            date_type(2026, 5, 5),
+            date_type(2026, 5, 6),
+            date_type(2026, 5, 7),
+        ]
+
+        def minute_bars(symbol: str, *, price: float, volumes: list[int]) -> list[Bar]:
+            bars = []
+            for session_date, volume in zip(session_dates, volumes):
+                open_at = datetime.combine(session_date, dt_time(9, 30), tzinfo=select_liquidity_scalper.MARKET_TZ)
+                for minute in range(35):
+                    start = open_at + timedelta(minutes=minute)
+                    ms = int(start.timestamp() * 1000)
+                    bars.append(Bar(symbol, price, price + 0.2, price - 0.1, price + 0.1, volume, price, ms, 0))
+            return bars
+
+        steady_large = minute_bars("BIG", price=100.0, volumes=[10_000, 10_000, 10_000])
+        recent_awake = minute_bars("AWAKE", price=100.0, volumes=[1_000, 1_000, 8_000])
+        steady_rows = select_liquidity_scalper.regular_session_metrics_by_day(
+            steady_large,
+            set(session_dates),
+        )
+        awake_rows = select_liquidity_scalper.regular_session_metrics_by_day(
+            recent_awake,
+            set(session_dates),
+        )
+        as_of = datetime(2026, 5, 8, 8, 0, tzinfo=select_liquidity_scalper.MARKET_TZ)
+
+        steady = select_liquidity_scalper.score_liquidity_scalper_candidate(
+            "BIG",
+            steady_rows,
+            Quote("BIG", 99.99, 100.01, 500, 500, 1_000),
+            premarket_bars=[],
+            as_of=as_of,
+            min_price=5.0,
+            max_price=500.0,
+            min_session_days=2,
+            min_session_dollar_volume=50_000.0,
+            min_bar_dollar_volume=50_000.0,
+            min_p75_bar_dollar_volume=10_000.0,
+            min_range_pct=0.001,
+            max_spread_bps=100.0,
+        )
+        awake = select_liquidity_scalper.score_liquidity_scalper_candidate(
+            "AWAKE",
+            awake_rows,
+            Quote("AWAKE", 99.99, 100.01, 500, 500, 1_000),
+            premarket_bars=[],
+            as_of=as_of,
+            min_price=5.0,
+            max_price=500.0,
+            min_session_days=2,
+            min_session_dollar_volume=50_000.0,
+            min_bar_dollar_volume=50_000.0,
+            min_p75_bar_dollar_volume=10_000.0,
+            min_range_pct=0.001,
+            max_spread_bps=100.0,
+        )
+
+        self.assertIsNotNone(steady)
+        self.assertIsNotNone(awake)
+        assert steady is not None and awake is not None
+        self.assertGreater(awake.recent_bar_dollar_volume_ratio, steady.recent_bar_dollar_volume_ratio)
+        self.assertGreater(awake.recent_session_dollar_volume_ratio, steady.recent_session_dollar_volume_ratio)
+        self.assertGreater(awake.score, steady.score)
+
     def test_liquidity_scalper_selector_accepts_one_sided_premarket_quote(self):
         price, spread, quote_size, flags = select_liquidity_scalper.selector_price_context(
             Quote("BAC", 50.99, 0.0, 500, 0, 1_000),

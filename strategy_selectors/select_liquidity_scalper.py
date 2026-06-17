@@ -67,6 +67,11 @@ class LiquidityScalperCandidate:
     median_bar_dollar_volume: float
     p75_bar_dollar_volume: float
     median_minute_dollar_volume: float
+    recent_session_dollar_volume_ratio: float
+    recent_range_ratio: float
+    recent_bar_dollar_volume_ratio: float
+    recent_p75_bar_dollar_volume_ratio: float
+    premarket_volume_ratio: float
     premarket_dollar_volume: float
     quote_size: int
     quality_flags: tuple[str, ...] = ()
@@ -180,6 +185,78 @@ def premarket_dollar_volume(bars: list[Bar], session_date: date) -> float:
     return total
 
 
+def premarket_elapsed_minutes(as_of: datetime) -> int:
+    as_of = as_of.astimezone(MARKET_TZ)
+    start = datetime.combine(as_of.date(), PREMARKET_OPEN, tzinfo=MARKET_TZ)
+    open_at = datetime.combine(as_of.date(), MARKET_OPEN, tzinfo=MARKET_TZ)
+    if as_of <= start:
+        return 0
+    return max(0, int((min(as_of, open_at) - start).total_seconds() // 60))
+
+
+def _safe_ratio(value: float, baseline: float, *, default: float = 1.0) -> float:
+    if baseline <= 0:
+        return default if value <= 0 else 2.0
+    return value / baseline
+
+
+def _median_metric(rows: list[dict[str, float | int]], key: str) -> float:
+    values = [float(row[key]) for row in rows if float(row.get(key, 0.0) or 0.0) > 0]
+    return float(median(values)) if values else 0.0
+
+
+def relative_flow_metrics(
+    session_rows: list[dict[str, float | int]],
+    *,
+    today_premarket_dv: float,
+    as_of: datetime,
+) -> dict[str, float]:
+    """Compare the latest usable flow against the symbol's own baseline."""
+    if not session_rows:
+        return {
+            "recent_session_dollar_volume_ratio": 0.0,
+            "recent_range_ratio": 0.0,
+            "recent_bar_dollar_volume_ratio": 0.0,
+            "recent_p75_bar_dollar_volume_ratio": 0.0,
+            "premarket_volume_ratio": 0.0,
+        }
+
+    recent = session_rows[-1]
+    baseline_rows = session_rows[:-1] or session_rows
+    baseline_session_dv = _median_metric(baseline_rows, "session_dollar_volume")
+    baseline_range = _median_metric(baseline_rows, "range_pct")
+    baseline_bar_dv = _median_metric(baseline_rows, "median_bar_dollar_volume")
+    baseline_p75_bar_dv = _median_metric(baseline_rows, "p75_bar_dollar_volume")
+    baseline_minute_dv = _median_metric(baseline_rows, "median_minute_dollar_volume")
+    elapsed_minutes = premarket_elapsed_minutes(as_of)
+    # Premarket participation is naturally lighter than regular hours. The 15% scale
+    # keeps this a relative activity signal without requiring regular-session volume.
+    expected_premarket_dv = baseline_minute_dv * max(elapsed_minutes, 1) * 0.15
+
+    return {
+        "recent_session_dollar_volume_ratio": _safe_ratio(
+            float(recent.get("session_dollar_volume", 0.0) or 0.0),
+            baseline_session_dv,
+        ),
+        "recent_range_ratio": _safe_ratio(float(recent.get("range_pct", 0.0) or 0.0), baseline_range),
+        "recent_bar_dollar_volume_ratio": _safe_ratio(
+            float(recent.get("median_bar_dollar_volume", 0.0) or 0.0),
+            baseline_bar_dv,
+        ),
+        "recent_p75_bar_dollar_volume_ratio": _safe_ratio(
+            float(recent.get("p75_bar_dollar_volume", 0.0) or 0.0),
+            baseline_p75_bar_dv,
+        ),
+        "premarket_volume_ratio": _safe_ratio(today_premarket_dv, expected_premarket_dv, default=0.0),
+    }
+
+
+def _ratio_score(ratio: float, *, neutral: float = 1.0, scale: float = 4.0, low: float = -4.0, high: float = 8.0) -> float:
+    if ratio <= 0:
+        return low
+    return max(low, min(high, (ratio - neutral) * scale))
+
+
 def session_metrics(bars: list[Bar]) -> dict[str, float | int] | None:
     ordered = sorted(bars, key=lambda item: item.start_ms)
     if len(ordered) < MIN_SESSION_BARS:
@@ -261,12 +338,19 @@ def score_liquidity_scalper_candidate(
     p75_bar_dv = median(row["p75_bar_dollar_volume"] for row in session_rows) if session_rows else 0.0
     median_minute_dv = median(row["median_minute_dollar_volume"] for row in session_rows) if session_rows else 0.0
     today_premarket_dv = premarket_dollar_volume(premarket_bars, as_of.date())
+    relative = relative_flow_metrics(session_rows, today_premarket_dv=today_premarket_dv, as_of=as_of)
+    recent_session_dv_ratio = relative["recent_session_dollar_volume_ratio"]
+    recent_range_ratio = relative["recent_range_ratio"]
+    recent_bar_dv_ratio = relative["recent_bar_dollar_volume_ratio"]
+    recent_p75_bar_dv_ratio = relative["recent_p75_bar_dollar_volume_ratio"]
+    premarket_volume_ratio = relative["premarket_volume_ratio"]
 
     if len(session_rows) < min_session_days:
         quality_flags.append(f"session history {len(session_rows)} < {min_session_days}")
     if p75_bar_dv < min_p75_bar_dollar_volume:
         quality_flags.append(f"p75 bar_dv ${p75_bar_dv:,.0f} < ${min_p75_bar_dollar_volume:,.0f}")
-        hard_reject = True
+        if recent_p75_bar_dv_ratio < 1.25:
+            hard_reject = True
 
     liquidity_penalty = 0.0
     if median_session_dv < min_session_dollar_volume:
@@ -289,10 +373,16 @@ def score_liquidity_scalper_candidate(
     if len(session_rows) < min_session_days:
         liquidity_penalty += 1.0
 
-    liquidity_score = math.log10(max(median_session_dv, 1.0) / 1_000_000.0) * 4.0
-    range_score = median_range_pct * 120.0
-    tape_proxy = math.log10(max(p75_bar_dv, 1.0) / 1_000.0) * 4.0
-    premarket_score = min(math.log10(max(today_premarket_dv, 1.0) / 100_000.0), 2.5)
+    liquidity_score = math.log10(max(median_session_dv, 1.0) / 1_000_000.0) * 2.0
+    range_score = median_range_pct * 55.0
+    tape_proxy = math.log10(max(p75_bar_dv, 1.0) / 1_000.0) * 2.0
+    recent_flow_score = (
+        _ratio_score(recent_session_dv_ratio, scale=4.5, low=-3.0, high=8.0)
+        + _ratio_score(recent_bar_dv_ratio, scale=5.0, low=-3.0, high=8.0)
+        + _ratio_score(recent_p75_bar_dv_ratio, scale=4.0, low=-2.0, high=6.0)
+        + _ratio_score(recent_range_ratio, scale=4.0, low=-2.0, high=6.0)
+    )
+    premarket_score = min(math.log1p(max(premarket_volume_ratio, 0.0)) * 2.0, 5.0)
     spread_penalty = (spread_bps / max(max_spread_bps, 0.1)) if spread_bps is not None else 0.5
     quote_depth_bonus = min(quote_size / 200.0, 2.0)
     reject_penalty = 8.0 if hard_reject else 0.0
@@ -300,6 +390,7 @@ def score_liquidity_scalper_candidate(
         liquidity_score
         + range_score
         + tape_proxy
+        + recent_flow_score
         + premarket_score
         + quote_depth_bonus
         - spread_penalty
@@ -318,6 +409,11 @@ def score_liquidity_scalper_candidate(
         median_bar_dollar_volume=round(median_bar_dv, 2),
         p75_bar_dollar_volume=round(p75_bar_dv, 2),
         median_minute_dollar_volume=round(median_minute_dv, 2),
+        recent_session_dollar_volume_ratio=round(recent_session_dv_ratio, 3),
+        recent_range_ratio=round(recent_range_ratio, 3),
+        recent_bar_dollar_volume_ratio=round(recent_bar_dv_ratio, 3),
+        recent_p75_bar_dollar_volume_ratio=round(recent_p75_bar_dv_ratio, 3),
+        premarket_volume_ratio=round(premarket_volume_ratio, 3),
         premarket_dollar_volume=round(today_premarket_dv, 2),
         quote_size=quote_size,
         quality_flags=tuple(quality_flags),
@@ -337,6 +433,11 @@ def candidate_to_dict(candidate: LiquidityScalperCandidate) -> dict[str, Any]:
         "median_bar_dollar_volume": candidate.median_bar_dollar_volume,
         "p75_bar_dollar_volume": candidate.p75_bar_dollar_volume,
         "median_minute_dollar_volume": candidate.median_minute_dollar_volume,
+        "recent_session_dollar_volume_ratio": candidate.recent_session_dollar_volume_ratio,
+        "recent_range_ratio": candidate.recent_range_ratio,
+        "recent_bar_dollar_volume_ratio": candidate.recent_bar_dollar_volume_ratio,
+        "recent_p75_bar_dollar_volume_ratio": candidate.recent_p75_bar_dollar_volume_ratio,
+        "premarket_volume_ratio": candidate.premarket_volume_ratio,
         "premarket_dollar_volume": candidate.premarket_dollar_volume,
         "quote_size": candidate.quote_size,
         "quality_flags": list(candidate.quality_flags),
@@ -511,8 +612,9 @@ def deterministic_plan(screen_result: dict[str, Any], limit: int) -> dict[str, A
         },
         "risk_note": (
             "Pre-market liquidity_scalper selection from prior regular sessions, today's premarket "
-            "activity, and a quote/bar price snapshot. Selector thresholds are softer than live runtime "
-            "gates. Keep symbol count within the Alpaca Basic IEX trade+quote channel budget (~15 symbols)."
+            "activity, and a quote/bar price snapshot. Ranking emphasizes each symbol's recent flow "
+            "relative to its own baseline, with absolute liquidity used as a tradability floor. Keep symbol "
+            "count within the Alpaca Basic IEX trade+quote channel budget (~15 symbols)."
         ),
     }
 
@@ -532,6 +634,11 @@ def ranked_liquidity_scalper_candidates(candidates: list[dict[str, Any]]) -> lis
                 "median_range_pct": row.get("median_range_pct"),
                 "p75_bar_dollar_volume": row.get("p75_bar_dollar_volume"),
                 "premarket_dollar_volume": row.get("premarket_dollar_volume"),
+                "recent_session_dollar_volume_ratio": row.get("recent_session_dollar_volume_ratio"),
+                "recent_range_ratio": row.get("recent_range_ratio"),
+                "recent_bar_dollar_volume_ratio": row.get("recent_bar_dollar_volume_ratio"),
+                "recent_p75_bar_dollar_volume_ratio": row.get("recent_p75_bar_dollar_volume_ratio"),
+                "premarket_volume_ratio": row.get("premarket_volume_ratio"),
                 "spread_bps": row.get("spread_bps"),
             }
         )
@@ -577,8 +684,9 @@ def ai_liquidity_scalper_selection(
             "adjustments must be an object keyed by symbol. Each value may include ai_score_delta and ai_reason. "
             f"Keep ai_score_delta bounded between -{AI_SCORE_DELTA_LIMIT:.1f} and {AI_SCORE_DELTA_LIMIT:.1f}, "
             "and use 0 when no adjustment is needed. "
-            "Prefer names with high session dollar volume, strong minute-bar liquidity, "
-            "healthy intraday range, and tight spreads suitable for tape scalping. "
+            "Prefer names whose recent session, minute-bar liquidity, range, and premarket activity "
+            "are strong relative to that same symbol's own baseline, while still respecting tight spreads "
+            "and enough absolute liquidity for tape scalping. "
             "Respect the stream symbol limit and keep the final list conservative."
         ),
         payload,
