@@ -8792,6 +8792,102 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(strategy.evaluate(state))
 
+    def test_liquidity_scalper_bar_signal_allows_strong_relative_flow_below_absolute_gate(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["AWAKE"],
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_min_bar_dollar_volume=3_000_000.0,
+            liquidity_scalper_min_session_dollar_volume=30_000_000.0,
+            liquidity_scalper_min_range_pct=0.0,
+            liquidity_scalper_breakout_lookback_bars=3,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        state = SymbolState("AWAKE")
+        rows = [
+            (100.00, 100),
+            (100.10, 100),
+            (100.20, 100),
+            (100.30, 2_000),
+            (100.40, 2_000),
+            (101.00, 2_000),
+        ]
+        for index, (close, volume) in enumerate(rows):
+            start = market_ms(2026, 5, 8, 9, 30 + index)
+            state.add_bar(
+                Bar(
+                    "AWAKE",
+                    close - 0.05,
+                    close + 0.10,
+                    close - 0.10,
+                    close,
+                    volume,
+                    close,
+                    start,
+                    start + 60_000,
+                )
+            )
+        bar_end = state.bars[-1].end_ms
+        state.update_quote(Quote("AWAKE", bid=101.00, ask=101.02, bid_size=100, ask_size=100, timestamp_ms=bar_end))
+        for offset, price in enumerate([101.00, 101.01, 101.02]):
+            trade_ms = bar_end - (2 - offset) * 500
+            state.update_quote(
+                Quote("AWAKE", bid=price - 0.01, ask=price, bid_size=100, ask_size=100, timestamp_ms=trade_ms)
+            )
+            state.update_trade(Trade("AWAKE", price, 600, trade_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = bar_end
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertIn("liquidity_breakout", signal.reason)
+        self.assertIn("bar_flow=", signal.reason)
+        self.assertIn("session_flow=", signal.reason)
+
+    def test_liquidity_scalper_bar_signal_rejects_large_but_flat_flow(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FLAT"],
+            strategy_names=["liquidity_scalper"],
+            liquidity_scalper_min_bar_dollar_volume=3_000_000.0,
+            liquidity_scalper_min_session_dollar_volume=3_000_000.0,
+            liquidity_scalper_min_range_pct=0.0,
+            liquidity_scalper_breakout_lookback_bars=3,
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        state = SymbolState("FLAT")
+        for index, close in enumerate([100.00, 100.10, 100.20, 100.30, 101.00]):
+            start = market_ms(2026, 5, 8, 9, 30 + index)
+            state.add_bar(
+                Bar(
+                    "FLAT",
+                    close - 0.05,
+                    close + 0.10,
+                    close - 0.10,
+                    close,
+                    40_000,
+                    close,
+                    start,
+                    start + 60_000,
+                )
+            )
+        bar_end = state.bars[-1].end_ms
+        state.update_quote(Quote("FLAT", bid=101.00, ask=101.02, bid_size=100, ask_size=100, timestamp_ms=bar_end))
+        for offset, price in enumerate([101.00, 101.01, 101.02]):
+            trade_ms = bar_end - (2 - offset) * 500
+            state.update_quote(
+                Quote("FLAT", bid=price - 0.01, ask=price, bid_size=100, ask_size=100, timestamp_ms=trade_ms)
+            )
+            state.update_trade(Trade("FLAT", price, 600, trade_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = bar_end
+
+        self.assertIsNone(strategy.evaluate(state))
+
     def test_liquidity_scalper_emits_trade_tape_signal(self):
         settings = Settings(
             alpaca_api_key="test",

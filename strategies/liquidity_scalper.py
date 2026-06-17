@@ -30,6 +30,8 @@ class TapeMetrics:
     ask_prints: int
     bid_prints: int
     accel_ratio: float
+    dollar_accel_ratio: float
+    last_trade_dollar_volume_ratio: float
 
 
 class LiquidityScalperStrategy(Strategy):
@@ -189,17 +191,17 @@ class LiquidityScalperStrategy(Strategy):
         if not self._has_minimum_net_edge(spread_bps):
             return None
 
-        trade_dollar_volume = trade.price * trade.size
-        if trade_dollar_volume < self.settings.liquidity_scalper_min_trade_dollar_volume:
-            return None
-
         metrics = self._tape_metrics(state, self.settings.liquidity_scalper_tape_window_seconds)
         if metrics is None:
             return None
 
+        trade_dollar_volume = trade.price * trade.size
+        if not self._trade_flow_is_expanding(trade_dollar_volume, metrics):
+            return None
+
         if metrics.buy_sell_ratio < self.settings.liquidity_scalper_min_buy_sell_ratio:
             return None
-        if metrics.dollar_volume < self.settings.liquidity_scalper_min_tape_dollar_volume:
+        if not self._tape_flow_is_expanding(metrics):
             return None
         if metrics.move_pct < self.settings.liquidity_scalper_min_tape_price_move_pct:
             return None
@@ -214,7 +216,12 @@ class LiquidityScalperStrategy(Strategy):
 
         session_bars = self._session_bars(state)
         session_dollar_volume = self._session_dollar_volume(session_bars, state)
-        if session_dollar_volume < self.settings.liquidity_scalper_min_session_dollar_volume:
+        session_flow_ok, session_flow_ratio = self._session_flow_is_expanding(
+            session_dollar_volume,
+            session_bars,
+            tape=metrics,
+        )
+        if not session_flow_ok:
             return None
 
         session_range_pct = self._hybrid_range_pct(session_bars, state)
@@ -225,10 +232,12 @@ class LiquidityScalperStrategy(Strategy):
         stop_price = entry_price * (1.0 - self.settings.liquidity_scalper_stop_loss_pct)
         reason = (
             f"trade_tape buy_sell={metrics.buy_sell_ratio:.2f} accel={metrics.accel_ratio:.2f} "
+            f"dollar_accel={metrics.dollar_accel_ratio:.2f} last_trade_flow={metrics.last_trade_dollar_volume_ratio:.2f}x "
             f"ask_prints={metrics.ask_prints} "
             f"tape_dv ${metrics.dollar_volume:,.0f}/{self.settings.liquidity_scalper_tape_window_seconds}s "
             f"last_trade_dv ${trade_dollar_volume:,.0f} move {metrics.move_pct:.3%}; "
-            f"session_dv ${session_dollar_volume:,.0f}, range {session_range_pct:.2%}"
+            f"session_dv ${session_dollar_volume:,.0f} flow={session_flow_ratio:.2f}x, "
+            f"range {session_range_pct:.2%}"
         )
         logger.debug("%s entry signal %s", state.symbol, reason)
         return Signal(
@@ -258,10 +267,12 @@ class LiquidityScalperStrategy(Strategy):
             return None
 
         bar_dollar_volume = last.close * last.volume
-        if bar_dollar_volume < self.settings.liquidity_scalper_min_bar_dollar_volume:
+        bar_flow_ok, bar_flow_ratio = self._bar_flow_is_expanding(bar_dollar_volume, bars)
+        if not bar_flow_ok:
             return None
         session_dollar_volume = sum(bar.close * bar.volume for bar in bars)
-        if session_dollar_volume < self.settings.liquidity_scalper_min_session_dollar_volume:
+        session_flow_ok, session_flow_ratio = self._session_flow_is_expanding(session_dollar_volume, bars)
+        if not session_flow_ok:
             return None
 
         session_range_pct = self._range_pct(bars)
@@ -284,7 +295,9 @@ class LiquidityScalperStrategy(Strategy):
         stop_price = entry_price * (1.0 - self.settings.liquidity_scalper_stop_loss_pct)
         reason = (
             f"{setup}; bar_dv ${bar_dollar_volume:,.0f}, session_dv ${session_dollar_volume:,.0f}, "
-            f"range {session_range_pct:.2%}, volume {volume_ratio:.1f}x, tape={tape.buy_sell_ratio:.2f}"
+            f"range {session_range_pct:.2%}, volume {volume_ratio:.1f}x, "
+            f"bar_flow={bar_flow_ratio:.2f}x, session_flow={session_flow_ratio:.2f}x, "
+            f"tape={tape.buy_sell_ratio:.2f}"
         )
         return Signal(
             strategy=self.name,
@@ -383,9 +396,17 @@ class LiquidityScalperStrategy(Strategy):
         first_sell = sum(item.size for item, side in first_half if side == "sell")
         second_buy = sum(item.size for item, side in second_half if side == "buy")
         second_sell = sum(item.size for item, side in second_half if side == "sell")
+        first_dollar_volume = sum(item.price * item.size for item, _side in first_half)
+        second_dollar_volume = sum(item.price * item.size for item, _side in second_half)
+        trade_dollar_volumes = [item.price * item.size for item, _side in classified]
         first_ratio = first_buy / max(1, first_sell)
         second_ratio = second_buy / max(1, second_sell)
         accel_ratio = second_ratio / max(0.01, first_ratio)
+        dollar_accel_ratio = second_dollar_volume / max(1.0, first_dollar_volume)
+        prior_trade_dollar_volume = median(trade_dollar_volumes[:-1] or [0.0])
+        last_trade_dollar_volume_ratio = (
+            trade_dollar_volumes[-1] / prior_trade_dollar_volume if prior_trade_dollar_volume > 0 else 0.0
+        )
 
         return TapeMetrics(
             buy_volume=buy_volume,
@@ -397,6 +418,8 @@ class LiquidityScalperStrategy(Strategy):
             ask_prints=ask_prints,
             bid_prints=bid_prints,
             accel_ratio=accel_ratio,
+            dollar_accel_ratio=dollar_accel_ratio,
+            last_trade_dollar_volume_ratio=last_trade_dollar_volume_ratio,
         )
 
     @staticmethod
@@ -511,6 +534,83 @@ class LiquidityScalperStrategy(Strategy):
             if ts.date() == current.date() and ts.time() >= MARKET_OPEN:
                 trade_dv += trade.price * trade.size
         return max(bar_dv, trade_dv)
+
+    def _bar_flow_is_expanding(self, bar_dollar_volume: float, bars: list[Bar]) -> tuple[bool, float]:
+        threshold = max(0.0, self.settings.liquidity_scalper_min_bar_dollar_volume)
+        ratio = self._bar_dollar_volume_ratio(bars)
+        relative_floor = threshold * 0.05
+        return (
+            (threshold <= 0 or bar_dollar_volume >= relative_floor)
+            and ratio >= self.settings.liquidity_scalper_min_volume_ratio,
+            ratio,
+        )
+
+    def _session_flow_is_expanding(
+        self,
+        session_dollar_volume: float,
+        bars: list[Bar],
+        *,
+        tape: TapeMetrics | None = None,
+    ) -> tuple[bool, float]:
+        threshold = max(0.0, self.settings.liquidity_scalper_min_session_dollar_volume)
+        ratio = self._recent_session_flow_ratio(bars)
+        relative_floor = threshold * 0.01
+        tape_confirmed = (
+            tape is not None
+            and tape.dollar_volume >= self.settings.liquidity_scalper_min_tape_dollar_volume * 2.0
+            and tape.buy_sell_ratio >= self.settings.liquidity_scalper_min_buy_sell_ratio
+        )
+        return (
+            (threshold <= 0 or session_dollar_volume >= relative_floor)
+            and (ratio >= self.settings.liquidity_scalper_min_volume_ratio or tape_confirmed),
+            ratio,
+        )
+
+    def _trade_flow_is_expanding(self, trade_dollar_volume: float, metrics: TapeMetrics) -> bool:
+        threshold = max(0.0, self.settings.liquidity_scalper_min_trade_dollar_volume)
+        min_ratio = self.settings.liquidity_scalper_min_volume_ratio
+        return (
+            threshold <= 0
+            or trade_dollar_volume >= threshold * 0.25
+            or metrics.last_trade_dollar_volume_ratio >= min_ratio
+        )
+
+    def _tape_flow_is_expanding(self, metrics: TapeMetrics) -> bool:
+        threshold = max(0.0, self.settings.liquidity_scalper_min_tape_dollar_volume)
+        min_ratio = self.settings.liquidity_scalper_min_volume_ratio
+        return (
+            threshold <= 0
+            or metrics.dollar_volume >= threshold * 0.25
+            or metrics.dollar_accel_ratio >= min_ratio
+        )
+
+    @staticmethod
+    def _bar_dollar_volume_ratio(bars: list[Bar]) -> float:
+        if len(bars) < 2:
+            return 0.0
+        current = bars[-1].close * bars[-1].volume
+        baseline = median(
+            [bar.close * bar.volume for bar in bars[:-1] if bar.close > 0 and bar.volume > 0] or [0.0]
+        )
+        return current / baseline if baseline > 0 else 0.0
+
+    @staticmethod
+    def _recent_session_flow_ratio(bars: list[Bar], lookback: int = 3) -> float:
+        if len(bars) < 2:
+            return 0.0
+        recent = bars[-max(1, min(lookback, len(bars))) :]
+        prior = bars[: -len(recent)]
+        if not prior:
+            prior = bars[:-1]
+            recent = bars[-1:]
+        recent_dv = [bar.close * bar.volume for bar in recent if bar.close > 0 and bar.volume > 0]
+        prior_dv = [bar.close * bar.volume for bar in prior if bar.close > 0 and bar.volume > 0]
+        if not recent_dv or not prior_dv:
+            return 0.0
+        baseline = median(prior_dv)
+        if baseline <= 0:
+            return 0.0
+        return max(median(recent_dv) / baseline, recent_dv[-1] / baseline)
 
     @staticmethod
     def _hybrid_range_pct(bars: list[Bar], state: SymbolState) -> float:
