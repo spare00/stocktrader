@@ -11,6 +11,7 @@ from config import Settings
 from env_vars import EnvSpec, float_env, int_env
 from market_hours import MARKET_TZ
 from models import Bar, ExitDecision, Quote, Signal, Trade
+from opening_memory import OpeningSessionMemory, opening_session_memory
 from strategies.base import Strategy
 
 
@@ -109,6 +110,9 @@ class LiquidityScalperStrategy(Strategy):
             "stop_loss_pct": settings.liquidity_scalper_stop_loss_pct,
             "max_trades_per_symbol_per_session": settings.liquidity_scalper_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.liquidity_scalper_symbol_loss_lock_count,
+            "opening_memory_enabled": bool(settings.opening_memory_enabled),
+            "opening_memory_lookback_days": settings.opening_memory_lookback_days,
+            "opening_memory_min_repeat_days": settings.opening_memory_min_repeat_days,
         }
 
     def __init__(self, settings: Settings):
@@ -122,11 +126,14 @@ class LiquidityScalperStrategy(Strategy):
             return None
         if not self._within_entry_window(state.last_event_ms):
             return None
+        memory = self._opening_memory(state)
+        if self._bearish_memory_blocks_long(memory):
+            return None
 
         if state.last_event_kind == "trade":
-            return self._trade_tape_signal(state)
+            return self._trade_tape_signal(state, memory)
 
-        return self._bar_structure_signal(state)
+        return self._bar_structure_signal(state, memory)
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
         if state.last_event_kind not in {"quote", "bar", "trade"} or position.strategy != self.name:
@@ -177,7 +184,7 @@ class LiquidityScalperStrategy(Strategy):
     def use_fixed_target_exit(self, position) -> bool:
         return False
 
-    def _trade_tape_signal(self, state: SymbolState) -> Signal | None:
+    def _trade_tape_signal(self, state: SymbolState, memory: OpeningSessionMemory | None = None) -> Signal | None:
         quote = state.quote
         trade = state.trade
         if trade is None or trade.price <= 0 or trade.size <= 0:
@@ -199,15 +206,24 @@ class LiquidityScalperStrategy(Strategy):
         if not self._trade_flow_is_expanding(trade_dollar_volume, metrics):
             return None
 
-        if metrics.buy_sell_ratio < self.settings.liquidity_scalper_min_buy_sell_ratio:
+        min_buy_sell_ratio = self.settings.liquidity_scalper_min_buy_sell_ratio
+        min_tape_move_pct = self.settings.liquidity_scalper_min_tape_price_move_pct
+        min_accel_ratio = self.settings.liquidity_scalper_tape_accel_min_ratio
+        if self._has_long_repeat_memory(memory):
+            relief = self._bounded_relief(self.settings.opening_memory_scalper_threshold_relief)
+            min_buy_sell_ratio *= relief
+            min_tape_move_pct *= relief
+            min_accel_ratio *= relief
+
+        if metrics.buy_sell_ratio < min_buy_sell_ratio:
             return None
         if not self._tape_flow_is_expanding(metrics):
             return None
-        if metrics.move_pct < self.settings.liquidity_scalper_min_tape_price_move_pct:
+        if metrics.move_pct < min_tape_move_pct:
             return None
         if metrics.ask_prints < self.settings.liquidity_scalper_min_ask_prints:
             return None
-        if metrics.accel_ratio < self.settings.liquidity_scalper_tape_accel_min_ratio:
+        if metrics.accel_ratio < min_accel_ratio:
             return None
 
         trigger_quote = self._quote_at_ms(state, trade.timestamp_ms)
@@ -239,6 +255,8 @@ class LiquidityScalperStrategy(Strategy):
             f"session_dv ${session_dollar_volume:,.0f} flow={session_flow_ratio:.2f}x, "
             f"range {session_range_pct:.2%}"
         )
+        if memory is not None and self._has_long_repeat_memory(memory):
+            reason = f"{reason}; {memory.summary()}"
         logger.debug("%s entry signal %s", state.symbol, reason)
         return Signal(
             strategy=self.name,
@@ -253,7 +271,7 @@ class LiquidityScalperStrategy(Strategy):
             stop_price=stop_price,
         )
 
-    def _bar_structure_signal(self, state: SymbolState) -> Signal | None:
+    def _bar_structure_signal(self, state: SymbolState, memory: OpeningSessionMemory | None = None) -> Signal | None:
         bars = self._session_bars(state)
         if len(bars) < max(4, self.settings.liquidity_scalper_breakout_lookback_bars + 1):
             return None
@@ -276,11 +294,18 @@ class LiquidityScalperStrategy(Strategy):
             return None
 
         session_range_pct = self._range_pct(bars)
-        if session_range_pct < self.settings.liquidity_scalper_min_range_pct:
+        min_range_pct = self.settings.liquidity_scalper_min_range_pct
+        min_volume_ratio = self.settings.liquidity_scalper_min_volume_ratio
+        if self._has_long_repeat_memory(memory):
+            relief = self._bounded_relief(self.settings.opening_memory_scalper_threshold_relief)
+            min_range_pct *= relief
+            min_volume_ratio *= relief
+
+        if session_range_pct < min_range_pct:
             return None
 
         volume_ratio = self._volume_ratio(bars)
-        if volume_ratio < self.settings.liquidity_scalper_min_volume_ratio:
+        if volume_ratio < min_volume_ratio:
             return None
 
         setup = self._flush_reclaim_setup(bars) or self._liquidity_breakout_setup(bars)
@@ -299,6 +324,8 @@ class LiquidityScalperStrategy(Strategy):
             f"bar_flow={bar_flow_ratio:.2f}x, session_flow={session_flow_ratio:.2f}x, "
             f"tape={tape.buy_sell_ratio:.2f}"
         )
+        if memory is not None and self._has_long_repeat_memory(memory):
+            reason = f"{reason}; {memory.summary()}"
         return Signal(
             strategy=self.name,
             symbol=state.symbol,
@@ -637,6 +664,33 @@ class LiquidityScalperStrategy(Strategy):
             <= self.settings.liquidity_scalper_afternoon_end_minute
         )
         return morning or afternoon
+
+    def _opening_memory(self, state: SymbolState) -> OpeningSessionMemory | None:
+        if not self.settings.opening_memory_enabled:
+            return None
+        return opening_session_memory(
+            state,
+            lookback_days=self.settings.opening_memory_lookback_days,
+            opening_minutes=self.settings.opening_memory_window_minutes,
+            min_impulse_pct=self.settings.opening_memory_min_impulse_pct,
+            fade_pct=self.settings.opening_memory_fade_pct,
+            max_close_loss_pct=self.settings.opening_memory_max_close_loss_pct,
+        )
+
+    def _has_long_repeat_memory(self, memory: OpeningSessionMemory | None) -> bool:
+        if memory is None:
+            return False
+        return memory.has_long_repeat(self.settings.opening_memory_min_repeat_days)
+
+    def _bearish_memory_blocks_long(self, memory: OpeningSessionMemory | None) -> bool:
+        if memory is None or not self.settings.opening_memory_bearish_long_block:
+            return False
+        min_repeat_days = self.settings.opening_memory_min_repeat_days
+        return memory.has_short_repeat(min_repeat_days) and memory.short_score() > memory.long_score()
+
+    @staticmethod
+    def _bounded_relief(value: float) -> float:
+        return min(1.0, max(0.1, value))
 
     @staticmethod
     def _volume_ratio(bars: list[Bar]) -> float:

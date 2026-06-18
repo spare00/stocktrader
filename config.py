@@ -214,6 +214,18 @@ class Settings:
     indicator_max_bars_per_symbol: int = 3000
     indicator_include_afterhours: bool = False
 
+    opening_memory_enabled: bool = True
+    opening_memory_lookback_days: int = 5
+    opening_memory_window_minutes: int = 30
+    opening_memory_min_impulse_pct: float = 0.01
+    opening_memory_min_repeat_days: int = 2
+    opening_memory_fade_pct: float = 0.006
+    opening_memory_max_close_loss_pct: float = 0.012
+    opening_memory_long_volume_relief: float = 0.85
+    opening_memory_long_extension_relief: float = 1.25
+    opening_memory_scalper_threshold_relief: float = 0.85
+    opening_memory_bearish_long_block: bool = True
+
     opening_impulse_start_minute: int = 0
     opening_impulse_end_minute: int = 360
     opening_impulse_window_seconds: int = 60
@@ -843,6 +855,17 @@ COMMON_ENV: tuple[EnvSpec, ...] = (
     ("indicator_preload_bars", "INDICATOR_PRELOAD_BARS", _int_env, 1000),
     ("indicator_max_bars_per_symbol", "INDICATOR_MAX_BARS_PER_SYMBOL", _int_env, 3000),
     ("indicator_include_afterhours", "INDICATOR_INCLUDE_AFTERHOURS", _bool_env, False),
+    ("opening_memory_enabled", "OPENING_MEMORY_ENABLED", _bool_env, True),
+    ("opening_memory_lookback_days", "OPENING_MEMORY_LOOKBACK_DAYS", _int_env, 5),
+    ("opening_memory_window_minutes", "OPENING_MEMORY_WINDOW_MINUTES", _int_env, 30),
+    ("opening_memory_min_impulse_pct", "OPENING_MEMORY_MIN_IMPULSE_PCT", _float_env, 0.01),
+    ("opening_memory_min_repeat_days", "OPENING_MEMORY_MIN_REPEAT_DAYS", _int_env, 2),
+    ("opening_memory_fade_pct", "OPENING_MEMORY_FADE_PCT", _float_env, 0.006),
+    ("opening_memory_max_close_loss_pct", "OPENING_MEMORY_MAX_CLOSE_LOSS_PCT", _float_env, 0.012),
+    ("opening_memory_long_volume_relief", "OPENING_MEMORY_LONG_VOLUME_RELIEF", _float_env, 0.85),
+    ("opening_memory_long_extension_relief", "OPENING_MEMORY_LONG_EXTENSION_RELIEF", _float_env, 1.25),
+    ("opening_memory_scalper_threshold_relief", "OPENING_MEMORY_SCALPER_THRESHOLD_RELIEF", _float_env, 0.85),
+    ("opening_memory_bearish_long_block", "OPENING_MEMORY_BEARISH_LONG_BLOCK", _bool_env, True),
     ("ai_review", "AI_REVIEW", _bool_env, False),
     ("news_hot_positive_only", "NEWS_HOT_POSITIVE_ONLY", _bool_env, True),
     ("news_hot_min_sentiment_score", "NEWS_HOT_MIN_SENTIMENT_SCORE", _float_env, 0.5),

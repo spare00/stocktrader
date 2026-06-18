@@ -81,6 +81,7 @@ import strategy_selectors.select_opening_impulse as select_opening_impulse
 import strategy_selectors.select_recovery_scale as select_recovery_scale
 from strategy_selectors.plan import build_strategy_plan
 from opening_plan import parse_plan_symbols
+from opening_memory import opening_session_memory
 import strategy_selectors.select_steady_intraday as select_steady_intraday
 import strategy_selectors.select_liquidity_scalper as select_liquidity_scalper
 from strategy_selectors.select_opening_impulse import DEFAULT_UNIVERSE, daily_gap_score, load_universe, opening_session_metrics, previous_session_dates, recent_compression_score, score_candidate, usable_quote
@@ -211,6 +212,105 @@ class CoreTradingTests(unittest.TestCase):
     def tearDown(self):
         execution_module.TRADE_JOURNAL_FILE = self._old_trade_journal_file
         self._trade_journal_tmpdir.cleanup()
+
+    def test_opening_memory_counts_repeat_impulses_and_fades(self):
+        state = SymbolState("AAPL")
+        for day, open_price, high, opening_close, close in (
+            (20, 100.0, 104.0, 103.0, 101.5),
+            (21, 101.0, 105.0, 104.0, 102.5),
+            (22, 102.0, 102.4, 102.2, 102.1),
+        ):
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=open_price,
+                    high=high,
+                    low=open_price,
+                    close=opening_close,
+                    volume=100_000,
+                    vwap=opening_close,
+                    start_ms=market_ms(2026, 4, day, 9, 30),
+                    end_ms=market_ms(2026, 4, day, 9, 31),
+                )
+            )
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=opening_close,
+                    high=max(opening_close, close),
+                    low=min(opening_close, close),
+                    close=close,
+                    volume=100_000,
+                    vwap=close,
+                    start_ms=market_ms(2026, 4, day, 15, 59),
+                    end_ms=market_ms(2026, 4, day, 16, 0),
+                )
+            )
+        state.last_event_ms = market_ms(2026, 4, 23, 9, 35)
+
+        memory = opening_session_memory(
+            state,
+            lookback_days=5,
+            opening_minutes=30,
+            min_impulse_pct=0.01,
+            fade_pct=0.006,
+            max_close_loss_pct=0.012,
+        )
+
+        self.assertEqual(memory.long_repeat_count, 2)
+        self.assertEqual(memory.long_fade_count, 2)
+        self.assertTrue(memory.has_long_repeat(2))
+        self.assertFalse(memory.has_short_repeat(2))
+
+    def test_opening_impulse_bearish_memory_blocks_long(self):
+        settings = Settings(opening_memory_enabled=True, opening_memory_min_repeat_days=2)
+        strategy = OpeningImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        for day in (20, 21):
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=100.0,
+                    high=100.0,
+                    low=96.0,
+                    close=97.0,
+                    volume=100_000,
+                    vwap=97.0,
+                    start_ms=market_ms(2026, 4, day, 9, 30),
+                    end_ms=market_ms(2026, 4, day, 9, 31),
+                )
+            )
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=97.0,
+                    high=99.0,
+                    low=97.0,
+                    close=98.5,
+                    volume=100_000,
+                    vwap=98.5,
+                    start_ms=market_ms(2026, 4, day, 15, 59),
+                    end_ms=market_ms(2026, 4, day, 16, 0),
+                )
+            )
+
+        for offset, price in enumerate((100.0, 100.5, 101.0)):
+            state.add_bar(
+                Bar(
+                    symbol="AAPL",
+                    open=price,
+                    high=price + 0.2,
+                    low=price - 0.1,
+                    close=price + 0.1,
+                    volume=200_000,
+                    vwap=price + 0.1,
+                    start_ms=market_ms(2026, 4, 23, 9, 30 + offset),
+                    end_ms=market_ms(2026, 4, 23, 9, 31 + offset),
+                )
+            )
+        state.update_quote(Quote("AAPL", 101.4, 101.5, 100, 100, market_ms(2026, 4, 23, 9, 35)))
+
+        self.assertIsNone(strategy.evaluate(state))
 
     def test_opening_plan_applies_symbols_and_bounded_settings(self):
         settings = Settings(

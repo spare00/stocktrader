@@ -10,6 +10,7 @@ from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ, market_now
 from models import ExitDecision, Signal
+from opening_memory import OpeningSessionMemory, opening_session_memory
 from strategy_selectors.select_gap_and_go import (
     latest_valid_quote,
     premarket_high_price,
@@ -106,6 +107,9 @@ class GapAndGoStrategy(Strategy):
             "bar_window": settings.gap_and_go_bar_window,
             "max_trades_per_symbol_per_session": settings.gap_and_go_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.gap_and_go_symbol_loss_lock_count,
+            "opening_memory_enabled": bool(settings.opening_memory_enabled),
+            "opening_memory_lookback_days": settings.opening_memory_lookback_days,
+            "opening_memory_min_repeat_days": settings.opening_memory_min_repeat_days,
         }
 
     def __init__(self, settings: Settings):
@@ -178,6 +182,10 @@ class GapAndGoStrategy(Strategy):
         if not prev_close:
             return self._reject(state, "prev_close", "missing previous close")
 
+        memory = self._opening_memory(state)
+        if self._bearish_memory_blocks_long(memory):
+            return self._reject(state, "opening_memory", f"bearish repeat blocks long: {memory.summary()}")
+
         premarket_high = self._premarket_high(state)
         if not premarket_high or premarket_high <= 0:
             return self._reject(state, "premarket", "missing premarket high")
@@ -190,11 +198,14 @@ class GapAndGoStrategy(Strategy):
             pm_low = self._premarket_low(state)
             if premarket_high and pm_low and pm_low > 0:
                 pm_range_pct = (premarket_high - pm_low) / pm_low
-                if pm_range_pct > self.settings.gap_and_go_max_premarket_extension_pct:
+                max_pm_extension = self.settings.gap_and_go_max_premarket_extension_pct
+                if self._has_long_repeat_memory(memory):
+                    max_pm_extension *= max(1.0, self.settings.opening_memory_long_extension_relief)
+                if pm_range_pct > max_pm_extension:
                     return self._reject(
                         state,
                         "premarket_exhausted",
-                        f"PM range {pm_range_pct:.2%} > max {self.settings.gap_and_go_max_premarket_extension_pct:.2%}",
+                        f"PM range {pm_range_pct:.2%} > max {max_pm_extension:.2%}",
                     )
         if last.ask < self.settings.gap_and_go_min_price:
             return self._reject(state, "price", f"price {last.ask:.2f} below min {self.settings.gap_and_go_min_price:.2f}")
@@ -204,11 +215,14 @@ class GapAndGoStrategy(Strategy):
                 "gap",
                 f"gap {gap_pct:.2%} below min {self.settings.gap_and_go_min_gap_pct:.2%}",
             )
-        if premarket_volume < self.settings.gap_and_go_premarket_volume_ratio:
+        min_premarket_volume = self.settings.gap_and_go_premarket_volume_ratio
+        if self._has_long_repeat_memory(memory):
+            min_premarket_volume *= self._bounded_relief(self.settings.opening_memory_long_volume_relief)
+        if premarket_volume < min_premarket_volume:
             return self._reject(
                 state,
                 "premarket_volume",
-                f"premarket volume {premarket_volume:.2f}x below min {self.settings.gap_and_go_premarket_volume_ratio:.2f}x",
+                f"premarket volume {premarket_volume:.2f}x below min {min_premarket_volume:.2f}x",
             )
         if last.spread_bps > self.settings.gap_and_go_max_spread_bps:
             return self._reject(
@@ -307,6 +321,8 @@ class GapAndGoStrategy(Strategy):
             f"gap_and_go gap {gap_pct:.2%}, vol {premarket_volume:.1f}x, "
             f"premarket_high {premarket_high:.2f}, entry_type={entry_type}"
         )
+        if memory is not None and self._has_long_repeat_memory(memory):
+            reason += f", {memory.summary()}"
         if stop_price:
             reason += f", stop={stop_price:.2f} r={r_pct:.2%}"
 
@@ -495,3 +511,30 @@ class GapAndGoStrategy(Strategy):
             self._last_reject_log_ms[key] = timestamp_ms
             LOG.debug("No gap_and_go entry %s [%s]: %s", state.symbol, code, detail)
         return None
+
+    def _opening_memory(self, state: SymbolState) -> OpeningSessionMemory | None:
+        if not self.settings.opening_memory_enabled:
+            return None
+        return opening_session_memory(
+            state,
+            lookback_days=self.settings.opening_memory_lookback_days,
+            opening_minutes=self.settings.opening_memory_window_minutes,
+            min_impulse_pct=self.settings.opening_memory_min_impulse_pct,
+            fade_pct=self.settings.opening_memory_fade_pct,
+            max_close_loss_pct=self.settings.opening_memory_max_close_loss_pct,
+        )
+
+    def _has_long_repeat_memory(self, memory: OpeningSessionMemory | None) -> bool:
+        if memory is None:
+            return False
+        return memory.has_long_repeat(self.settings.opening_memory_min_repeat_days)
+
+    def _bearish_memory_blocks_long(self, memory: OpeningSessionMemory | None) -> bool:
+        if memory is None or not self.settings.opening_memory_bearish_long_block:
+            return False
+        min_repeat_days = self.settings.opening_memory_min_repeat_days
+        return memory.has_short_repeat(min_repeat_days) and memory.short_score() > memory.long_score()
+
+    @staticmethod
+    def _bounded_relief(value: float) -> float:
+        return min(1.0, max(0.1, value))

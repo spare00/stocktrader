@@ -10,6 +10,7 @@ from config import Settings
 from env_vars import EnvSpec, bool_env, float_env, int_env
 from market_hours import MARKET_TZ
 from models import ExitDecision, Signal
+from opening_memory import OpeningSessionMemory, opening_session_memory
 from strategies.base import Strategy
 
 
@@ -187,6 +188,11 @@ class OpeningImpulseStrategy(Strategy):
             "failed_continuation_max_mfe_pct": settings.opening_impulse_failed_continuation_max_mfe_pct,
             "reentry_reclaim_lookback_bars": settings.opening_impulse_reentry_reclaim_lookback_bars,
             "reentry_min_volume_ratio": settings.opening_impulse_reentry_min_volume_ratio,
+            "opening_memory_enabled": bool(settings.opening_memory_enabled),
+            "opening_memory_lookback_days": settings.opening_memory_lookback_days,
+            "opening_memory_window_minutes": settings.opening_memory_window_minutes,
+            "opening_memory_min_impulse_pct": settings.opening_memory_min_impulse_pct,
+            "opening_memory_min_repeat_days": settings.opening_memory_min_repeat_days,
         }
 
     def __init__(self, settings: Settings):
@@ -209,6 +215,9 @@ class OpeningImpulseStrategy(Strategy):
 
         spread_bps = last.spread_bps
         has_news = self._has_hot_news(state, last.timestamp_ms)
+        memory = self._opening_memory(state)
+        if self._bearish_memory_blocks_long(memory):
+            return self._reject(state, "opening_memory", f"bearish repeat blocks long: {memory.summary()}")
         if spread_bps > self.settings.opening_impulse_max_spread_bps:
             return self._reject(
                 state,
@@ -279,6 +288,8 @@ class OpeningImpulseStrategy(Strategy):
             if has_news
             else self.settings.opening_impulse_volume_ratio
         )
+        if self._has_long_repeat_memory(memory):
+            min_volume_ratio *= self._bounded_relief(self.settings.opening_memory_long_volume_relief)
         if candidate.volume_ratio < min_volume_ratio:
             return self._reject(
                 state,
@@ -294,13 +305,16 @@ class OpeningImpulseStrategy(Strategy):
         if session_open_price is None or session_open_price <= 0:
             return self._reject(state, "open", "missing regular session open")
         entry_open_pct = (last.mid - session_open_price) / session_open_price
-        if entry_open_pct > self.settings.opening_impulse_max_entry_extension_pct:
+        max_entry_extension_pct = self.settings.opening_impulse_max_entry_extension_pct
+        if self._has_long_repeat_memory(memory):
+            max_entry_extension_pct *= max(1.0, self.settings.opening_memory_long_extension_relief)
+        if entry_open_pct > max_entry_extension_pct:
             return self._reject(
                 state,
                 "extension",
                 (
                     f"entry extension {entry_open_pct:.3%} > "
-                    f"{self.settings.opening_impulse_max_entry_extension_pct:.3%}"
+                    f"{max_entry_extension_pct:.3%}"
                 ),
             )
 
@@ -333,6 +347,8 @@ class OpeningImpulseStrategy(Strategy):
         reason = f"{reason} | entry_vs_open {entry_open_pct:.3%}"
         if has_news:
             reason = f"{reason} | hot_news"
+        if memory is not None and self._has_long_repeat_memory(memory):
+            reason = f"{reason} | {memory.summary()}"
         if warnings:
             reason = f"{reason} | entry_warnings penalty={penalty:.1f}: {', '.join(warnings)}"
 
@@ -437,6 +453,33 @@ class OpeningImpulseStrategy(Strategy):
             self._last_reject_log_ms[key] = timestamp_ms
             LOG.debug("No opening_impulse entry %s: %s", state.symbol, detail)
         return None
+
+    def _opening_memory(self, state: SymbolState) -> OpeningSessionMemory | None:
+        if not self.settings.opening_memory_enabled:
+            return None
+        return opening_session_memory(
+            state,
+            lookback_days=self.settings.opening_memory_lookback_days,
+            opening_minutes=self.settings.opening_memory_window_minutes,
+            min_impulse_pct=self.settings.opening_memory_min_impulse_pct,
+            fade_pct=self.settings.opening_memory_fade_pct,
+            max_close_loss_pct=self.settings.opening_memory_max_close_loss_pct,
+        )
+
+    def _has_long_repeat_memory(self, memory: OpeningSessionMemory | None) -> bool:
+        if memory is None:
+            return False
+        return memory.has_long_repeat(self.settings.opening_memory_min_repeat_days)
+
+    def _bearish_memory_blocks_long(self, memory: OpeningSessionMemory | None) -> bool:
+        if memory is None or not self.settings.opening_memory_bearish_long_block:
+            return False
+        min_repeat_days = self.settings.opening_memory_min_repeat_days
+        return memory.has_short_repeat(min_repeat_days) and memory.short_score() > memory.long_score()
+
+    @staticmethod
+    def _bounded_relief(value: float) -> float:
+        return min(1.0, max(0.1, value))
 
     def _within_trading_window(self, timestamp_ms: int | None) -> bool:
         if timestamp_ms is None:
