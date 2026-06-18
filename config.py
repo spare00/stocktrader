@@ -343,6 +343,9 @@ class Settings:
     steady_intraday_vwap_buffer_pct: float = 0.0005
     steady_intraday_max_vwap_extension_pct: float = 0.025
     steady_intraday_max_ema_extension_pct: float = 0.012
+    steady_intraday_max_entry_open_pct: float = 0.06
+    steady_intraday_extended_entry_open_pct: float = 0.04
+    steady_intraday_extended_entry_size_multiplier: float = 0.35
     steady_intraday_stop_atr_multiple: float = 1.1
     steady_intraday_stop_buffer_pct: float = 0.0008
     steady_intraday_min_r_pct: float = 0.0025
@@ -458,6 +461,10 @@ class Settings:
     stoch_macd_max_k: float = 88.0
     stoch_macd_allow_overbought_expansion: bool = False
     stoch_macd_overbought_min_hist_rise_norm: float = 0.00005
+    stoch_macd_overbought_low_volume_max_k: float = 82.0
+    stoch_macd_overbought_low_volume_min_ratio: float = 0.9
+    stoch_macd_leveraged_overbought_max_k: float = 82.0
+    stoch_macd_leveraged_min_volume_ratio: float = 1.0
     stoch_macd_ao_filter_enabled: bool = True
     stoch_macd_ao_fast_period: int = 5
     stoch_macd_ao_slow_period: int = 34
@@ -517,6 +524,7 @@ class Settings:
     bp_warmup_bars: int = 40
     bp_green_threshold: float = 70.0
     bp_trend_line: float = 51.0
+    bp_min_entry_score: float = 65.0
     bp_hold_floor: float = 46.0
     bp_decline_grace_bars: int = 1
     bp_double_decline_enabled: bool = True
@@ -643,6 +651,11 @@ class Settings:
     recovery_scale_neutral_budget_multiplier: float = 0.65
     recovery_scale_weak_budget_multiplier: float = 0.35
     recovery_scale_block_new_entries: bool = True
+    recovery_scale_block_risk_off_entries: bool = False
+    recovery_scale_block_risk_off_adds: bool = False
+    recovery_scale_risk_off_requires_decline_exhaustion: bool = True
+    recovery_scale_decline_exhaustion_min_score: float = 2.0
+    recovery_scale_min_add_seconds: int = 10
     recovery_scale_recovery_rsi_min: float = 50.0
     recovery_scale_recovery_breakout_power_min: float = 50.0
     recovery_scale_partial1_profit_pct: float = 0.015

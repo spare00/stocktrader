@@ -51,6 +51,15 @@ class StochMACDReversalStrategy(Strategy):
         ("stoch_macd_max_k", "STOCH_MACD_MAX_K", float_env, 88.0),
         ("stoch_macd_allow_overbought_expansion", "STOCH_MACD_ALLOW_OVERBOUGHT_EXPANSION", bool_env, False),
         ("stoch_macd_overbought_min_hist_rise_norm", "STOCH_MACD_OVERBOUGHT_MIN_HIST_RISE_NORM", float_env, 0.00005),
+        ("stoch_macd_overbought_low_volume_max_k", "STOCH_MACD_OVERBOUGHT_LOW_VOLUME_MAX_K", float_env, 82.0),
+        (
+            "stoch_macd_overbought_low_volume_min_ratio",
+            "STOCH_MACD_OVERBOUGHT_LOW_VOLUME_MIN_RATIO",
+            float_env,
+            0.9,
+        ),
+        ("stoch_macd_leveraged_overbought_max_k", "STOCH_MACD_LEVERAGED_OVERBOUGHT_MAX_K", float_env, 82.0),
+        ("stoch_macd_leveraged_min_volume_ratio", "STOCH_MACD_LEVERAGED_MIN_VOLUME_RATIO", float_env, 1.0),
         ("stoch_macd_ao_filter_enabled", "STOCH_MACD_AO_FILTER_ENABLED", bool_env, True),
         ("stoch_macd_ao_fast_period", "STOCH_MACD_AO_FAST_PERIOD", int_env, 5),
         ("stoch_macd_ao_slow_period", "STOCH_MACD_AO_SLOW_PERIOD", int_env, 34),
@@ -180,6 +189,10 @@ class StochMACDReversalStrategy(Strategy):
             "max_k": settings.stoch_macd_max_k,
             "allow_overbought_expansion": settings.stoch_macd_allow_overbought_expansion,
             "overbought_min_hist_rise_norm": settings.stoch_macd_overbought_min_hist_rise_norm,
+            "overbought_low_volume_max_k": settings.stoch_macd_overbought_low_volume_max_k,
+            "overbought_low_volume_min_ratio": settings.stoch_macd_overbought_low_volume_min_ratio,
+            "leveraged_overbought_max_k": settings.stoch_macd_leveraged_overbought_max_k,
+            "leveraged_min_volume_ratio": settings.stoch_macd_leveraged_min_volume_ratio,
             "ao_filter": {
                 "enabled": settings.stoch_macd_ao_filter_enabled,
                 "fast_period": settings.stoch_macd_ao_fast_period,
@@ -430,13 +443,41 @@ class StochMACDReversalStrategy(Strategy):
         if reentry_freshness:
             volume_add += max(0.0, self.settings.stoch_macd_reentry_volume_add)
         min_volume_ratio += volume_add
+        recent_vol_r = None
+        if early_window:
+            recent_vol_r = self._recent_average_volume_ratio(
+                state,
+                self.settings.stoch_macd_early_volume_lookback_bars,
+            )
+        if (
+            k_now >= self.settings.stoch_macd_overbought_low_volume_max_k
+            and vol_r < self.settings.stoch_macd_overbought_low_volume_min_ratio
+            and (recent_vol_r is None or recent_vol_r < self.settings.stoch_macd_overbought_low_volume_min_ratio)
+        ):
+            return self._reject(
+                state,
+                "stoch_timing",
+                (
+                    f"overbought low-volume k={k_now:.1f} "
+                    f"vol={vol_r:.2f} min={self.settings.stoch_macd_overbought_low_volume_min_ratio:.2f}"
+                ),
+            )
+        if (
+            self._is_leveraged_symbol(state.symbol)
+            and k_now >= self.settings.stoch_macd_leveraged_overbought_max_k
+            and vol_r < self.settings.stoch_macd_leveraged_min_volume_ratio
+            and (recent_vol_r is None or recent_vol_r < self.settings.stoch_macd_leveraged_min_volume_ratio)
+        ):
+            return self._reject(
+                state,
+                "stoch_timing",
+                (
+                    f"leveraged overbought low-volume k={k_now:.1f} "
+                    f"vol={vol_r:.2f} min={self.settings.stoch_macd_leveraged_min_volume_ratio:.2f}"
+                ),
+            )
         if vol_r < min_volume_ratio:
-            recent_vol_r = None
             if early_window:
-                recent_vol_r = self._recent_average_volume_ratio(
-                    state,
-                    self.settings.stoch_macd_early_volume_lookback_bars,
-                )
                 min_recent_vol_r = max(0.0, self.settings.stoch_macd_early_min_avg_volume_ratio) + volume_add
                 if recent_vol_r is not None and recent_vol_r >= min_recent_vol_r:
                     pass
@@ -1083,6 +1124,28 @@ class StochMACDReversalStrategy(Strategy):
             return None
         recent_avg = sum(bar.volume for bar in bars[-lookback:]) / lookback
         return recent_avg / baseline
+
+    @staticmethod
+    def _is_leveraged_symbol(symbol: str) -> bool:
+        leveraged_symbols = {
+            "SOXL",
+            "SOXS",
+            "TQQQ",
+            "SQQQ",
+            "UPRO",
+            "SPXU",
+            "UDOW",
+            "SDOW",
+            "TNA",
+            "TZA",
+            "FAS",
+            "FAZ",
+            "LABU",
+            "LABD",
+            "BOIL",
+            "KOLD",
+        }
+        return symbol.upper() in leveraged_symbols
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0

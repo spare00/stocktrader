@@ -65,6 +65,14 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_vwap_buffer_pct", "STEADY_INTRADAY_VWAP_BUFFER_PCT", float_env, 0.0005),
         ("steady_intraday_max_vwap_extension_pct", "STEADY_INTRADAY_MAX_VWAP_EXTENSION_PCT", float_env, 0.025),
         ("steady_intraday_max_ema_extension_pct", "STEADY_INTRADAY_MAX_EMA_EXTENSION_PCT", float_env, 0.012),
+        ("steady_intraday_max_entry_open_pct", "STEADY_INTRADAY_MAX_ENTRY_OPEN_PCT", float_env, 0.06),
+        ("steady_intraday_extended_entry_open_pct", "STEADY_INTRADAY_EXTENDED_ENTRY_OPEN_PCT", float_env, 0.04),
+        (
+            "steady_intraday_extended_entry_size_multiplier",
+            "STEADY_INTRADAY_EXTENDED_ENTRY_SIZE_MULTIPLIER",
+            float_env,
+            0.35,
+        ),
         ("steady_intraday_stop_atr_multiple", "STEADY_INTRADAY_STOP_ATR_MULTIPLE", float_env, 1.1),
         ("steady_intraday_stop_buffer_pct", "STEADY_INTRADAY_STOP_BUFFER_PCT", float_env, 0.0008),
         ("steady_intraday_min_r_pct", "STEADY_INTRADAY_MIN_R_PCT", float_env, 0.0025),
@@ -119,6 +127,9 @@ class SteadyIntradayStrategy(Strategy):
             "vwap_buffer_pct": settings.steady_intraday_vwap_buffer_pct,
             "max_vwap_extension_pct": settings.steady_intraday_max_vwap_extension_pct,
             "max_ema_extension_pct": settings.steady_intraday_max_ema_extension_pct,
+            "max_entry_open_pct": settings.steady_intraday_max_entry_open_pct,
+            "extended_entry_open_pct": settings.steady_intraday_extended_entry_open_pct,
+            "extended_entry_size_multiplier": settings.steady_intraday_extended_entry_size_multiplier,
             "stop_atr_multiple": settings.steady_intraday_stop_atr_multiple,
             "stop_buffer_pct": settings.steady_intraday_stop_buffer_pct,
             "min_r_pct": settings.steady_intraday_min_r_pct,
@@ -218,6 +229,17 @@ class SteadyIntradayStrategy(Strategy):
         if session_vwap <= prev_vwap:
             return self._reject(state, "vwap", "VWAP not rising")
 
+        entry_open_pct = (entry - bars[0].open) / bars[0].open if bars[0].open else 0.0
+        if entry_open_pct > self.settings.steady_intraday_max_entry_open_pct:
+            return self._reject(
+                state,
+                "extension",
+                (
+                    f"too extended from open entry_open={entry_open_pct:.2%} "
+                    f"max={self.settings.steady_intraday_max_entry_open_pct:.2%}"
+                ),
+            )
+
         vwap_extension_pct = (entry - session_vwap) / session_vwap
         ema_extension_pct = (entry - ema_mid) / ema_mid
         if vwap_extension_pct > self.settings.steady_intraday_max_vwap_extension_pct:
@@ -237,6 +259,10 @@ class SteadyIntradayStrategy(Strategy):
         if r_pct > self.settings.steady_intraday_max_r_pct:
             return self._reject(state, "risk", "R too wide")
 
+        position_size_multiplier = self.settings.steady_intraday_position_size_multiplier
+        if entry_open_pct > self.settings.steady_intraday_extended_entry_open_pct:
+            position_size_multiplier *= self.settings.steady_intraday_extended_entry_size_multiplier
+
         reason = (
             f"steady_intraday {trigger}: EMA stack {ema_fast:.2f}>{ema_mid:.2f}>{ema_slow:.2f}, "
             f"VWAP {session_vwap:.2f}, ATR {atr_pct:.2%}, R {r_pct:.2%}, vol {volume_ratio:.2f}x"
@@ -247,14 +273,14 @@ class SteadyIntradayStrategy(Strategy):
             side="BUY",
             price=entry,
             timestamp_ms=latest.end_ms,
-            change_pct=(entry - bars[0].open) / bars[0].open if bars[0].open else 0.0,
+            change_pct=entry_open_pct,
             volume_ratio=volume_ratio,
             spread_bps=spread_bps,
             reason=reason,
             stop_price=stop_price,
             session_open_price=bars[0].open,
-            entry_open_pct=(entry - bars[0].open) / bars[0].open if bars[0].open else None,
-            position_size_multiplier=self.settings.steady_intraday_position_size_multiplier,
+            entry_open_pct=entry_open_pct,
+            position_size_multiplier=position_size_multiplier,
         )
 
     def on_entry_fill(self, fill) -> None:

@@ -210,6 +210,7 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_warmup_bars", "BP_WARMUP_BARS", int_env, _MIN_WARMUP_BARS),
         ("bp_green_threshold", "BP_GREEN_THRESHOLD", float_env, 70.0),
         ("bp_trend_line", "BP_TREND_LINE", float_env, 51.0),
+        ("bp_min_entry_score", "BP_MIN_ENTRY_SCORE", float_env, 65.0),
         ("bp_hold_floor", "BP_HOLD_FLOOR", float_env, 46.0),
         ("bp_decline_grace_bars", "BP_DECLINE_GRACE_BARS", int_env, 1),
         ("bp_double_decline_enabled", "BP_DOUBLE_DECLINE_ENABLED", bool_env, True),
@@ -243,6 +244,7 @@ class BreakoutPowerStrategy(Strategy):
             "warmup_bars": settings.bp_warmup_bars,
             "green_threshold": settings.bp_green_threshold,
             "trend_line": settings.bp_trend_line,
+            "min_entry_score": settings.bp_min_entry_score,
             "hold_floor": settings.bp_hold_floor,
             "decline_grace_bars": settings.bp_decline_grace_bars,
             "double_decline_enabled": bool(settings.bp_double_decline_enabled),
@@ -311,6 +313,12 @@ class BreakoutPowerStrategy(Strategy):
                 state,
                 "bp_cross",
                 f"no BP cross above {trend_line:.0f} prev={prev_score:.1f} now={score:.1f}",
+            )
+        if score < self.settings.bp_min_entry_score:
+            return self._reject(
+                state,
+                "bp_score",
+                f"BP entry score too weak score={score:.1f} min={self.settings.bp_min_entry_score:.1f}",
             )
         if avg_momentum < green_threshold:
             return self._reject(

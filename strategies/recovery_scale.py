@@ -100,6 +100,21 @@ class RecoveryScaleStrategy(Strategy):
         ("recovery_scale_neutral_budget_multiplier", "RECOVERY_SCALE_NEUTRAL_BUDGET_MULTIPLIER", float_env, 0.65),
         ("recovery_scale_weak_budget_multiplier", "RECOVERY_SCALE_WEAK_BUDGET_MULTIPLIER", float_env, 0.35),
         ("recovery_scale_block_new_entries", "RECOVERY_SCALE_BLOCK_NEW_ENTRIES", bool_env, True),
+        ("recovery_scale_block_risk_off_entries", "RECOVERY_SCALE_BLOCK_RISK_OFF_ENTRIES", bool_env, False),
+        ("recovery_scale_block_risk_off_adds", "RECOVERY_SCALE_BLOCK_RISK_OFF_ADDS", bool_env, False),
+        (
+            "recovery_scale_risk_off_requires_decline_exhaustion",
+            "RECOVERY_SCALE_RISK_OFF_REQUIRES_DECLINE_EXHAUSTION",
+            bool_env,
+            True,
+        ),
+        (
+            "recovery_scale_decline_exhaustion_min_score",
+            "RECOVERY_SCALE_DECLINE_EXHAUSTION_MIN_SCORE",
+            float_env,
+            2.0,
+        ),
+        ("recovery_scale_min_add_seconds", "RECOVERY_SCALE_MIN_ADD_SECONDS", int_env, 10),
         ("recovery_scale_recovery_rsi_min", "RECOVERY_SCALE_RECOVERY_RSI_MIN", float_env, 50.0),
         ("recovery_scale_recovery_breakout_power_min", "RECOVERY_SCALE_RECOVERY_BREAKOUT_POWER_MIN", float_env, 50.0),
         ("recovery_scale_partial1_profit_pct", "RECOVERY_SCALE_PARTIAL1_PROFIT_PCT", float_env, 0.015),
@@ -138,6 +153,11 @@ class RecoveryScaleStrategy(Strategy):
             "max_spread_bps": settings.recovery_scale_max_spread_bps,
             "daily_strategy_loss_budget": settings.recovery_scale_daily_strategy_loss_budget,
             "per_symbol_risk_budget_pct": settings.recovery_scale_per_symbol_risk_budget_pct,
+            "block_risk_off_entries": settings.recovery_scale_block_risk_off_entries,
+            "block_risk_off_adds": settings.recovery_scale_block_risk_off_adds,
+            "risk_off_requires_decline_exhaustion": settings.recovery_scale_risk_off_requires_decline_exhaustion,
+            "decline_exhaustion_min_score": settings.recovery_scale_decline_exhaustion_min_score,
+            "min_add_seconds": settings.recovery_scale_min_add_seconds,
         }
 
     def __init__(self, settings: Settings):
@@ -223,6 +243,9 @@ class RecoveryScaleStrategy(Strategy):
         # Check if intraday decline is beginning or underway
         if not self._check_intraday_decline(state):
             return self._reject(state, "decline", "no controlled intraday decline detected")
+        exhaustion_ok, exhaustion_reason = self._check_risk_off_decline_exhaustion(state)
+        if not exhaustion_ok:
+            return self._reject(state, "decline_exhaustion", exhaustion_reason)
 
         # Check position value budget
         position_value_budget = self._calculate_risk_budget(quote.ask)
@@ -294,7 +317,8 @@ class RecoveryScaleStrategy(Strategy):
             return None
 
         # Check if enough time has passed since last add (prevent rapid adds)
-        if state.last_event_ms - symbol_state.last_add_ms < 10_000:  # 10 second minimum
+        min_add_ms = max(0, self.settings.recovery_scale_min_add_seconds) * 1000
+        if state.last_event_ms - symbol_state.last_add_ms < min_add_ms:
             return None
 
         # Get ladder triggers
@@ -327,6 +351,23 @@ class RecoveryScaleStrategy(Strategy):
         regime_ok, _ = self._check_market_regime()
         if not regime_ok:
             LOG.info("Skipping tranche %d add for %s: regime hardened", next_tranche_idx + 1, state.symbol)
+            return None
+        if (
+            self.settings.recovery_scale_block_risk_off_adds
+            and self._market_regime is not None
+            and self._market_regime.score <= self.settings.market_regime_risk_off_score
+        ):
+            LOG.info(
+                "Skipping tranche %d add for %s: risk-off regime %s score %.1f",
+                next_tranche_idx + 1,
+                state.symbol,
+                self._market_regime.name,
+                self._market_regime.score,
+            )
+            return None
+        exhaustion_ok, exhaustion_reason = self._check_risk_off_decline_exhaustion(state)
+        if not exhaustion_ok:
+            LOG.info("Skipping tranche %d add for %s: %s", next_tranche_idx + 1, state.symbol, exhaustion_reason)
             return None
 
         # Calculate add size
@@ -436,6 +477,11 @@ class RecoveryScaleStrategy(Strategy):
         # Block in risk-off
         if self.settings.recovery_scale_block_new_entries and self._market_regime.score <= self.settings.market_regime_block_score:
             return False, f"blocked: regime {self._market_regime.name} score {self._market_regime.score:.1f}"
+        if (
+            self.settings.recovery_scale_block_risk_off_entries
+            and self._market_regime.score <= self.settings.market_regime_risk_off_score
+        ):
+            return False, f"risk-off: regime {self._market_regime.name} score {self._market_regime.score:.1f}"
 
         return True, f"regime {self._market_regime.name} ok"
 
@@ -568,6 +614,60 @@ class RecoveryScaleStrategy(Strategy):
                     break
 
         return has_bounce or decline_pct < decline_threshold_pct * 3.0  # Allow mild declines without bounce
+
+    def _check_risk_off_decline_exhaustion(self, state: SymbolState) -> tuple[bool, str]:
+        if (
+            not self.settings.recovery_scale_risk_off_requires_decline_exhaustion
+            or self._market_regime is None
+            or self._market_regime.score > self.settings.market_regime_risk_off_score
+        ):
+            return True, "not required"
+
+        score, reason = self._decline_exhaustion_score(state)
+        min_score = self.settings.recovery_scale_decline_exhaustion_min_score
+        if score < min_score:
+            return False, f"risk-off decline not exhausted score={score:.1f} min={min_score:.1f} {reason}"
+        return True, f"risk-off decline exhaustion score={score:.1f} {reason}"
+
+    def _decline_exhaustion_score(self, state: SymbolState) -> tuple[float, str]:
+        bars = list(state.bars)
+        if len(bars) < 5:
+            return 0.0, "insufficient bars"
+
+        recent = bars[-min(len(bars), self.settings.recovery_scale_max_decline_bars) :]
+        latest = recent[-1]
+        prev = recent[-2]
+        score = 0.0
+        parts: list[str] = []
+
+        if latest.close > prev.close:
+            score += 1.0
+            parts.append("close_up")
+
+        prior_lows = [bar.low for bar in recent[-5:-1]]
+        if prior_lows and latest.low >= min(prior_lows):
+            score += 1.0
+            parts.append("low_held")
+
+        latest_range = max(latest.high - latest.low, 0.0)
+        if latest_range > 0:
+            lower_wick = min(latest.open, latest.close) - latest.low
+            if lower_wick / latest_range >= 0.35:
+                score += 1.0
+                parts.append("lower_wick")
+
+        if len(recent) >= 3 and latest.close > recent[-3].close:
+            score += 1.0
+            parts.append("three_bar_recovery")
+
+        recent_high = max(bar.high for bar in recent)
+        recent_low = min(bar.low for bar in recent)
+        midpoint = recent_low + ((recent_high - recent_low) * 0.5)
+        if recent_high > recent_low and latest.close >= midpoint:
+            score += 1.0
+            parts.append("range_mid_reclaimed")
+
+        return score, ",".join(parts) if parts else "none"
 
     def _decline_threshold_pct(self, state: SymbolState) -> float:
         profile = self._profile_for(state.symbol)

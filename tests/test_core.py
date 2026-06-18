@@ -11773,7 +11773,7 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_bp",
             return_value=BPSeries(
-                scores=[45.0, 55.0],
+                scores=[45.0, 66.0],
                 momentums=[0.0, 100.0],
                 avg_momentums=[50.0, 70.0],
             ),
@@ -11861,7 +11861,7 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_bp",
             return_value=BPSeries(
-                scores=[45.0, 55.0],
+                scores=[45.0, 66.0],
                 momentums=[0.0, 100.0],
                 avg_momentums=[50.0, 70.0],
             ),
@@ -11882,7 +11882,7 @@ class CoreTradingTests(unittest.TestCase):
             strategy,
             "_compute_bp",
             return_value=BPSeries(
-                scores=[45.0, 55.0],
+                scores=[45.0, 66.0],
                 momentums=[0.0, 100.0],
                 avg_momentums=[50.0, 70.0],
             ),
