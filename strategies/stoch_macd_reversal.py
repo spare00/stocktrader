@@ -1154,4 +1154,5 @@ class StochMACDReversalStrategy(Strategy):
         if timestamp_ms - last_log_ms >= 10_000:
             self._last_reject_log_ms[key] = timestamp_ms
             LOG.debug("No stoch_macd_reversal entry %s [%s]: %s", state.symbol, code, detail)
+            self.record_signal_block(state, code, detail)
         return None

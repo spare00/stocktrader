@@ -1381,6 +1381,16 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 adjusted_signal, regime_reject = market_regime.apply_to_signal(signal, regime)
                 if regime_reject:
                     heartbeat.record_rejection(signal.strategy, regime_reject)
+                    from modules.signal_block_journal import write_signal_block
+
+                    write_signal_block(
+                        strategy=signal.strategy,
+                        symbol=signal.symbol,
+                        filter_code="market_regime",
+                        reason=regime_reject,
+                        stage="market_regime",
+                        timestamp_ms=signal.timestamp_ms or state.last_event_ms or 0,
+                    )
                     if rejection_logs.should_log(signal.symbol, signal.side, signal.strategy, regime_reject):
                         logging.info(
                             "Signal rejected %s %s from %s: %s",
@@ -1399,6 +1409,16 @@ async def main(args: argparse.Namespace | None = None) -> None:
                 )
                 if not decision.allowed:
                     heartbeat.record_rejection(signal.strategy, decision.reason)
+                    from modules.signal_block_journal import write_signal_block
+
+                    write_signal_block(
+                        strategy=signal.strategy,
+                        symbol=signal.symbol,
+                        filter_code="risk_gate",
+                        reason=decision.reason,
+                        stage="risk_gate",
+                        timestamp_ms=signal.timestamp_ms or state.last_event_ms or 0,
+                    )
                     if rejection_logs.should_log(signal.symbol, signal.side, signal.strategy, decision.reason):
                         logging.info(
                             "Signal rejected %s %s from %s: %s",

@@ -113,6 +113,9 @@ class MACDEarlyImpulseStrategy(Strategy):
         ("macd_hist_rise_bars", "MACD_HIST_RISE_BARS", int_env, 2),
         ("macd_require_positive_hist", "MACD_REQUIRE_POSITIVE_HIST", bool_env, True),
         ("macd_momentum_exit_min_profit_pct", "MACD_MOMENTUM_EXIT_MIN_PROFIT_PCT", float_env, 0.0015),
+        ("macd_momentum_exit_min_mfe_pct", "MACD_MOMENTUM_EXIT_MIN_MFE_PCT", float_env, 0.004),
+        ("macd_no_progress_seconds", "MACD_NO_PROGRESS_SECONDS", int_env, 120),
+        ("macd_no_progress_max_mfe_pct", "MACD_NO_PROGRESS_MAX_MFE_PCT", float_env, 0.003),
         ("macd_early_loss_cut_seconds", "MACD_EARLY_LOSS_CUT_SECONDS", int_env, 75),
         ("macd_early_loss_cut_pct", "MACD_EARLY_LOSS_CUT_PCT", float_env, 0.0022),
         (
@@ -628,7 +631,14 @@ class MACDEarlyImpulseStrategy(Strategy):
                 if (
                     len(hist) >= 3
                     and hist[-1] < hist[-2] < hist[-3]
-                    and pnl_pct >= max(self.settings.macd_momentum_exit_min_profit_pct, _RUNNER_MOMENTUM_EXIT_MIN_PROFIT_PCT)
+                    and self._momentum_fade_exit_allowed(
+                        position,
+                        pnl_pct,
+                        min_profit_pct=max(
+                            self.settings.macd_momentum_exit_min_profit_pct,
+                            _RUNNER_MOMENTUM_EXIT_MIN_PROFIT_PCT,
+                        ),
+                    )
                 ):
                     return ExitDecision("macd momentum fade")
 
@@ -646,6 +656,10 @@ class MACDEarlyImpulseStrategy(Strategy):
         if age_seconds <= self.settings.macd_early_loss_cut_seconds and pnl_pct <= -self.settings.macd_early_loss_cut_pct:
             return ExitDecision("early loss cut")
 
+        no_progress = self._no_progress_exit_decision(position, price, age_seconds, pnl_pct)
+        if no_progress is not None:
+            return no_progress
+
         if r_initial <= 0 and pnl_pct >= self.settings.macd_target_profit_pct:
             return ExitDecision("target profit")
 
@@ -655,11 +669,7 @@ class MACDEarlyImpulseStrategy(Strategy):
         macd = self._compute_macd(state)
         if macd is not None:
             _, _, hist = macd
-            if (
-                len(hist) >= 2
-                and hist[-1] < hist[-2]
-                and pnl_pct >= self.settings.macd_momentum_exit_min_profit_pct
-            ):
+            if len(hist) >= 2 and hist[-1] < hist[-2] and self._momentum_fade_exit_allowed(position, pnl_pct):
                 return ExitDecision("macd momentum fade")
 
         trail_high = max(position.max_price or 0.0, price)
@@ -671,6 +681,49 @@ class MACDEarlyImpulseStrategy(Strategy):
             return ExitDecision("stop loss")
 
         return None
+
+    def _no_progress_exit_decision(
+        self,
+        position,
+        price: float,
+        age_seconds: float,
+        pnl_pct: float,
+    ) -> ExitDecision | None:
+        window = self.settings.macd_no_progress_seconds
+        max_mfe = self.settings.macd_no_progress_max_mfe_pct
+        if window <= 0 or max_mfe <= 0:
+            return None
+        if age_seconds < window:
+            return None
+        entry = position.entry_price
+        if entry <= 0:
+            return None
+        mfe_pct = (position.max_price - entry) / entry if position.max_price > 0 else 0.0
+        if mfe_pct > max_mfe:
+            return None
+        if pnl_pct > max_mfe:
+            return None
+        return ExitDecision("no progress scratch")
+
+    def _momentum_fade_exit_allowed(
+        self,
+        position,
+        pnl_pct: float,
+        *,
+        min_profit_pct: float | None = None,
+    ) -> bool:
+        min_profit = (
+            self.settings.macd_momentum_exit_min_profit_pct
+            if min_profit_pct is None
+            else min_profit_pct
+        )
+        if pnl_pct < min_profit:
+            return False
+        entry = position.entry_price
+        if entry <= 0:
+            return False
+        mfe_pct = (position.max_price - entry) / entry if position.max_price > 0 else 0.0
+        return mfe_pct >= self.settings.macd_momentum_exit_min_mfe_pct
 
     def allow_max_hold_exit(self, state: SymbolState, position, age_seconds: float, pnl_pct: float) -> bool:
         if getattr(position, "strategy", "") != self.name:

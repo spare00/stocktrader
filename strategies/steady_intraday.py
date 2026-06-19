@@ -65,11 +65,22 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_vwap_buffer_pct", "STEADY_INTRADAY_VWAP_BUFFER_PCT", float_env, 0.0005),
         ("steady_intraday_max_vwap_extension_pct", "STEADY_INTRADAY_MAX_VWAP_EXTENSION_PCT", float_env, 0.025),
         ("steady_intraday_max_ema_extension_pct", "STEADY_INTRADAY_MAX_EMA_EXTENSION_PCT", float_env, 0.012),
-        ("steady_intraday_max_entry_open_pct", "STEADY_INTRADAY_MAX_ENTRY_OPEN_PCT", float_env, 0.06),
         ("steady_intraday_extended_entry_open_pct", "STEADY_INTRADAY_EXTENDED_ENTRY_OPEN_PCT", float_env, 0.04),
+        (
+            "steady_intraday_deep_extended_entry_open_pct",
+            "STEADY_INTRADAY_DEEP_EXTENDED_ENTRY_OPEN_PCT",
+            float_env,
+            0.06,
+        ),
         (
             "steady_intraday_extended_entry_size_multiplier",
             "STEADY_INTRADAY_EXTENDED_ENTRY_SIZE_MULTIPLIER",
+            float_env,
+            0.35,
+        ),
+        (
+            "steady_intraday_deep_extended_entry_size_multiplier",
+            "STEADY_INTRADAY_DEEP_EXTENDED_ENTRY_SIZE_MULTIPLIER",
             float_env,
             0.35,
         ),
@@ -127,9 +138,10 @@ class SteadyIntradayStrategy(Strategy):
             "vwap_buffer_pct": settings.steady_intraday_vwap_buffer_pct,
             "max_vwap_extension_pct": settings.steady_intraday_max_vwap_extension_pct,
             "max_ema_extension_pct": settings.steady_intraday_max_ema_extension_pct,
-            "max_entry_open_pct": settings.steady_intraday_max_entry_open_pct,
             "extended_entry_open_pct": settings.steady_intraday_extended_entry_open_pct,
+            "deep_extended_entry_open_pct": settings.steady_intraday_deep_extended_entry_open_pct,
             "extended_entry_size_multiplier": settings.steady_intraday_extended_entry_size_multiplier,
+            "deep_extended_entry_size_multiplier": settings.steady_intraday_deep_extended_entry_size_multiplier,
             "stop_atr_multiple": settings.steady_intraday_stop_atr_multiple,
             "stop_buffer_pct": settings.steady_intraday_stop_buffer_pct,
             "min_r_pct": settings.steady_intraday_min_r_pct,
@@ -230,15 +242,6 @@ class SteadyIntradayStrategy(Strategy):
             return self._reject(state, "vwap", "VWAP not rising")
 
         entry_open_pct = (entry - bars[0].open) / bars[0].open if bars[0].open else 0.0
-        if entry_open_pct > self.settings.steady_intraday_max_entry_open_pct:
-            return self._reject(
-                state,
-                "extension",
-                (
-                    f"too extended from open entry_open={entry_open_pct:.2%} "
-                    f"max={self.settings.steady_intraday_max_entry_open_pct:.2%}"
-                ),
-            )
 
         vwap_extension_pct = (entry - session_vwap) / session_vwap
         ema_extension_pct = (entry - ema_mid) / ema_mid
@@ -251,6 +254,18 @@ class SteadyIntradayStrategy(Strategy):
         trigger = self._entry_trigger(bars, entry, ema_fast, ema_mid, session_vwap, volume_ratio)
         if trigger is None:
             return self._reject(state, "trigger", "no pullback reclaim or ORB continuation")
+        if (
+            entry_open_pct > self.settings.steady_intraday_extended_entry_open_pct
+            and trigger != "pullback_reclaim"
+        ):
+            return self._reject(
+                state,
+                "extension",
+                (
+                    f"extended from open entry_open={entry_open_pct:.2%} "
+                    f"needs pullback reclaim not {trigger}"
+                ),
+            )
 
         stop_price = self._stop_price(bars, entry, ema_mid, session_vwap, atr)
         r_pct = (entry - stop_price) / entry if entry > 0 else 0.0
@@ -262,6 +277,8 @@ class SteadyIntradayStrategy(Strategy):
         position_size_multiplier = self.settings.steady_intraday_position_size_multiplier
         if entry_open_pct > self.settings.steady_intraday_extended_entry_open_pct:
             position_size_multiplier *= self.settings.steady_intraday_extended_entry_size_multiplier
+        if entry_open_pct > self.settings.steady_intraday_deep_extended_entry_open_pct:
+            position_size_multiplier *= self.settings.steady_intraday_deep_extended_entry_size_multiplier
 
         reason = (
             f"steady_intraday {trigger}: EMA stack {ema_fast:.2f}>{ema_mid:.2f}>{ema_slow:.2f}, "
@@ -594,4 +611,5 @@ class SteadyIntradayStrategy(Strategy):
         if timestamp_ms - last_log_ms >= 30_000:
             self._last_reject_log_ms[key] = timestamp_ms
             LOG.debug("No steady_intraday entry %s [%s]: %s", state.symbol, code, detail)
+            self.record_signal_block(state, code, detail)
         return None

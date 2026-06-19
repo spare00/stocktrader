@@ -33,6 +33,18 @@ FILTER_TAG_PATTERNS = (
 
 
 @dataclass(frozen=True)
+class SignalBlockEvent:
+    strategy: str
+    symbol: str
+    timestamp_ms: int
+    block_category: str
+    block_stage: str
+    filter_code: str
+    reason: str
+    source_commit: str = ""
+
+
+@dataclass(frozen=True)
 class TradeEvent:
     event: str
     symbol: str
@@ -107,6 +119,67 @@ class RoundTrip:
     entry_size_multiplier: float | None = None
 
 
+def parse_signal_block(row: dict) -> SignalBlockEvent:
+    return SignalBlockEvent(
+        strategy=str(row.get("strategy", "")).strip(),
+        symbol=str(row.get("symbol", "")).upper(),
+        timestamp_ms=int(row.get("timestamp_ms", 0)),
+        block_category=str(row.get("block_category", "marginal")).strip().lower(),
+        block_stage=str(row.get("block_stage", "strategy_filter")).strip().lower(),
+        filter_code=str(row.get("filter_code", "")).strip().lower(),
+        reason=str(row.get("reason", "")),
+        source_commit=str(row.get("source_commit") or "").strip(),
+    )
+
+
+def load_signal_blocks(path: Path) -> list[SignalBlockEvent]:
+    if not path.exists():
+        return []
+
+    blocks: list[SignalBlockEvent] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid journal row {line_number} in {path}: {exc}") from exc
+            if str(row.get("event", "")).lower() != "signal_blocked":
+                continue
+            blocks.append(parse_signal_block(row))
+    return sorted(blocks, key=lambda item: item.timestamp_ms)
+
+
+def summarize_block_feedback(blocks: list[SignalBlockEvent]) -> dict:
+    by_strategy: dict[str, Counter] = defaultdict(Counter)
+    by_category: Counter = Counter()
+    by_stage: Counter = Counter()
+    top_codes: dict[str, Counter] = defaultdict(Counter)
+
+    for block in blocks:
+        category = block.block_category or "marginal"
+        by_strategy[block.strategy][category] += 1
+        by_category[category] += 1
+        by_stage[block.block_stage] += 1
+        top_codes[block.strategy][block.filter_code] += 1
+
+    return {
+        "total": len(blocks),
+        "by_category": dict(by_category),
+        "by_stage": dict(by_stage),
+        "by_strategy": {
+            strategy: dict(counter)
+            for strategy, counter in sorted(by_strategy.items())
+        },
+        "top_filter_codes": {
+            strategy: counter.most_common(5)
+            for strategy, counter in sorted(top_codes.items())
+        },
+    }
+
+
 def parse_event(row: dict) -> TradeEvent:
     return TradeEvent(
         event=str(row.get("event", "")).lower(),
@@ -138,8 +211,14 @@ def load_events(path: Path) -> list[TradeEvent]:
             if not line:
                 continue
             try:
-                events.append(parse_event(json.loads(line)))
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid journal row {line_number} in {path}: {exc}") from exc
+            if str(row.get("event", "")).lower() == "signal_blocked":
+                continue
+            try:
+                events.append(parse_event(row))
+            except (TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid journal row {line_number} in {path}: {exc}") from exc
     return sorted(events, key=lambda item: item.timestamp_ms)
 
@@ -1107,6 +1186,39 @@ def _print_by_day_entry_time_et(by_day: dict[str, dict[str, dict]]) -> None:
             print(f"{DETAIL_INDENT}{day:<{day_w}}  " + " | ".join(blocks))
 
 
+def _print_block_feedback(block_feedback: dict | None) -> None:
+    if not block_feedback or not int(block_feedback.get("total") or 0):
+        return
+
+    _print_section("Block Feedback (journal)")
+    print(
+        f"{DETAIL_INDENT}fishy = suspicious setup | marginal = normal filter | "
+        "data = quote/spread noise | risk = post-signal gate"
+    )
+    rows: list[list[str]] = []
+    for strategy in sorted(block_feedback.get("by_strategy") or {}):
+        counts = block_feedback["by_strategy"][strategy]
+        rows.append(
+            [
+                strategy,
+                str(counts.get("fishy", 0)),
+                str(counts.get("marginal", 0)),
+                str(counts.get("data", 0)),
+                str(counts.get("risk", 0)),
+            ]
+        )
+    if rows:
+        _print_table(["Strategy", "Fishy", "Marginal", "Data", "Risk"], rows)
+
+    code_rows: list[list[str]] = []
+    for strategy in sorted(block_feedback.get("top_filter_codes") or {}):
+        for code, count in block_feedback["top_filter_codes"][strategy][:3]:
+            code_rows.append([strategy, code, str(count)])
+    if code_rows:
+        print(f"{DETAIL_INDENT}Top filter codes:")
+        _print_table(["Strategy", "Code", "Count"], code_rows)
+
+
 def _print_session_activity(session_activity: dict | None) -> None:
     if not session_activity:
         return
@@ -1153,6 +1265,7 @@ def _print_session_activity(session_activity: dict | None) -> None:
 
 def _print_text_details(summary: dict, positions: dict) -> None:
     _print_session_activity(summary.get("session_activity"))
+    _print_block_feedback(summary.get("block_feedback"))
     if summary["by_exit_reason"]:
         _print_section("Exit Reasons")
         rows = [
@@ -1380,13 +1493,25 @@ def analyze(
         needle = strategy.strip().lower()
         round_trips = [t for t in round_trips if (t.strategy or "").lower() == needle]
     log_path = trader_log if trader_log is not None else default_trader_log_path(path)
-    return summarize(
+    summary = summarize(
         round_trips,
         unmatched,
         log_path,
         fetch_market_data=fetch_market_data,
         market_returns_by_day=market_returns_by_day,
     )
+    blocks = load_signal_blocks(path)
+    if target_date:
+        blocks = [
+            block
+            for block in blocks
+            if datetime.fromtimestamp(block.timestamp_ms / 1000, tz=TRADING_TZ).date().isoformat() == target_date
+        ]
+    if strategy:
+        needle = strategy.strip().lower()
+        blocks = [block for block in blocks if block.strategy.lower() == needle]
+    summary["block_feedback"] = summarize_block_feedback(blocks)
+    return summary
 
 
 def parse_target_date(value: str) -> str:

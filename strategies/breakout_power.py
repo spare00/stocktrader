@@ -210,7 +210,6 @@ class BreakoutPowerStrategy(Strategy):
         ("bp_warmup_bars", "BP_WARMUP_BARS", int_env, _MIN_WARMUP_BARS),
         ("bp_green_threshold", "BP_GREEN_THRESHOLD", float_env, 70.0),
         ("bp_trend_line", "BP_TREND_LINE", float_env, 51.0),
-        ("bp_min_entry_score", "BP_MIN_ENTRY_SCORE", float_env, 65.0),
         ("bp_hold_floor", "BP_HOLD_FLOOR", float_env, 46.0),
         ("bp_decline_grace_bars", "BP_DECLINE_GRACE_BARS", int_env, 1),
         ("bp_double_decline_enabled", "BP_DOUBLE_DECLINE_ENABLED", bool_env, True),
@@ -244,7 +243,6 @@ class BreakoutPowerStrategy(Strategy):
             "warmup_bars": settings.bp_warmup_bars,
             "green_threshold": settings.bp_green_threshold,
             "trend_line": settings.bp_trend_line,
-            "min_entry_score": settings.bp_min_entry_score,
             "hold_floor": settings.bp_hold_floor,
             "decline_grace_bars": settings.bp_decline_grace_bars,
             "double_decline_enabled": bool(settings.bp_double_decline_enabled),
@@ -314,11 +312,12 @@ class BreakoutPowerStrategy(Strategy):
                 "bp_cross",
                 f"no BP cross above {trend_line:.0f} prev={prev_score:.1f} now={score:.1f}",
             )
-        if score < self.settings.bp_min_entry_score:
+        latest_bar = indicator_bars[-1]
+        if self._is_rejection_wick(latest_bar):
             return self._reject(
                 state,
-                "bp_score",
-                f"BP entry score too weak score={score:.1f} min={self.settings.bp_min_entry_score:.1f}",
+                "bp_rejection_wick",
+                "cross bar shows upper rejection wick",
             )
         if avg_momentum < green_threshold:
             return self._reject(
@@ -407,6 +406,11 @@ class BreakoutPowerStrategy(Strategy):
         age_seconds = (event_ms - position.entry_ms) / 1000
         if age_seconds < self.settings.bp_min_hold_seconds:
             return None
+
+        early_failure = self._early_failure_exit_decision(position, price, age_seconds)
+        if early_failure is not None:
+            self._clear_position_state(position.symbol)
+            return early_failure
 
         pnl_pct = (price - position.entry_price) / position.entry_price
         if pnl_pct <= -self.settings.bp_stop_loss_pct:
@@ -564,6 +568,25 @@ class BreakoutPowerStrategy(Strategy):
                 return risk
         return position.entry_price * self.settings.bp_stop_loss_pct
 
+    def _early_failure_exit_decision(self, position, price: float, age_seconds: float) -> ExitDecision | None:
+        """Scratch trades that never show meaningful follow-through after entry."""
+        window = self.settings.bp_early_failure_seconds
+        max_mfe = self.settings.bp_early_failure_min_mfe_pct
+        if window <= 0 or max_mfe <= 0:
+            return None
+        if age_seconds < window:
+            return None
+        entry = position.entry_price
+        if entry <= 0:
+            return None
+        mfe_pct = (position.max_price - entry) / entry if position.max_price > 0 else 0.0
+        if mfe_pct > max_mfe:
+            return None
+        pnl_pct = (price - entry) / entry
+        if pnl_pct > max_mfe:
+            return None
+        return ExitDecision("early failure scratch")
+
     def exit_activation_delay_seconds(self, position) -> int:
         return max(0, self.settings.bp_min_hold_seconds)
 
@@ -675,6 +698,24 @@ class BreakoutPowerStrategy(Strategy):
     def _indicator_bars(self, state: SymbolState) -> list:
         return continuous_indicator_bars(state, self.settings)
 
+    @staticmethod
+    def _is_rejection_wick(bar) -> bool:
+        """Reject crosses on bars that spike and close weak (likely fake breakout)."""
+        high = float(bar.high)
+        low = float(bar.low)
+        open_ = float(bar.open)
+        close = float(bar.close)
+        bar_range = high - low
+        if bar_range <= 0:
+            return False
+        body_top = max(open_, close)
+        upper_wick = high - body_top
+        body = abs(close - open_)
+        if upper_wick <= body:
+            return False
+        close_position = (close - low) / bar_range
+        return close_position < 0.45
+
     def _entry_stop_price(self, bars: list, ask: float) -> float:
         lookback = max(1, self.settings.bp_stop_lookback_bars)
         tail = bars[-lookback:] if len(bars) >= lookback else bars
@@ -698,6 +739,7 @@ class BreakoutPowerStrategy(Strategy):
         if now - self._last_reject_log_ms.get(key, 0) >= 60_000:
             LOG.debug("breakout_power reject %s [%s]: %s", state.symbol, code, message)
             self._last_reject_log_ms[key] = now
+            self.record_signal_block(state, code, message)
         return None
 
     @staticmethod

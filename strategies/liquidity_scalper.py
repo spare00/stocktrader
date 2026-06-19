@@ -57,6 +57,7 @@ class LiquidityScalperStrategy(Strategy):
         ("liquidity_scalper_min_tape_dollar_volume", "LIQUIDITY_SCALPER_MIN_TAPE_DOLLAR_VOLUME", float_env, 100_000.0),
         ("liquidity_scalper_min_trade_dollar_volume", "LIQUIDITY_SCALPER_MIN_TRADE_DOLLAR_VOLUME", float_env, 10_000.0),
         ("liquidity_scalper_min_buy_sell_ratio", "LIQUIDITY_SCALPER_MIN_BUY_SELL_RATIO", float_env, 1.35),
+        ("liquidity_scalper_min_flow_confirmations", "LIQUIDITY_SCALPER_MIN_FLOW_CONFIRMATIONS", int_env, 2),
         ("liquidity_scalper_min_tape_price_move_pct", "LIQUIDITY_SCALPER_MIN_TAPE_PRICE_MOVE_PCT", float_env, 0.0004),
         ("liquidity_scalper_quote_max_lag_ms", "LIQUIDITY_SCALPER_QUOTE_MAX_LAG_MS", int_env, 500),
         ("liquidity_scalper_min_ask_prints", "LIQUIDITY_SCALPER_MIN_ASK_PRINTS", int_env, 2),
@@ -203,8 +204,7 @@ class LiquidityScalperStrategy(Strategy):
             return None
 
         trade_dollar_volume = trade.price * trade.size
-        if not self._trade_flow_is_expanding(trade_dollar_volume, metrics):
-            return None
+        trade_flow_ok = self._trade_flow_is_expanding(trade_dollar_volume, metrics)
 
         min_buy_sell_ratio = self.settings.liquidity_scalper_min_buy_sell_ratio
         min_tape_move_pct = self.settings.liquidity_scalper_min_tape_price_move_pct
@@ -217,8 +217,7 @@ class LiquidityScalperStrategy(Strategy):
 
         if metrics.buy_sell_ratio < min_buy_sell_ratio:
             return None
-        if not self._tape_flow_is_expanding(metrics):
-            return None
+        tape_flow_ok = self._tape_flow_is_expanding(metrics)
         if metrics.move_pct < min_tape_move_pct:
             return None
         if metrics.ask_prints < self.settings.liquidity_scalper_min_ask_prints:
@@ -237,7 +236,7 @@ class LiquidityScalperStrategy(Strategy):
             session_bars,
             tape=metrics,
         )
-        if not session_flow_ok:
+        if not self._has_flow_confirmations(trade_flow_ok, tape_flow_ok, session_flow_ok):
             return None
 
         session_range_pct = self._hybrid_range_pct(session_bars, state)
@@ -286,12 +285,8 @@ class LiquidityScalperStrategy(Strategy):
 
         bar_dollar_volume = last.close * last.volume
         bar_flow_ok, bar_flow_ratio = self._bar_flow_is_expanding(bar_dollar_volume, bars)
-        if not bar_flow_ok:
-            return None
         session_dollar_volume = sum(bar.close * bar.volume for bar in bars)
         session_flow_ok, session_flow_ratio = self._session_flow_is_expanding(session_dollar_volume, bars)
-        if not session_flow_ok:
-            return None
 
         session_range_pct = self._range_pct(bars)
         min_range_pct = self.settings.liquidity_scalper_min_range_pct
@@ -313,6 +308,12 @@ class LiquidityScalperStrategy(Strategy):
             return None
 
         tape = self._tape_metrics(state, self.settings.liquidity_scalper_tape_window_seconds)
+        tape_flow_ok = tape is not None and (
+            tape.buy_sell_ratio >= self.settings.liquidity_scalper_min_buy_sell_ratio
+            or self._tape_flow_is_expanding(tape)
+        )
+        if not self._has_flow_confirmations(bar_flow_ok, session_flow_ok, tape_flow_ok):
+            return None
         if tape is None or tape.buy_sell_ratio < 1.0:
             return None
 
@@ -561,6 +562,10 @@ class LiquidityScalperStrategy(Strategy):
             if ts.date() == current.date() and ts.time() >= MARKET_OPEN:
                 trade_dv += trade.price * trade.size
         return max(bar_dv, trade_dv)
+
+    def _has_flow_confirmations(self, *flags: bool) -> bool:
+        required = max(1, min(3, self.settings.liquidity_scalper_min_flow_confirmations))
+        return sum(1 for flag in flags if flag) >= required
 
     def _bar_flow_is_expanding(self, bar_dollar_volume: float, bars: list[Bar]) -> tuple[bool, float]:
         threshold = max(0.0, self.settings.liquidity_scalper_min_bar_dollar_volume)

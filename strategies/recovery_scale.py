@@ -1011,4 +1011,5 @@ class RecoveryScaleStrategy(Strategy):
         if state.last_event_ms - last_log_ms >= 30_000:
             LOG.debug("Recovery scale reject %s: %s - %s", state.symbol, reason_key, detail)
             self._last_reject_log_ms[key] = state.last_event_ms
+            self.record_signal_block(state, reason_key, detail)
         return None

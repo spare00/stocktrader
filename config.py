@@ -96,6 +96,7 @@ class Settings:
     liquidity_scalper_min_tape_dollar_volume: float = 100_000.0
     liquidity_scalper_min_trade_dollar_volume: float = 10_000.0
     liquidity_scalper_min_buy_sell_ratio: float = 1.35
+    liquidity_scalper_min_flow_confirmations: int = 2
     liquidity_scalper_min_tape_price_move_pct: float = 0.0004
     liquidity_scalper_quote_max_lag_ms: int = 500
     liquidity_scalper_min_ask_prints: int = 2
@@ -343,8 +344,9 @@ class Settings:
     steady_intraday_vwap_buffer_pct: float = 0.0005
     steady_intraday_max_vwap_extension_pct: float = 0.025
     steady_intraday_max_ema_extension_pct: float = 0.012
-    steady_intraday_max_entry_open_pct: float = 0.06
     steady_intraday_extended_entry_open_pct: float = 0.04
+    steady_intraday_deep_extended_entry_open_pct: float = 0.06
+    steady_intraday_deep_extended_entry_size_multiplier: float = 0.35
     steady_intraday_extended_entry_size_multiplier: float = 0.35
     steady_intraday_stop_atr_multiple: float = 1.1
     steady_intraday_stop_buffer_pct: float = 0.0008
@@ -413,6 +415,9 @@ class Settings:
     macd_hist_rise_bars: int = 2
     macd_require_positive_hist: bool = True
     macd_momentum_exit_min_profit_pct: float = 0.0015
+    macd_momentum_exit_min_mfe_pct: float = 0.004
+    macd_no_progress_seconds: int = 120
+    macd_no_progress_max_mfe_pct: float = 0.003
     macd_early_loss_cut_seconds: int = 75
     macd_early_loss_cut_pct: float = 0.0022
     macd_early_impulse_max_trades_per_symbol_per_session: int = 2
@@ -524,7 +529,6 @@ class Settings:
     bp_warmup_bars: int = 40
     bp_green_threshold: float = 70.0
     bp_trend_line: float = 51.0
-    bp_min_entry_score: float = 65.0
     bp_hold_floor: float = 46.0
     bp_decline_grace_bars: int = 1
     bp_double_decline_enabled: bool = True

@@ -1333,6 +1333,85 @@ class CoreTradingTests(unittest.TestCase):
             self.assertIn("breakout_power", output)
             self.assertIn("steady_intraday", output)
 
+    def test_signal_block_journal_classifies_and_deduplicates(self):
+        from modules.signal_block_journal import (
+            classify_post_signal,
+            classify_strategy_filter,
+            reset_journal_dedupe_for_tests,
+            write_signal_block,
+        )
+
+        self.assertEqual(classify_strategy_filter("breakout_power", "bp_rejection_wick", "cross bar"), "fishy")
+        self.assertEqual(classify_strategy_filter("steady_intraday", "spread", "spread 20bps too wide"), "data")
+        self.assertEqual(classify_strategy_filter("steady_intraday", "atr", "ATR too low"), "marginal")
+        self.assertEqual(classify_post_signal("market regime panic score=-7.5/11.25"), "fishy")
+        self.assertEqual(classify_post_signal("position already open"), "risk")
+
+        old_journal = execution_module.TRADE_JOURNAL_FILE
+        reset_journal_dedupe_for_tests()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                journal = Path(tmp) / "trade_journal.jsonl"
+                execution_module.TRADE_JOURNAL_FILE = journal
+                write_signal_block(
+                    strategy="breakout_power",
+                    symbol="MU",
+                    filter_code="bp_rejection_wick",
+                    reason="cross bar shows upper rejection wick",
+                    stage="strategy_filter",
+                    timestamp_ms=1_000_000,
+                )
+                write_signal_block(
+                    strategy="breakout_power",
+                    symbol="MU",
+                    filter_code="bp_rejection_wick",
+                    reason="cross bar shows upper rejection wick",
+                    stage="strategy_filter",
+                    timestamp_ms=1_030_000,
+                )
+                rows = [json.loads(line) for line in journal.read_text().splitlines()]
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["event"], "signal_blocked")
+                self.assertEqual(rows[0]["block_category"], "fishy")
+        finally:
+            execution_module.TRADE_JOURNAL_FILE = old_journal
+            reset_journal_dedupe_for_tests()
+
+    def test_analyze_trade_journal_summarizes_block_feedback(self):
+        from modules.signal_block_journal import reset_journal_dedupe_for_tests, write_signal_block
+
+        old_journal = execution_module.TRADE_JOURNAL_FILE
+        reset_journal_dedupe_for_tests()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                journal = Path(tmp) / "trade_journal.jsonl"
+                execution_module.TRADE_JOURNAL_FILE = journal
+                write_signal_block(
+                    strategy="steady_intraday",
+                    symbol="MU",
+                    filter_code="spread",
+                    reason="spread 56.1bps too wide",
+                    stage="strategy_filter",
+                    timestamp_ms=market_ms(2026, 6, 18, 10, 0),
+                )
+                write_signal_block(
+                    strategy="steady_intraday",
+                    symbol="IONQ",
+                    filter_code="extension",
+                    reason="extended from open needs pullback reclaim not orb_continuation",
+                    stage="strategy_filter",
+                    timestamp_ms=market_ms(2026, 6, 18, 11, 0),
+                )
+                summary = analyze_trade_journal.analyze(journal)
+                feedback = summary["block_feedback"]
+                self.assertEqual(feedback["total"], 2)
+                self.assertEqual(feedback["by_category"]["data"], 1)
+                self.assertEqual(feedback["by_category"]["fishy"], 1)
+                self.assertEqual(feedback["by_strategy"]["steady_intraday"].get("marginal", 0), 0)
+        finally:
+            execution_module.TRADE_JOURNAL_FILE = old_journal
+            reset_journal_dedupe_for_tests()
+
     def test_opening_impulse_screener_uses_prior_regular_opening_sessions(self):
         as_of = datetime(2026, 4, 27, 8, 0, tzinfo=MARKET_TZ)
 
@@ -8988,6 +9067,17 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(strategy.evaluate(state))
 
+    def test_liquidity_scalper_flow_confirmations_require_two_of_three(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["FAST"],
+            strategy_names=["liquidity_scalper"],
+        )
+        strategy = LiquidityScalperStrategy(settings)
+        self.assertTrue(strategy._has_flow_confirmations(True, True, False))
+        self.assertFalse(strategy._has_flow_confirmations(True, False, False))
+
     def test_liquidity_scalper_emits_trade_tape_signal(self):
         settings = Settings(
             alpaca_api_key="test",
@@ -9176,6 +9266,58 @@ class CoreTradingTests(unittest.TestCase):
         self.assertIn("pullback_reclaim", signal.reason)
         self.assertLess(signal.stop_price, signal.price)
         self.assertEqual(signal.position_size_multiplier, 1.0)
+
+    def test_steady_intraday_rejects_extended_orb_without_pullback(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["NVDA"],
+            strategy_names=["steady_intraday"],
+            steady_intraday_extended_entry_open_pct=0.02,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("NVDA")
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        session_open = 100.0
+        for index in range(60):
+            if index < 20:
+                close = session_open + index * 0.15
+            elif index < 58:
+                close = session_open + 20 * 0.15
+            else:
+                close = session_open + 20 * 0.15 + (index - 57) * 0.20
+            open_price = close - 0.05
+            state.add_bar(
+                Bar(
+                    "NVDA",
+                    open=open_price,
+                    high=close + 0.10,
+                    low=open_price - 0.05,
+                    close=close,
+                    volume=120_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        state.bars[0] = Bar(
+            "NVDA",
+            open=session_open,
+            high=session_open + 0.05,
+            low=session_open - 0.05,
+            close=session_open + 0.02,
+            volume=120_000,
+            vwap=session_open,
+            start_ms=start_ms,
+            end_ms=start_ms + 60_000,
+        )
+        state.update_quote(Quote("NVDA", 103.13, 103.17, 100, 100, start_ms + 60 * 60_000))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
 
     def test_macd_volume_runner_does_not_take_same_tick_full_target_after_partial(self):
         settings = Settings(
@@ -11874,6 +12016,39 @@ class CoreTradingTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_breakout_power_rejects_cross_on_rejection_wick(self):
+        settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
+        strategy = BreakoutPowerStrategy(settings)
+        state = self._bp_state()
+        last = state.bars[-1]
+        state.bars[-1] = Bar(
+            symbol=last.symbol,
+            open=last.close - 0.05,
+            high=last.close + 1.20,
+            low=last.close - 0.10,
+            close=last.close + 0.02,
+            volume=last.volume,
+            vwap=last.close,
+            start_ms=last.start_ms,
+            end_ms=last.end_ms,
+        )
+        with patch.object(
+            strategy,
+            "_compute_bp",
+            return_value=BPSeries(
+                scores=[45.0, 66.0],
+                momentums=[0.0, 100.0],
+                avg_momentums=[50.0, 72.0],
+            ),
+        ), patch.object(
+            StochMACDReversalStrategy,
+            "_compute_supertrend",
+            return_value=(100.5, True),
+        ):
+            signal = strategy.evaluate(state)
+
+        self.assertIsNone(signal)
+
     def test_breakout_power_emits_buy_with_bullish_supertrend(self):
         settings = Settings(symbols=["AAPL"], strategy_names=["breakout_power"])
         strategy = BreakoutPowerStrategy(settings)
@@ -12827,6 +13002,105 @@ class CoreTradingTests(unittest.TestCase):
             allow_exit = strategy.allow_max_hold_exit(state, position, age_seconds=421.0, pnl_pct=-0.001)
 
         self.assertTrue(allow_exit)
+
+    def test_breakout_power_early_failure_scratch_when_no_follow_through(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_early_failure_seconds=120,
+            bp_early_failure_min_mfe_pct=0.003,
+            bp_min_hold_seconds=0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        event_ms = market_ms(2026, 4, 24, 10, 2)
+        state = self._bp_state(event_ms=event_ms)
+        position = self._bp_position(
+            entry_price=100.0,
+            stop_price=99.0,
+            initial_stop_price=99.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            max_price=100.15,
+        )
+        state.update_quote(Quote("AAPL", 99.83, 99.87, 100, 100, event_ms))
+        state.last_event_kind = "quote"
+        decision = strategy.should_exit(state, position)
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "early failure scratch")
+
+    def test_breakout_power_early_failure_skips_when_mfe_shows_progress(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            strategy_names=["breakout_power"],
+            bp_early_failure_seconds=120,
+            bp_early_failure_min_mfe_pct=0.003,
+            bp_min_hold_seconds=0,
+        )
+        strategy = BreakoutPowerStrategy(settings)
+        event_ms = market_ms(2026, 4, 24, 10, 2)
+        state = self._bp_state(event_ms=event_ms)
+        position = self._bp_position(
+            entry_price=100.0,
+            stop_price=99.0,
+            initial_stop_price=99.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            max_price=100.50,
+        )
+        state.update_quote(Quote("AAPL", 99.83, 99.87, 100, 100, event_ms))
+        state.last_event_kind = "quote"
+        self.assertIsNone(strategy.should_exit(state, position))
+
+    def test_macd_no_progress_scratch_after_flat_trade(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            macd_no_progress_seconds=120,
+            macd_no_progress_max_mfe_pct=0.003,
+            macd_min_hold_seconds=0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 2)
+        state.update_quote(Quote("AAPL", 99.88, 99.92, 100, 100, event_ms))
+        state.last_event_ms = event_ms
+        position = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 10, 0),
+            target_price=101.0,
+            stop_price=99.0,
+            max_price=100.10,
+        )
+        decision = strategy.should_exit(state, position)
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "no progress scratch")
+
+    def test_macd_momentum_fade_requires_min_mfe(self):
+        settings = Settings(
+            symbols=["AAPL"],
+            macd_momentum_exit_min_profit_pct=0.001,
+            macd_momentum_exit_min_mfe_pct=0.004,
+            macd_min_hold_seconds=0,
+            macd_no_progress_seconds=0,
+        )
+        strategy = MACDEarlyImpulseStrategy(settings)
+        state = SymbolState("AAPL")
+        event_ms = market_ms(2026, 4, 24, 10, 2)
+        state.update_quote(Quote("AAPL", 100.18, 100.22, 100, 100, event_ms))
+        state.last_event_ms = event_ms
+        position = Position(
+            symbol="AAPL",
+            strategy="macd_early_impulse",
+            shares=10,
+            entry_price=100.0,
+            entry_ms=market_ms(2026, 4, 24, 9, 58),
+            target_price=101.0,
+            stop_price=99.0,
+            max_price=100.25,
+        )
+        with patch.object(strategy, "_compute_macd", return_value=([0.02, 0.03], [0.01, 0.02], [0.006, 0.005])):
+            decision = strategy.should_exit(state, position)
+        self.assertIsNone(decision)
 
     def test_breakout_power_compute_series_matches_pine_score_components(self):
         bars = []

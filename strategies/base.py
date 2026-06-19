@@ -79,3 +79,22 @@ class Strategy(ABC):
 
     def allow_max_hold_exit(self, state: SymbolState, position: "Position", age_seconds: float, pnl_pct: float) -> bool:
         return True
+
+    def record_signal_block(
+        self,
+        state: SymbolState,
+        code: str,
+        detail: str,
+        *,
+        stage: str = "strategy_filter",
+    ) -> None:
+        from modules.signal_block_journal import write_signal_block
+
+        write_signal_block(
+            strategy=self.name,
+            symbol=state.symbol,
+            filter_code=code,
+            reason=detail,
+            stage=stage,  # type: ignore[arg-type]
+            timestamp_ms=state.last_event_ms or 0,
+        )
