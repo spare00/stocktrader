@@ -373,6 +373,13 @@ class Settings:
     steady_intraday_symbol_loss_lock_count: int = 2
     steady_intraday_allow_orb_breakout: bool = True
     steady_intraday_allow_pullback_reclaim: bool = True
+    steady_intraday_pyramid_enabled: bool = True
+    steady_intraday_pyramid_tranche_sizes: list[float] = field(default_factory=lambda: [0.25, 0.35, 0.40])
+    steady_intraday_pyramid_add_r_levels: list[float] = field(default_factory=lambda: [0.75, 1.25])
+    steady_intraday_pyramid_min_add_seconds: int = 60
+    steady_intraday_pyramid_add_volume_ratio: float = 1.15
+    steady_intraday_pyramid_add_stop_pct: float = 0.01
+    steady_intraday_pyramid_partial_r: float = 1.5
 
     macd_start_minute: int = 0
     macd_end_minute: int = 360

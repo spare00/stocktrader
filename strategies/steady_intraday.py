@@ -20,10 +20,17 @@ MARKET_OPEN = time(9, 30)
 
 @dataclass
 class _PositionState:
-    """Track per-symbol position state for grace period logic."""
+    """Track per-symbol position state for grace period and pyramid adds."""
     entry_ms: int
     bars_since_partial: int = 0
     last_processed_bar_end_ms: int | None = None
+    pyramid_tranche: int = 0
+    reference_entry: float = 0.0
+    reference_stop: float = 0.0
+    reference_r: float = 0.0
+    last_add_price: float = 0.0
+    last_add_ms: int = 0
+    pyramid_adds_blocked: bool = False
 
 
 class SteadyIntradayStrategy(Strategy):
@@ -37,8 +44,15 @@ class SteadyIntradayStrategy(Strategy):
                 OR opening range breakout continuation
     - Volume confirmation on trigger
 
+    Pyramid (Livermore-style add-to-winners, optional):
+    - Scout entry uses first tranche size (default 25% of max position budget)
+    - Adds on strength at configured R levels (default 0.75R, 1.25R from scout entry)
+    - Requires trend health (EMA stack, VWAP), volume, and bullish bar on add
+    - Blocks further adds after partial exit; optional add-stop after tranche 2+
+
     Exit Logic:
-    - Partial at 1R (default 50%), target at 2R
+    - Partial at 1R (default 50%), or 1.5R when pyramid tranche 2+ is filled
+    - Target at 2R (R measured from scout entry / initial stop)
     - Runner pullback: 0.9% from peak after partial (with grace period)
     - EMA9 breakdown: N bars below EMA9 (uses per-bar EMA values)
     - VWAP loss: price drops below session VWAP
@@ -111,6 +125,11 @@ class SteadyIntradayStrategy(Strategy):
         ("steady_intraday_symbol_loss_lock_count", "STEADY_INTRADAY_SYMBOL_LOSS_LOCK_COUNT", int_env, 2),
         ("steady_intraday_allow_orb_breakout", "STEADY_INTRADAY_ALLOW_ORB_BREAKOUT", bool_env, True),
         ("steady_intraday_allow_pullback_reclaim", "STEADY_INTRADAY_ALLOW_PULLBACK_RECLAIM", bool_env, True),
+        ("steady_intraday_pyramid_enabled", "STEADY_INTRADAY_PYRAMID_ENABLED", bool_env, True),
+        ("steady_intraday_pyramid_min_add_seconds", "STEADY_INTRADAY_PYRAMID_MIN_ADD_SECONDS", int_env, 60),
+        ("steady_intraday_pyramid_add_volume_ratio", "STEADY_INTRADAY_PYRAMID_ADD_VOLUME_RATIO", float_env, 1.15),
+        ("steady_intraday_pyramid_add_stop_pct", "STEADY_INTRADAY_PYRAMID_ADD_STOP_PCT", float_env, 0.01),
+        ("steady_intraday_pyramid_partial_r", "STEADY_INTRADAY_PYRAMID_PARTIAL_R", float_env, 1.5),
     )
     diagnostic_loggers: ClassVar[tuple[str, ...]] = ("strategies.steady_intraday",)
     selector_command: ClassVar[str] = ".venv/bin/python strategy_selectors/select_steady_intraday.py --top 12"
@@ -161,6 +180,13 @@ class SteadyIntradayStrategy(Strategy):
             "position_size_multiplier": settings.steady_intraday_position_size_multiplier,
             "max_trades_per_symbol_per_session": settings.steady_intraday_max_trades_per_symbol_per_session,
             "symbol_loss_lock_count": settings.steady_intraday_symbol_loss_lock_count,
+            "pyramid_enabled": bool(settings.steady_intraday_pyramid_enabled),
+            "pyramid_tranche_sizes": list(settings.steady_intraday_pyramid_tranche_sizes),
+            "pyramid_add_r_levels": list(settings.steady_intraday_pyramid_add_r_levels),
+            "pyramid_min_add_seconds": settings.steady_intraday_pyramid_min_add_seconds,
+            "pyramid_add_volume_ratio": settings.steady_intraday_pyramid_add_volume_ratio,
+            "pyramid_add_stop_pct": settings.steady_intraday_pyramid_add_stop_pct,
+            "pyramid_partial_r": settings.steady_intraday_pyramid_partial_r,
         }
 
     def __init__(self, settings: Settings):
@@ -172,6 +198,20 @@ class SteadyIntradayStrategy(Strategy):
     def evaluate(self, state: SymbolState) -> Signal | None:
         if not self.is_symbol_allowed(state.symbol):
             return None
+
+        symbol = state.symbol.strip().upper()
+        if self._pyramid_enabled():
+            pos_state = self._position_states.get(symbol)
+            if pos_state and pos_state.pyramid_tranche > 0:
+                if (
+                    pos_state.pyramid_tranche < self._max_pyramid_tranches()
+                    and not pos_state.pyramid_adds_blocked
+                ):
+                    add_signal = self._evaluate_pyramid_add(state, pos_state)
+                    if add_signal is not None:
+                        return add_signal
+                return None
+
         if state.last_event_kind != "bar":
             return None
         if not self._within_entry_window(state.last_event_ms):
@@ -280,6 +320,11 @@ class SteadyIntradayStrategy(Strategy):
         if entry_open_pct > self.settings.steady_intraday_deep_extended_entry_open_pct:
             position_size_multiplier *= self.settings.steady_intraday_deep_extended_entry_size_multiplier
 
+        if self._pyramid_enabled():
+            tranche_sizes = self._pyramid_tranche_sizes()
+            position_size_multiplier *= tranche_sizes[0]
+            self._begin_pyramid_state(symbol, entry, stop_price, latest.end_ms)
+
         reason = (
             f"steady_intraday {trigger}: EMA stack {ema_fast:.2f}>{ema_mid:.2f}>{ema_slow:.2f}, "
             f"VWAP {session_vwap:.2f}, ATR {atr_pct:.2%}, R {r_pct:.2%}, vol {volume_ratio:.2f}x"
@@ -301,13 +346,46 @@ class SteadyIntradayStrategy(Strategy):
         )
 
     def on_entry_fill(self, fill) -> None:
-        """Track position state for grace period logic."""
+        """Track position state for grace period and pyramid reference prices."""
         if getattr(fill, "strategy", "") != self.name:
             return
         symbol = str(getattr(fill, "symbol", "")).strip().upper()
         timestamp_ms = getattr(fill, "timestamp_ms", None)
-        if symbol and timestamp_ms is not None:
+        fill_price = float(getattr(fill, "price", 0) or 0)
+        if not symbol or timestamp_ms is None or fill_price <= 0:
+            return
+
+        pos_state = self._position_states.get(symbol)
+        if pos_state is None:
             self._position_states[symbol] = _PositionState(entry_ms=int(timestamp_ms))
+            pos_state = self._position_states[symbol]
+
+        reason = str(getattr(fill, "reason", ""))
+        if self._pyramid_enabled() and "pyramid_tranche_" in reason:
+            pos_state.last_add_price = fill_price
+            pos_state.last_add_ms = int(timestamp_ms)
+            return
+
+        pos_state.entry_ms = int(timestamp_ms)
+        if self._pyramid_enabled():
+            pos_state.last_add_price = fill_price
+            pos_state.last_add_ms = int(timestamp_ms)
+            if pos_state.reference_entry <= 0:
+                pos_state.reference_entry = fill_price
+
+    def on_exit_fill(self, fill) -> None:
+        if getattr(fill, "strategy", "") != self.name:
+            return
+        symbol = str(getattr(fill, "symbol", "")).strip().upper()
+        if not symbol:
+            return
+        if getattr(fill, "exit_stage", "") == "partial":
+            pos_state = self._position_states.get(symbol)
+            if pos_state is not None:
+                pos_state.pyramid_adds_blocked = True
+                pos_state.bars_since_partial = 0
+            return
+        self._clear_position_state(symbol)
 
     def should_exit(self, state: SymbolState, position) -> ExitDecision | None:
         if state.last_event_kind not in {"quote", "bar"} or position.strategy != self.name:
@@ -317,27 +395,54 @@ class SteadyIntradayStrategy(Strategy):
         if price is None:
             return None
 
+        symbol = position.symbol.strip().upper()
+        pos_state = self._position_states.get(symbol)
         initial_stop = position.initial_stop_price or position.stop_price
-        r_initial = position.entry_price - initial_stop
+        if pos_state is not None and pos_state.reference_stop > 0:
+            initial_stop = pos_state.reference_stop
+        reference_entry = (
+            pos_state.reference_entry if pos_state is not None and pos_state.reference_entry > 0 else position.entry_price
+        )
+        r_initial = reference_entry - initial_stop
         if r_initial <= 0:
             return None
 
+        if (
+            self._pyramid_enabled()
+            and pos_state is not None
+            and pos_state.pyramid_tranche >= 2
+            and pos_state.last_add_price > 0
+        ):
+            add_stop = pos_state.last_add_price * (1 - self.settings.steady_intraday_pyramid_add_stop_pct)
+            if price < add_stop:
+                self._clear_position_state(symbol)
+                return ExitDecision("pyramid add stop")
+
+        pyramid_blocks_partial = (
+            self._pyramid_enabled()
+            and pos_state is not None
+            and pos_state.pyramid_tranche > 0
+            and pos_state.pyramid_tranche < 2
+        )
+        partial_r = self.settings.steady_intraday_partial_r
+        if self._pyramid_enabled() and pos_state is not None and pos_state.pyramid_tranche >= 2:
+            partial_r = self.settings.steady_intraday_pyramid_partial_r
+
         # Partial exit at target R-multiple
-        if not position.partial_exit_taken and position.shares > 1:
-            partial_level = position.entry_price + r_initial * self.settings.steady_intraday_partial_r
+        if not position.partial_exit_taken and position.shares > 1 and not pyramid_blocks_partial:
+            partial_level = reference_entry + r_initial * partial_r
             if price >= partial_level:
                 fraction = min(1.0, max(0.0, self.settings.steady_intraday_partial_size))
                 shares = max(1, min(position.shares - 1, int(position.shares * fraction)))
-                return ExitDecision(f"partial {self.settings.steady_intraday_partial_r:.1f}R", shares=shares, mark_partial=True)
+                return ExitDecision(f"partial {partial_r:.1f}R", shares=shares, mark_partial=True)
 
         # Full exit at target R-multiple
-        target_level = position.entry_price + r_initial * self.settings.steady_intraday_target_r
+        target_level = reference_entry + r_initial * self.settings.steady_intraday_target_r
         if price >= target_level:
             return ExitDecision(f"target {self.settings.steady_intraday_target_r:.1f}R")
 
         # Runner pullback exit (with grace period after partial)
         if position.partial_exit_taken:
-            symbol = position.symbol.strip().upper()
             pos_state = self._position_states.get(symbol)
             grace_bars = max(0, self.settings.steady_intraday_runner_pullback_grace_bars)
 
@@ -378,7 +483,7 @@ class SteadyIntradayStrategy(Strategy):
         # Stall exit (with optional weakness requirement)
         event_ms = state.last_event_ms or position.entry_ms
         age_minutes = (event_ms - position.entry_ms) / 60_000
-        current_r = (price - position.entry_price) / r_initial
+        current_r = (price - reference_entry) / r_initial
 
         if (
             age_minutes >= self.settings.steady_intraday_stall_minutes
@@ -603,6 +708,139 @@ class SteadyIntradayStrategy(Strategy):
     def _clear_position_state(self, symbol: str) -> None:
         """Clear position state on exit."""
         self._position_states.pop(symbol.strip().upper(), None)
+
+    def _pyramid_enabled(self) -> bool:
+        return bool(self.settings.steady_intraday_pyramid_enabled)
+
+    def _pyramid_tranche_sizes(self) -> list[float]:
+        sizes = list(self.settings.steady_intraday_pyramid_tranche_sizes)
+        if not sizes:
+            return [0.25, 0.35, 0.40]
+        return sizes
+
+    def _pyramid_add_r_levels(self) -> list[float]:
+        levels = list(self.settings.steady_intraday_pyramid_add_r_levels)
+        if not levels:
+            return [0.75, 1.25]
+        return levels
+
+    def _max_pyramid_tranches(self) -> int:
+        return len(self._pyramid_tranche_sizes())
+
+    def _begin_pyramid_state(self, symbol: str, entry: float, stop_price: float, timestamp_ms: int) -> None:
+        reference_r = entry - stop_price
+        if reference_r <= 0:
+            reference_r = entry * self.settings.steady_intraday_min_r_pct
+        self._position_states[symbol] = _PositionState(
+            entry_ms=timestamp_ms,
+            pyramid_tranche=1,
+            reference_entry=entry,
+            reference_stop=stop_price,
+            reference_r=reference_r,
+            last_add_price=entry,
+            last_add_ms=timestamp_ms,
+        )
+
+    def _evaluate_pyramid_add(self, state: SymbolState, pos_state: _PositionState) -> Signal | None:
+        if state.last_event_kind != "bar":
+            return None
+        if should_flatten_before_close(state.last_event_ms, self.settings.flatten_before_close_minutes + 5):
+            return None
+        if not self._within_entry_window(state.last_event_ms):
+            return None
+
+        bars = self._regular_bars(state)
+        min_bars = max(self.settings.steady_intraday_min_bars, self.settings.steady_intraday_ema_slow + 5)
+        if len(bars) < min_bars:
+            return None
+
+        latest = bars[-1]
+        entry = latest.close
+        if entry < self.settings.steady_intraday_min_price:
+            return None
+
+        spread_bps = state.quote.spread_bps if state.quote else None
+        if spread_bps is not None and spread_bps > self.settings.steady_intraday_max_spread_bps:
+            return None
+
+        closes = [bar.close for bar in bars]
+        ema_fast_series = self._ema_series(closes, self.settings.steady_intraday_ema_fast)
+        ema_mid_series = self._ema_series(closes, self.settings.steady_intraday_ema_mid)
+        ema_slow_series = self._ema_series(closes, self.settings.steady_intraday_ema_slow)
+        if ema_fast_series is None or ema_mid_series is None or ema_slow_series is None:
+            return None
+
+        ema_fast = ema_fast_series[-1]
+        ema_mid = ema_mid_series[-1]
+        ema_slow = ema_slow_series[-1]
+        session_vwap = self._session_vwap(bars)
+        if session_vwap is None:
+            return None
+
+        if not (ema_fast > ema_mid > ema_slow):
+            return None
+        if entry <= session_vwap * (1 + self.settings.steady_intraday_vwap_buffer_pct):
+            return None
+
+        add_r_levels = self._pyramid_add_r_levels()
+        level_idx = pos_state.pyramid_tranche - 1
+        if level_idx < 0 or level_idx >= len(add_r_levels):
+            return None
+        if pos_state.reference_r <= 0:
+            return None
+
+        trigger_price = pos_state.reference_entry + add_r_levels[level_idx] * pos_state.reference_r
+        if entry < trigger_price:
+            return None
+
+        min_add_ms = max(0, self.settings.steady_intraday_pyramid_min_add_seconds) * 1000
+        if state.last_event_ms - pos_state.last_add_ms < min_add_ms:
+            return None
+
+        volume_ratio = self._volume_ratio(bars)
+        if volume_ratio < self.settings.steady_intraday_pyramid_add_volume_ratio:
+            return None
+        if not self._close_near_high(latest):
+            return None
+
+        tranche_sizes = self._pyramid_tranche_sizes()
+        next_tranche_idx = pos_state.pyramid_tranche
+        if next_tranche_idx >= len(tranche_sizes):
+            return None
+
+        add_size_pct = tranche_sizes[next_tranche_idx]
+        pos_state.pyramid_tranche += 1
+        pos_state.last_add_ms = state.last_event_ms
+        pos_state.last_add_price = entry
+
+        stop_price = pos_state.reference_stop
+        reason = (
+            f"steady_intraday pyramid_tranche_{pos_state.pyramid_tranche}: "
+            f"add at {entry:.2f} >= trigger {trigger_price:.2f} "
+            f"({add_r_levels[level_idx]:.2f}R), vol {volume_ratio:.2f}x"
+        )
+        LOG.info(
+            "Steady intraday pyramid add %s tranche %d/%d at %.2f (trigger %.2f)",
+            state.symbol,
+            pos_state.pyramid_tranche,
+            self._max_pyramid_tranches(),
+            entry,
+            trigger_price,
+        )
+        return Signal(
+            strategy=self.name,
+            symbol=state.symbol,
+            side="BUY",
+            price=entry,
+            timestamp_ms=latest.end_ms,
+            change_pct=0.0,
+            volume_ratio=volume_ratio,
+            spread_bps=spread_bps,
+            reason=reason,
+            stop_price=stop_price,
+            position_size_multiplier=add_size_pct * self.settings.steady_intraday_position_size_multiplier,
+            allow_add_to_position=True,
+        )
 
     def _reject(self, state: SymbolState, code: str, detail: str) -> None:
         timestamp_ms = state.last_event_ms or 0

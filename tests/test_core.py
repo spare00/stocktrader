@@ -9265,7 +9265,130 @@ class CoreTradingTests(unittest.TestCase):
         self.assertEqual(signal.strategy, "steady_intraday")
         self.assertIn("pullback_reclaim", signal.reason)
         self.assertLess(signal.stop_price, signal.price)
-        self.assertEqual(signal.position_size_multiplier, 1.0)
+        self.assertAlmostEqual(signal.position_size_multiplier, 0.25)
+
+    def test_steady_intraday_pyramid_disabled_uses_full_size(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["NVDA"],
+            strategy_names=["steady_intraday"],
+            steady_intraday_pyramid_enabled=False,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("NVDA")
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        closes = []
+        for index in range(60):
+            if index < 15:
+                close = 100 + index * 0.03
+            elif index < 56:
+                close = 100.5 + (index - 15) * 0.04
+            elif index == 56:
+                close = 102.0
+            elif index == 57:
+                close = 101.9
+            elif index == 58:
+                close = 101.85
+            else:
+                close = 102.15
+            closes.append(close)
+            open_price = close - 0.10
+            state.add_bar(
+                Bar(
+                    "NVDA",
+                    open=open_price,
+                    high=close + 0.08,
+                    low=open_price - 0.08,
+                    close=close,
+                    volume=100_000 if index < 59 else 150_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(Quote("NVDA", 102.13, 102.17, 100, 100, start_ms + 60 * 60_000))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(signal)
+        self.assertAlmostEqual(signal.position_size_multiplier, 1.0)
+
+    def test_steady_intraday_pyramid_add_emits_on_strength(self):
+        settings = Settings(
+            alpaca_api_key="test",
+            alpaca_secret_key="test",
+            symbols=["NVDA"],
+            strategy_names=["steady_intraday"],
+            steady_intraday_pyramid_min_add_seconds=0,
+        )
+        strategy = SteadyIntradayStrategy(settings)
+        state = SymbolState("NVDA")
+        start_ms = market_ms(2026, 4, 24, 9, 30)
+        for index in range(60):
+            if index < 15:
+                close = 100 + index * 0.03
+            elif index < 56:
+                close = 100.5 + (index - 15) * 0.04
+            elif index == 56:
+                close = 102.0
+            elif index == 57:
+                close = 101.9
+            elif index == 58:
+                close = 101.85
+            else:
+                close = 102.15
+            open_price = close - 0.10
+            state.add_bar(
+                Bar(
+                    "NVDA",
+                    open=open_price,
+                    high=close + 0.08,
+                    low=open_price - 0.08,
+                    close=close,
+                    volume=100_000 if index < 59 else 150_000,
+                    vwap=close,
+                    start_ms=start_ms + index * 60_000,
+                    end_ms=start_ms + (index + 1) * 60_000,
+                )
+            )
+        state.update_quote(Quote("NVDA", 102.13, 102.17, 100, 100, start_ms + 60 * 60_000))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        scout = strategy.evaluate(state)
+        self.assertIsNotNone(scout)
+
+        pos_state = strategy._position_states["NVDA"]
+        pos_state.last_add_ms = 0
+        trigger_price = pos_state.reference_entry + 0.75 * pos_state.reference_r
+        add_close = trigger_price + 0.10
+        add_index = 60
+        state.add_bar(
+            Bar(
+                "NVDA",
+                open=add_close - 0.03,
+                high=add_close + 0.02,
+                low=add_close - 0.05,
+                close=add_close,
+                volume=200_000,
+                vwap=add_close - 0.02,
+                start_ms=start_ms + add_index * 60_000,
+                end_ms=start_ms + (add_index + 1) * 60_000,
+            )
+        )
+        state.update_quote(Quote("NVDA", add_close - 0.02, add_close + 0.02, 100, 100, state.bars[-1].end_ms))
+        state.last_event_kind = "bar"
+        state.last_event_ms = state.bars[-1].end_ms
+
+        add_signal = strategy.evaluate(state)
+
+        self.assertIsNotNone(add_signal)
+        self.assertTrue(add_signal.allow_add_to_position)
+        self.assertIn("pyramid_tranche_2", add_signal.reason)
+        self.assertAlmostEqual(add_signal.position_size_multiplier, 0.35)
 
     def test_steady_intraday_rejects_extended_orb_without_pullback(self):
         settings = Settings(
